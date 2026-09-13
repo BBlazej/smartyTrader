@@ -1,0 +1,3 @@
+# Keep this directory in version control.
+# SQLite databases (trading_agent.db, etc.) are created here at runtime and are
+# intentionally git-ignored (see .gitignore).

@@ -1,0 +1,51 @@
+llm:
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  model: "qwen/qwen3.8-27b"
+  timeout_seconds: 30
+  max_retries: 3
+  use_json_schema: false   # enable once the local model accepts response_format
+
+crypto_agent:
+  enabled: true
+  exchange: kraken
+  testnet: true
+  interval_minutes: 5
+  pairs:
+    - BTC/USDT
+    - ETH/USDT
+  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+
+stocks_agent:
+  enabled: false
+  broker: xtb
+  demo: true
+  interval_minutes: 15
+  market_hours: "09:00-16:30"
+  symbols:
+    - AAPL
+    - MSFT
+  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+
+risk:
+  max_position_pct: 0.10
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.05
+  consecutive_losses_cooldown_minutes: 60
+  max_open_positions: 5
+  min_confidence: 0.6
+
+# Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
+# fees/slippage. 0.26%/side matches a typical crypto taker fee; 0.1%/side slippage.
+execution:
+  paper_fee_pct: 0.0026
+  paper_slippage_pct: 0.001
+
+storage:
+  database_path: "data/trading_agent.db"
+
+monitoring:
+  log_level: INFO
+  telegram_enabled: false
+  telegram_bot_token: ""      # set via .env (TELEGRAM_BOT_TOKEN) for real delivery
+  telegram_chat_id: ""        # set via .env (TELEGRAM_CHAT_ID)
+  alert_dedup_window_seconds: 300

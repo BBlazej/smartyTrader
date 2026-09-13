@@ -1,0 +1,150 @@
+"""Unit tests for the XTB (demo) executor (via xAPI)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+
+from src.core.models import OrderSide
+from src.execution.xtb_executor import XTBExecutor
+
+
+@pytest.fixture()
+def mock_client() -> AsyncMock:
+    return AsyncMock()
+
+
+@pytest.fixture()
+def executor(mock_client: AsyncMock) -> XTBExecutor:
+    return XTBExecutor(mock_client)
+
+
+class TestPlaceOrder:
+    @pytest.mark.asyncio
+    async def test_market_order(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "xtb-123",
+            "status": "filled",
+            "quantity": 10.0,
+        }
+
+        result = await executor.place_order("AAPL", OrderSide.BUY, quantity=10.0)
+
+        mock_client.create_order.assert_awaited_once_with("AAPL", "buy", 10.0, price=None)
+        assert result.order_id == "xtb-123"
+        assert result.status == "filled"
+        assert result.side == OrderSide.BUY
+        assert result.quantity == 10.0
+
+    @pytest.mark.asyncio
+    async def test_limit_order(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "xtb-456",
+            "status": "open",
+            "quantity": 5.0,
+        }
+
+        result = await executor.place_order("MSFT", OrderSide.SELL, quantity=5.0, price=300.0)
+
+        mock_client.create_order.assert_awaited_once_with("MSFT", "sell", 5.0, price=300.0)
+        assert result.status == "pending"
+        assert result.price == 300.0
+
+    @pytest.mark.asyncio
+    async def test_rejected_order(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.create_order.return_value = {"order_id": "xtb-789", "status": "rejected"}
+
+        result = await executor.place_order("AAPL", OrderSide.BUY, quantity=1.0)
+        assert result.status == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_empty_response(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.create_order.return_value = None
+        result = await executor.place_order("AAPL", OrderSide.BUY, quantity=1.0)
+        assert result.order_id == ""
+        assert result.status == "pending"
+        assert result.quantity == 1.0
+
+
+class TestGetPositions:
+    @pytest.mark.asyncio
+    async def test_returns_positions(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.get_positions.return_value = [
+            {"symbol": "AAPL", "quantity": 10.0, "avg_entry_price": 150.0, "current_price": 155.0},
+            {"symbol": "MSFT", "quantity": 5.0, "avg_entry_price": 300.0, "current_price": 290.0},
+        ]
+
+        positions = await executor.get_positions()
+
+        assert len(positions) == 2
+        assert positions[0].symbol == "AAPL"
+        assert positions[0].quantity == 10.0
+        assert positions[0].avg_entry_price == 150.0
+        assert positions[0].current_price == 155.0
+
+    @pytest.mark.asyncio
+    async def test_skips_zero_quantity(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.get_positions.return_value = [
+            {"symbol": "AAPL", "quantity": 0.0, "avg_entry_price": 150.0},
+            {"symbol": "MSFT", "quantity": 5.0, "avg_entry_price": 300.0},
+        ]
+        positions = await executor.get_positions()
+        assert len(positions) == 1
+        assert positions[0].symbol == "MSFT"
+
+    @pytest.mark.asyncio
+    async def test_empty_response(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.get_positions.return_value = []
+        assert await executor.get_positions() == []
+
+    @pytest.mark.asyncio
+    async def test_none_response(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.get_positions.return_value = None
+        assert await executor.get_positions() == []
+
+
+class TestCancelOrder:
+    @pytest.mark.asyncio
+    async def test_cancel_success(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.cancel_order.return_value = {"order_id": "xtb-1"}
+        result = await executor.cancel_order("xtb-1")
+        assert result is True
+        mock_client.cancel_order.assert_awaited_once_with("xtb-1")
+
+    @pytest.mark.asyncio
+    async def test_cancel_failure_returns_false(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.cancel_order.side_effect = Exception("order already filled")
+        result = await executor.cancel_order("xtb-1")
+        assert result is False
+
+
+class TestGetCash:
+    @pytest.mark.asyncio
+    async def test_returns_balance(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        mock_client.get_balance.return_value = 25000.0
+        cash = await executor.get_cash()
+        assert cash == 25000.0
+        mock_client.get_balance.assert_awaited_once()
+
+
+class TestClose:
+    """close() must release the underlying xAPI client (its session, if any)."""
+
+    @pytest.mark.asyncio
+    async def test_closes_client(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        await executor.close()
+        mock_client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
+        await executor.close()
+        await executor.close()
+        mock_client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_without_close_method_is_noop(self) -> None:
+        executor = XTBExecutor(AsyncMock(spec=["create_order"]))
+        await executor.close()  # must not raise

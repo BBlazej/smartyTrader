@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+
+# Tests / lint / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets — never commit
+.env
+
+# Local data (keep the directory, not the databases)
+data/*.db
+data/*.sqlite3
+data/*.sqlite
+!data/.gitkeep

@@ -1,0 +1,320 @@
+"""SQLite persistence layer via SQLAlchemy."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+import structlog
+from sqlalchemy import (
+    Float,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    select,
+)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# ── Base ──────────────────────────────────────────────────────
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# ── Models ────────────────────────────────────────────────────
+
+
+class MarketSnapshotRow(Base):
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20))
+    timeframe: Mapped[str] = mapped_column(String(10))
+    candles_json: Mapped[str] = mapped_column(Text)  # JSON array of OHLCV dicts
+    indicators_json: Mapped[str] = mapped_column(Text, default="{}")
+    fetched_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class LLMDecisionRow(Base):
+    __tablename__ = "llm_decisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20))
+    action: Mapped[str] = mapped_column(String(10))  # buy / sell / hold
+    confidence: Mapped[float] = mapped_column(Float)
+    reasoning: Mapped[str] = mapped_column(Text)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_verdict: Mapped[str] = mapped_column(String(10))  # approved / rejected
+    risk_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )  # Net PnL once the position closed (None = still open)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class OrderRow(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(64), unique=True)
+    symbol: Mapped[str] = mapped_column(String(20))
+    side: Mapped[str] = mapped_column(String(10))  # buy / sell
+    quantity: Mapped[float] = mapped_column(Float)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(20))
+    decision_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class PortfolioSnapshotRow(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cash: Mapped[float] = mapped_column(Float)
+    positions_json: Mapped[str] = mapped_column(Text, default="[]")
+    total_value: Mapped[float] = mapped_column(Float)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+# ── Repository ────────────────────────────────────────────────
+
+
+class Storage:
+    """Async repository for all trading data."""
+
+    def __init__(self, database_path: str) -> None:
+        # Normalize path — use absolute if relative
+        db_path = Path(database_path).resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        uri = f"sqlite+aiosqlite:///{db_path}"
+        self._engine = create_async_engine(uri)
+        self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._closed = False
+
+    async def initialize(self) -> None:
+        """Create tables if they don't exist and apply lightweight migrations.
+
+        ``create_all`` only adds *missing tables* — it never alters existing ones —
+        so a database created before a new column was added is migrated here with
+        an idempotent ``ALTER TABLE ADD COLUMN`` (guarded by a column check).
+        """
+        # Use a sync engine just for schema work — AsyncEngine.run_sync() is not
+        # available in all SQLAlchemy versions.
+        db_path = str(Path(self._engine.url.database).resolve())
+        sync_uri = f"sqlite:///{db_path}"
+        sync_engine = create_engine(sync_uri)
+        try:
+            Base.metadata.create_all(sync_engine)
+            self._apply_migrations(sync_engine)
+        finally:
+            sync_engine.dispose()
+
+    @staticmethod
+    def _apply_migrations(engine) -> None:
+        """Add columns introduced after a database file was first created.
+
+        SQLite ``ALTER TABLE ADD COLUMN`` is cheap and idempotent here (we only
+        add a column that is not already present), so this is safe to run on
+        every startup.
+        """
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(engine)
+        if not inspector.has_table("llm_decisions"):
+            return
+        existing = {c["name"] for c in inspector.get_columns("llm_decisions")}
+        if "realized_pnl" not in existing:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE llm_decisions ADD COLUMN realized_pnl FLOAT NULL"))
+
+    async def close(self) -> None:
+        await self._engine.dispose()
+        self._closed = True
+
+    # ── Helpers ───────────────────────────────────────────────
+
+    async def _session(self) -> AsyncSession:
+        return self._session_factory()
+
+    # ── Market Snapshots ──────────────────────────────────────
+
+    async def save_market_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        candles_json: str,
+        indicators_json: str = "{}",
+    ) -> int:
+        async with await self._session() as session:
+            row = MarketSnapshotRow(
+                symbol=symbol,
+                timeframe=timeframe,
+                candles_json=candles_json,
+                indicators_json=indicators_json,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def get_recent_snapshots(
+        self,
+        symbol: str,
+        limit: int = 10,
+    ) -> list[MarketSnapshotRow]:
+        async with await self._session() as session:
+            stmt = (
+                select(MarketSnapshotRow)
+                .where(MarketSnapshotRow.symbol == symbol)
+                .order_by(MarketSnapshotRow.fetched_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    # ── LLM Decisions ─────────────────────────────────────────
+
+    async def save_llm_decision(
+        self,
+        symbol: str,
+        action: str,
+        confidence: float,
+        reasoning: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+        risk_verdict: str,
+        risk_reason: str | None,
+        realized_pnl: float | None = None,
+    ) -> int:
+        async with await self._session() as session:
+            row = LLMDecisionRow(
+                symbol=symbol,
+                action=action,
+                confidence=confidence,
+                reasoning=reasoning,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                risk_verdict=risk_verdict,
+                risk_reason=risk_reason,
+                realized_pnl=realized_pnl,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def set_realized_pnl(self, decision_id: int, realized_pnl: float) -> None:
+        """Stamp the net realized PnL onto a decision once its position closed.
+
+        Called by the agent when an order realizes PnL, so the decision row
+        carries the *outcome* the LLM is later shown (the "learn from its track
+        record" loop). Fails soft — an outcome-recording error must not break
+        a trading cycle.
+        """
+        from sqlalchemy import update
+
+        log = structlog.get_logger()
+        try:
+            async with await self._session() as session:
+                await session.execute(
+                    update(LLMDecisionRow)
+                    .where(LLMDecisionRow.id == decision_id)
+                    .values(realized_pnl=realized_pnl)
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("failed to record realized pnl", decision_id=decision_id, error=str(exc))
+
+    async def get_recent_decisions(
+        self,
+        symbol: str | None = None,
+        limit: int = 10,
+    ) -> list[LLMDecisionRow]:
+        """Return the most recent decisions, most-recent first.
+
+        Each row now carries its ``realized_pnl`` outcome (None while the
+        position is still open), which is surfaced to the LLM as context.
+        """
+        async with await self._session() as session:
+            stmt = select(LLMDecisionRow).order_by(LLMDecisionRow.timestamp.desc()).limit(limit)
+            if symbol:
+                stmt = stmt.where(LLMDecisionRow.symbol == symbol)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    # ── Orders ────────────────────────────────────────────────
+
+    async def save_order(
+        self,
+        order_id: str,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float | None,
+        status: str,
+        decision_id: int | None = None,
+        filled_at: datetime | None = None,
+    ) -> int:
+        async with await self._session() as session:
+            row = OrderRow(
+                order_id=order_id,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                status=status,
+                decision_id=decision_id,
+                filled_at=filled_at,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def get_recent_orders(
+        self,
+        symbol: str | None = None,
+        limit: int = 20,
+    ) -> list[OrderRow]:
+        async with await self._session() as session:
+            stmt = select(OrderRow).order_by(OrderRow.id.desc()).limit(limit)
+            if symbol:
+                stmt = stmt.where(OrderRow.symbol == symbol)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    # ── Portfolio Snapshots ───────────────────────────────────
+
+    async def save_portfolio_snapshot(
+        self,
+        cash: float,
+        positions_json: str,
+        total_value: float,
+        unrealized_pnl: float = 0.0,
+    ) -> int:
+        async with await self._session() as session:
+            row = PortfolioSnapshotRow(
+                cash=cash,
+                positions_json=positions_json,
+                total_value=total_value,
+                unrealized_pnl=unrealized_pnl,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def get_latest_portfolio_snapshot(self) -> PortfolioSnapshotRow | None:
+        async with await self._session() as session:
+            stmt = select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc()).limit(1)
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
+    async def get_portfolio_history(self, limit: int = 100) -> list[PortfolioSnapshotRow]:
+        async with await self._session() as session:
+            stmt = (
+                select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc()).limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
