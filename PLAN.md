@@ -56,6 +56,140 @@ Both agents use the same decision pipeline, risk engine, and storage layer — o
 
 ---
 
+## Data Pipeline, Storage & Dashboard (Week 6)
+
+This section captures the design decisions locked for Week 6 — the **data pipeline / DB / control architecture** that backtesting (§3.3), the dashboard, and the live agent all share. It is the source of truth for *how data flows*; §7.3 (backtest) and §7.8 (dashboard) are the deliverables built on it.
+
+### Design decisions (locked)
+
+| # | Decision | Chosen |
+|---|---|---|
+| 1 | Backtest type | **(a) Decision replay** — re-simulate *stored* `llm_decisions` against the price path that followed. Deterministic, **zero LLM calls**. (LLM replay = non-deterministic + expensive on the local 27B model; deferred.) |
+| 2 | Backtest price history | **Fresh historical candles** from the source (Kraken via CCXT / yfinance) for arbitrary date ranges — the agent does not run 24/7, so stored `market_snapshots` alone is too sparse. Stored snapshots are kept as a secondary/audit source. |
+| 3 | Dashboard control scope | **Pause/resume** + **close all open positions** + **safe config management** (see #6). No manual order placement, no live risk-param override, no kill in v1. |
+| 4 | Agent ↔ dashboard control channel | **Agent exposes a small HTTP control API (FastAPI); the dashboard calls it** — real-time control (e.g. "close all" is immediate, not gated on the 5-min cycle). |
+| 5 | Dashboard stack | **FastAPI + Jinja2/HTMX** (server-rendered, HTMX for updates + control), lightweight chart lib (uPlot) via CDN for time-series. No Node/npm build step → one slim Docker image. |
+| 6 | Config management | Dashboard edits **safe data only** — intervals, pairs/symbols, `risk.*`, `execution.*`, `monitoring.*`, `decision_history_limit`. **Never** `llm.*` credentials/endpoints, never API keys, never `.env`. |
+| 7 | Database | **One SQLite (WAL mode) on a shared Docker volume.** Agent = primary writer; dashboard = reader + control writer; backtester = reader. Keeps the existing SQLAlchemy + aiosqlite stack. |
+| 8 | Pipeline shape | **Single unified pipeline** (one code path: provider → indicators → store) feeding all three consumers (agent, dashboard, backtester). |
+
+### Data pipeline (one path, three consumers)
+
+```
+                 ┌─────────────── MARKET DATA (OHLCV) ───────────────┐
+                 │   CCXT → Kraken        xAPI / yfinance → stocks   │
+                 └───────────────┬───────────────────────┬────────────┘
+                                 ▼                       ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │                    UNIFIED PIPELINE                          │
+        │  fetch candles → compute indicators → normalize → persist    │
+        │  (one code path — src/core/decision_pipeline.py + providers) │
+        └───────────────┬───────────────────────┬──────────────────────┘
+                        │                       │
+        ┌───────────────┘                       └───────────────┐
+        ▼                                                       ▼
+  ┌──────────────┐   ┌─────────────────────┐         ┌──────────────────────┐
+  │  AGENT (live) │   │  BACKTESTER (replay) │         │   DASHBOARD (monitor  │
+  │ prompt→LLM→  │   │ stored decisions vs │         │   + control + config)│
+  │ risk→execute │   │ historical candles  │         │   FastAPI + HTMX     │
+  └──────┬───────┘   └──────────┬──────────┘         └──────────┬───────────┘
+         │ writes               │ reads                          │ reads + control writes
+         ▼                      ▼                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                 SHARED SQLite (WAL) — data/trading_agent.db                  │
+  │   market_snapshots · llm_decisions · orders · portfolio_snapshots            │
+  │   + NEW: agent_control (pause/resume, close-all, status, config overrides)   │
+  └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+> The **live agent** and the **backtester** both read the *same* indicator logic and (for backtest) the same decision rows — so what you backtest is exactly what the pipeline produces. The backtester does **not** re-run the LLM; it re-simulates the recorded decisions.
+
+### Storage (single source of truth)
+
+- **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
+- Existing tables (no schema change): `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`.
+- **New table — `agent_control`** (control plane, dashboard read/write):
+
+  | Column | Purpose |
+  |---|---|
+  | `agent` | `crypto` / `stocks` — one control row per agent |
+  | `state` | `running` / `paused` (pause/resume) |
+  | `close_all_requested` | boolean latch — agent closes all open positions then clears it |
+  | `status` / `last_cycle_at` / `last_error` | live health for the dashboard |
+  | `config_override_json` | **safe** config overrides (see #6); empty = use `settings.yaml` |
+
+  The agent checks `agent_control` at the top of every cycle (cheap SQLite read) → respects pause + close-all. This keeps the DB the single source of truth even though the dashboard *triggers* actions via the control API.
+
+### Control API contract (agent-side, FastAPI)
+
+The agent process serves a small internal API (in-process with the loop, or a thin sidecar):
+
+| Method & path | Effect |
+|---|---|
+| `GET /api/agents` | state, `last_cycle_at`, open positions, recent decisions, `last_error` (per agent) |
+| `GET /api/agents/{agent}/decisions?limit=N` | recent decisions + outcomes (net PnL) |
+| `GET /api/agents/{agent}/portfolio` | current + historical portfolio value |
+| `POST /api/agents/{agent}/pause` | set `state=paused` |
+| `POST /api/agents/{agent}/resume` | set `state=running` |
+| `POST /api/agents/{agent}/close-all` | set `close_all_requested` latch (immediate on next loop tick) |
+| `GET /api/config` | **safe** config (credentials/keys redacted) |
+| `PUT /api/config` | validate against Pydantic `Settings`, persist safe overrides to `agent_control`, reload agent |
+
+> **Safety:** `PUT /api/config` only accepts the safe whitelist (#6); unknown/credential keys are rejected. The LLM endpoint, model, and any `.env` secret are **never** read, written, or returned.
+
+### Dashboard (FastAPI + Jinja2/HTMX, Docker)
+
+- **Monitor:** portfolio value over time (uPlot), open positions, recent decisions + win-rate / confidence distribution, agent state + last cycle + errors. Live via HTMX polling (or SSE).
+- **Control:** Pause / Resume, Close all — HTMX `POST` to the control API.
+- **Config:** server-rendered form over the safe config surface only; changes validated server-side (Pydantic) and persisted to `agent_control`; no credential/secret fields exist in the form.
+
+### Container / volume topology
+
+```
+docker-compose
+├── agent-crypto     # scripts/run_crypto_agent.py  (control API in-process)
+├── agent-stocks     # scripts/run_stocks_agent.py
+├── backtester       # scripts/backtest.py          (batch, on-demand)
+├── dashboard        # FastAPI + HTMX               (port 8080 → browser)
+└── volume: agent-data → data/          # the shared SQLite + WAL files
+    volume: agent-config → config/      # settings.yaml + safe overrides
+```
+
+- **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
+- `agent-config` volume holds `settings.yaml` + safe overrides; the dashboard and agent both mount it.
+- No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
+
+### Backtester design (decision replay)
+
+`scripts/backtest.py` — deterministic, no LLM:
+
+1. **Ingest** fresh historical candles for the window (per #2) via the *same* providers — or read stored snapshots when they cover the window.
+2. **Load** the recorded `llm_decisions` (+ `orders`, realized PnL) in time order.
+3. **Re-simulate** each decision against the price path that followed, through the **same** risk engine + fee/slippage model as live, so the verdicts and PnL are comparable to paper results.
+4. **Report:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
+
+> **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate, later experiment — non-deterministic and costly on the local 27B model.
+
+### Dependencies added (Week 6)
+
+```toml
+# pyproject.toml
+fastapi>=0.110        # agent control API + dashboard
+uvicorn[standard]     # ASGI server for both
+jinja2>=3.1           # server-rendered templates
+# htmx + uPlot are CDN assets (no pip dependency)
+# Docker: python:3.11-slim image, docker-compose for the topology above
+```
+
+### Test additions (Week 6)
+
+- `tests/unit/test_control_api.py` — pause/resume/close-all/config round-trips; config whitelist rejects credentials.
+- `tests/unit/test_backtest.py` — replay math (return, win-rate, max DD, Sharpe) on synthetic candles; benchmark comparison.
+- `tests/integration/test_dashboard.py` — dashboard reads a seeded SQLite; control endpoints drive the `agent_control` table.
+- Property-based: "close-all leaves no open positions"; "config override never contains a key/credential."
+
+---
+
 ## Phase 1 — Foundation (Weeks 1-2)
 
 ### 1.1 Project Scaffolding
@@ -235,15 +369,19 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 
 - Structured JSON logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py`
 - Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
-- Simple web dashboard (Streamlit or Flask) showing: portfolio value over time, recent decisions, LLM confidence distribution, win rate — ⏳ *planned (Week 6)*
+- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring (portfolio value over time, recent decisions, LLM confidence distribution, win rate) **plus control** (pause/resume, close-all) **and safe config management** — ⏳ *planned (Week 6)*. Full design: §"Data Pipeline, Storage & Dashboard (Week 6)" and §7.8.
 
 ### 3.3 Backtesting (`scripts/backtest.py`) — ⏳ planned (Week 6)
 
-Replay stored `market_snapshots` + `llm_decisions` against historical prices to calculate:
+**Decision replay** (locked): re-simulate the *stored* `llm_decisions` (+ `orders`, realized PnL) against the price path that followed, through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Price history comes from **fresh historical candles** (Kraken via CCXT / yfinance) for arbitrary date ranges, since the agent does not run 24/7; stored `market_snapshots` are a secondary/audit source.
+
+Metrics:
 - Total return vs. buy-and-hold benchmark
 - Win rate, average win/loss ratio
 - Max drawdown, Sharpe ratio
 - Per-symbol performance breakdown
+
+> LLM *replay* (feeding history to the model for fresh signals) is a separate, later experiment — non-deterministic and costly on the local 27B model. See §"Data Pipeline, Storage & Dashboard (Week 6)".
 
 ---
 
@@ -419,7 +557,7 @@ stocks = ["yfinance>=0.2"]   # optional; stocks data fallback (pulls in pandas)
 3. **Week 3:** `ccxt_provider.py`, `kraken_executor.py`, `crypto_agent.py`, `scheduler.py`, `run_crypto_agent.py` + integration tests ✅
 4. **Week 4:** Monitoring (structured logging) ✅; **decision-history prompt wiring** ✅; **crypto agent paper mode on real data** ✅ (the paper path now fetches live public Kraken OHLCV — no API key required — and executes via the fee/slippage-aware `PaperExecutor`; Kraken testnet execution remains opt-in via `KRAKEN_API_KEY`)
 5. **Week 5:** `xtb_provider.py`, `xtb_executor.py`, `stocks_agent.py` + tests ✅ (68 new tests added)
-6. **Week 6:** Backtesting framework, dashboard, alerting ◄ **(Next)**
+6. **Week 6:** Data-pipeline + Docker dashboard (FastAPI + HTMX: monitor / control / safe config), **decision-replay backtesting** on fresh historical candles, alerting ◄ **(Next)** — see §"Data Pipeline, Storage & Dashboard (Week 6)" and §7.8 (phased)
 
 ---
 
@@ -449,11 +587,14 @@ Ordered by leverage. Items marked ⏳ are referenced as *planned/not yet impleme
 
 2. **Get the crypto agent running on real data** — ✅ **complete** (Week 4)
    - **Done ✅:** `scripts/run_crypto_agent.py` now always fetches **live public market data** via CCXT (`create_ccxt_provider(exchange_id=…, testnet=False)` — Kraken's public OHLCV endpoint needs no API key and no sandbox mode). Execution stays safe by default: no `KRAKEN_API_KEY` → `PaperExecutor` (fee + slippage aware, configured from `execution.paper_fee_pct` / `execution.paper_slippage_pct`); key set → `KrakenExecutor` on a **separate**, keyed, sandboxed client. `ImportError` from the lazy `ccxt` import fails fast with an actionable install hint. Covered by `TestBuildDataAndExecution` in `tests/unit/test_run_crypto_agent.py` (230 tests passing).
-   - **Note:** the live smoke test could not be run in the development sandbox (outbound HTTPS to `api.kraken.com` blocked — environmental, not a code defect). Run `python -m scripts.run_crypto_agent` in a network-enabled environment to confirm the first cycle's logged decision.
+   - **Note:** the live smoke test could not be run in the development sandbox (outbound HTTPS to `api.kraken.com` blocked — environmental, not a code defect). Run `python -m scripts.run_crypto_agent` in a network-enabled environment to confirm the first cycle's logged decision. **Done ✅:**
 
-3. **Backtesting (`scripts/backtest.py`)** ⏳ (Week 6)
-   - Only meaningful after #1 and #2 have produced real stored snapshots/decisions.
-   - Address LLM non-determinism (see Risks) so replay reproduces stored decisions.
+3. **Backtesting (`scripts/backtest.py`)** ⏳ (Week 6) — design in §"Data Pipeline, Storage & Dashboard (Week 6)"
+   - **Type (locked): decision replay** — re-simulate the *stored* `llm_decisions` (+ `orders`, realized PnL) against the price path that followed, through the **same** risk engine + fee/slippage model as live. **Deterministic, zero LLM calls.** (LLM replay — feeding history to the model for fresh signals — is a separate, later experiment: non-deterministic + costly on the local 27B model.)
+   - **Price history (locked): fresh historical candles** from the source (Kraken via CCXT / yfinance) for arbitrary date ranges — the agent doesn't run 24/7, so stored `market_snapshots` alone is too sparse; stored snapshots remain a secondary/audit source.
+   - **Metrics:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
+   - **Phased build:** (1) historical-candle ingestion for a window (reuse providers); (2) decision-replay engine reusing risk engine + `PaperExecutor` fee/slippage; (3) metrics + report (CLI + JSON); (4) tests on synthetic data (return, win-rate, max DD, Sharpe; benchmark comparison).
+   - **Note on LLM non-determinism (Risks):** moot for decision replay (we reuse *stored* decisions, not model calls); still log full prompt+response for the live agent's audit.
 
 4. **Data-enrichment feeds** ⏳ (optional, lower priority)
    - Sentiment provider (crypto) and economic-calendar feed (stocks) are still aspirational. Ship #1–#3 first; add these as the prompt benefits from richer context.
@@ -467,3 +608,15 @@ Ordered by leverage. Items marked ⏳ are referenced as *planned/not yet impleme
 
 7. **XTB demo OAuth2 flow** ⏳
    - `run_stocks_agent.py` currently falls back to the paper executor until the OAuth2 flow lands. Required before real XTB demo trading; the stocks *agent* and *provider* logic is already built and tested against the paper executor.
+
+8. **Dashboard + control (Docker WebUI)** ⏳ (Week 6) — design in §"Data Pipeline, Storage & Dashboard (Week 6)"
+   - **Stack (locked):** FastAPI + Jinja2/HTMX; uPlot charts via CDN; one slim Docker image (no Node build). Monitor + control + safe config.
+   - **Control scope (locked):** Pause/Resume, Close-all, and a **safe config editor** (intervals, pairs/symbols, `risk.*`, `execution.*`, `monitoring.*`, `decision_history_limit`). **No** manual order placement, no live risk-param override, no kill. **No credentials/keys** — never read, written, or returned.
+   - **Control channel (locked):** agent serves a small FastAPI control API; dashboard calls it (real-time, not gated on the 5-min cycle). DB remains the single source of truth via the new `agent_control` table.
+   - **Phased build:**
+     - **P1 — shared state:** enable SQLite WAL; add `agent_control` table + repository methods; agent checks pause/close-all each cycle. (Tests: control round-trips.)
+     - **P2 — control API:** FastAPI endpoints (status, decisions, portfolio, pause/resume, close-all) on the agent process. (Tests: API contract + config whitelist.)
+     - **P3 — dashboard (monitor):** FastAPI + Jinja2/HTMX pages — portfolio history (uPlot), positions, decisions + win-rate/confidence, agent health. (Tests: seeded-DB render.)
+     - **P4 — dashboard (control + config):** Pause/Resume/Close-all buttons; safe config form with server-side Pydantic validation → `agent_control` overrides. (Tests: config whitelist rejects credentials.)
+     - **P5 — Docker:** `Dockerfile` (python:3.11-slim) + `docker-compose.yml` (agent-crypto, agent-stocks, backtester, dashboard) with the shared `agent-data` + `agent-config` volumes.
+   - **Acceptance:** from a browser — see live portfolio value/decisions/health; pause & resume the agent and watch it stop/start; close all open positions; change a safe config value and see it take effect on the next cycle. Credentials are never exposed.
