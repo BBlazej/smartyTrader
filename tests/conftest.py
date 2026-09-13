@@ -77,7 +77,6 @@ def app_settings(tmp_db_path: str, _tmp_path: Path) -> Settings:
         },
         "monitoring": {
             "log_level": "DEBUG",
-            "telegram_enabled": False,
         },
     }
 

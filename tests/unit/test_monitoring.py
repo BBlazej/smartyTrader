@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,7 +18,7 @@ from src.core.models import (
     TradeSignal,
 )
 from src.core.risk_engine import RiskEngine
-from src.monitoring import AlertManager, NoopAlertSink, TelegramAlertSink
+from src.monitoring import AlertManager, NoopAlertSink
 from src.monitoring.logger import setup_logging
 
 # ── Logging setup ─────────────────────────────────────────────
@@ -132,48 +132,6 @@ class TestAlertManager:
         manager.reset_dedup()
         await manager.send("event", "msg", symbol="BTC/USDT")
         assert len(sink.sent) == 2
-
-
-# ── Telegram sink ─────────────────────────────────────────────
-
-
-class TestTelegramAlertSink:
-    def test_configured_flag(self) -> None:
-        assert TelegramAlertSink("token", "chat").configured is True
-        assert TelegramAlertSink("", "chat").configured is False
-        assert TelegramAlertSink("token", "").configured is False
-
-    @pytest.mark.asyncio
-    async def test_send_returns_false_when_unconfigured(self) -> None:
-        sink = TelegramAlertSink("", "")
-        assert await sink.send("event", "msg", "info") is False
-
-    @pytest.mark.asyncio
-    async def test_send_posts_to_telegram(self) -> None:
-        sink = TelegramAlertSink("token", "12345")
-        response = MagicMock()
-        response.raise_for_status = MagicMock()
-        client = MagicMock()
-        client.post = AsyncMock(return_value=response)
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=client):
-            assert await sink.send("order_filled", "BTC", "info") is True
-        client.post.assert_awaited_once()
-        args, kwargs = client.post.call_args
-        assert "sendMessage" in args[0]
-        assert kwargs["json"]["chat_id"] == "12345"
-
-    @pytest.mark.asyncio
-    async def test_send_returns_false_on_error(self) -> None:
-        sink = TelegramAlertSink("token", "12345")
-        client = MagicMock()
-        client.post = AsyncMock(side_effect=RuntimeError("network"))
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
-        with patch("httpx.AsyncClient", return_value=client):
-            assert await sink.send("event", "msg", "info") is False
 
 
 # ── Agent alerting ────────────────────────────────────────────

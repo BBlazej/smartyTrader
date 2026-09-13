@@ -17,7 +17,7 @@ Two independent paper-trading agents sharing a common core:
 Both agents use the same decision pipeline, risk engine, and storage layer — only the data sources and execution adapters differ.
 
 > ### Status (as of this revision)
-> **Built & tested (230 tests passing, ~95% coverage):** core (LLM client, risk engine, storage, scheduler, decision pipeline with inline indicators + prompt), crypto provider + executor + agent, **stocks provider (xAPI + yfinance) + executor + agent**, paper executor, monitoring (structured logging + Telegram alerts), both entry scripts, the **"learn from its own track record" loop** (the LLM now sees each prior decision **and its realized PnL outcome** — `realized_pnl` column + backfill on a closing order + rendered under `CONTEXT:`), **fee modeling in the paper executor** (`fee_pct` deducted from cash and from realized PnL, so paper PnL is net-of-fee), and the **crypto agent running on real data** (the paper path now fetches live public Kraken OHLCV via CCXT — no API key needed for public data — while execution stays simulated). All config-driven via `decision_history_limit` and the `execution:` block.
+> **Built & tested (230 tests passing, ~95% coverage):** core (LLM client, risk engine, storage, scheduler, decision pipeline with inline indicators + prompt), crypto provider + executor + agent, **stocks provider (xAPI + yfinance) + executor + agent**, paper executor, monitoring (structured logging), both entry scripts, the **"learn from its own track record" loop** (the LLM now sees each prior decision **and its realized PnL outcome** — `realized_pnl` column + backfill on a closing order + rendered under `CONTEXT:`), **fee modeling in the paper executor** (`fee_pct` deducted from cash and from realized PnL, so paper PnL is net-of-fee), and the **crypto agent running on real data** (the paper path now fetches live public Kraken OHLCV via CCXT — no API key needed for public data — while execution stays simulated). All config-driven via `decision_history_limit` and the `execution:` block.
 > **Not yet implemented (do not assume these exist):** news/sentiment feed, economic-calendar feed, `analysis/indicators.py` + `analysis/prompt_builder.py` (indicators & prompt currently live inline in `core/decision_pipeline.py`), `scripts/backtest.py`, XTB demo OAuth2 flow, dashboard, live-trading readiness items. See §7 Gaps & Next Steps.
 
 ---
@@ -89,7 +89,7 @@ trading_agent/
 │   │   # planned: indicators.py, prompt_builder.py
 │   └── monitoring/                # Observability
 │       ├── logger.py              # Structured logging
-│       └── alerts.py              # Telegram/Discord notifications
+│       └── alerts.py              # Alert dispatch (logging sink)
 ├── tests/
 │   ├── unit/                      # one test module per source module
 │   │   ├── test_llm_client.py, test_risk_engine.py, test_storage.py, test_config.py
@@ -234,7 +234,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 ### 3.2 Monitoring
 
 - Structured JSON logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py`
-- Telegram bot for alerts on trades and risk rejections ✅ `monitoring/alerts.py`
+- Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
 - Simple web dashboard (Streamlit or Flask) showing: portfolio value over time, recent decisions, LLM confidence distribution, win rate — ⏳ *planned (Week 6)*
 
 ### 3.3 Backtesting (`scripts/backtest.py`) — ⏳ planned (Week 6)
@@ -379,9 +379,6 @@ storage:
 
 monitoring:
   log_level: INFO
-  telegram_enabled: false
-  telegram_bot_token: ""    # via .env (TELEGRAM_BOT_TOKEN)
-  telegram_chat_id: ""      # via .env (TELEGRAM_CHAT_ID)
   alert_dedup_window_seconds: 300
 ```
 
@@ -420,7 +417,7 @@ stocks = ["yfinance>=0.2"]   # optional; stocks data fallback (pulls in pandas)
 1. **Week 1:** `pyproject.toml`, config, `llm_client.py`, `storage.py` + tests ✅
 2. **Week 2:** `risk_engine.py`, `decision_pipeline.py`, `paper_executor.py` + tests ✅
 3. **Week 3:** `ccxt_provider.py`, `kraken_executor.py`, `crypto_agent.py`, `scheduler.py`, `run_crypto_agent.py` + integration tests ✅
-4. **Week 4:** Monitoring (structured logging + Telegram alerts) ✅; **decision-history prompt wiring** ✅; **crypto agent paper mode on real data** ✅ (the paper path now fetches live public Kraken OHLCV — no API key required — and executes via the fee/slippage-aware `PaperExecutor`; Kraken testnet execution remains opt-in via `KRAKEN_API_KEY`)
+4. **Week 4:** Monitoring (structured logging) ✅; **decision-history prompt wiring** ✅; **crypto agent paper mode on real data** ✅ (the paper path now fetches live public Kraken OHLCV — no API key required — and executes via the fee/slippage-aware `PaperExecutor`; Kraken testnet execution remains opt-in via `KRAKEN_API_KEY`)
 5. **Week 5:** `xtb_provider.py`, `xtb_executor.py`, `stocks_agent.py` + tests ✅ (68 new tests added)
 6. **Week 6:** Backtesting framework, dashboard, alerting ◄ **(Next)**
 

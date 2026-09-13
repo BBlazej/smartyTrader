@@ -87,7 +87,7 @@ src/
 │   └── __init__.py           # (empty — indicators & prompt currently live in core)
 └── monitoring/
     ├── logger.py             # structlog setup
-    └── alerts.py             # AlertManager + sinks (Noop, Telegram)
+    └── alerts.py             # AlertManager + sinks (Noop)
 
 scripts/
 ├── run_crypto_agent.py       # Entry point — wires config → core → scheduler (crypto)
@@ -112,7 +112,7 @@ thresholds. Key sections:
 | `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence |
 | `execution` | paper-executor fee % and slippage % (so paper PnL is realistic) |
 | `storage` | SQLite path |
-| `monitoring` | log level, Telegram alerts, dedup window |
+| `monitoring` | log level, alert dedup window |
 
 ### Environment variables
 
@@ -120,7 +120,6 @@ thresholds. Key sections:
 |---|---|
 | `LM_STUDIO_ENDPOINT` | Override the LLM endpoint |
 | `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Enable Kraken testnet execution (else paper); public data works in both modes with no key |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Real Telegram alert delivery |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
 | `XTB_API_KEY` | Reserved for XTB demo (still paper until the OAuth2 flow lands) |
 
@@ -147,7 +146,7 @@ Tests mock all external dependencies — **no real network calls** in the suite.
 Phases 1–5 complete: shared core (LLM client, risk engine, storage, scheduler,
 decision pipeline with inline indicators + prompt), crypto provider + executor +
 agent, **stocks provider + executor + agent**, paper executor with
-fee/slippage modeling, monitoring (structured logging + Telegram alerts), both
+fee/slippage modeling, monitoring (structured logging), both
 entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
 + realized PnL fed back to the LLM), and the **crypto agent on real data**
 (the paper path fetches live public Kraken OHLCV — no API key needed — while

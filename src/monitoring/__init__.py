@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .alerts import AlertManager, AlertSink, NoopAlertSink, TelegramAlertSink
+from .alerts import AlertManager, AlertSink, NoopAlertSink
 from .logger import setup_logging
 
-__all__ = ["AlertManager", "AlertSink", "NoopAlertSink", "TelegramAlertSink", "setup_logging"]
+__all__ = ["AlertManager", "AlertSink", "NoopAlertSink", "setup_logging"]

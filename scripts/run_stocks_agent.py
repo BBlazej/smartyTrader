@@ -33,7 +33,7 @@ from src.core.scheduler import create_async_scheduler
 from src.core.storage import Storage
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import PaperExecutor
-from src.monitoring import AlertManager, TelegramAlertSink, setup_logging
+from src.monitoring import AlertManager, setup_logging
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -57,15 +57,8 @@ def _load_dotenv(path: str = ".env") -> None:
 
 
 def _build_alerts(settings: Settings) -> AlertManager:
-    """Build the alert manager from config (Telegram sink when enabled)."""
-    m = settings.monitoring
-    sinks = []
-    if m.telegram_enabled:
-        token = m.telegram_bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        chat_id = m.telegram_chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
-        if token and chat_id:
-            sinks.append(TelegramAlertSink(bot_token=token, chat_id=chat_id))
-    return AlertManager(sinks=sinks or None, dedup_window=float(m.alert_dedup_window_seconds))
+    """Build the alert manager from config (noop sink — logging only)."""
+    return AlertManager(dedup_window=float(settings.monitoring.alert_dedup_window_seconds))
 
 
 async def run() -> None:

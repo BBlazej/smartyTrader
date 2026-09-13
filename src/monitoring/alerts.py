@@ -5,8 +5,8 @@ the risk gate, an LLM failure, an execution error). They are never used to make
 trading decisions — the deterministic risk engine always runs first.
 
 The manager is dependency-free (no network). The :class:`AlertSink` protocol is
-the seam for a concrete delivery channel (Telegram, email, webhooks); tests
-inject a fake sink.
+the seam for a concrete delivery channel (email, webhooks, etc.); tests inject
+a fake sink.
 """
 
 from __future__ import annotations
@@ -34,41 +34,6 @@ class NoopAlertSink:
             "alert (noop sink)", extra={"event": event, "severity": severity, "text": message}
         )
         return True
-
-
-class TelegramAlertSink:
-    """Deliver alerts via the Telegram Bot API (``sendMessage``).
-
-    Uses the already-present ``httpx`` dependency — no extra packages. Failures
-    are logged and reported as ``False`` so a dead bot never breaks the cycle.
-    """
-
-    def __init__(self, bot_token: str, chat_id: str, timeout_seconds: float = 10.0) -> None:
-        self._bot_token = bot_token
-        self._chat_id = chat_id
-        self._timeout = timeout_seconds
-
-    @property
-    def configured(self) -> bool:
-        return bool(self._bot_token and self._chat_id)
-
-    async def send(self, event: str, message: str, severity: str) -> bool:
-        if not self.configured:
-            logger.warning("telegram sink not configured; dropping alert", extra={"event": event})
-            return False
-        import httpx
-
-        url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    url, json={"chat_id": self._chat_id, "text": f"[{severity}] {event}: {message}"}
-                )
-                resp.raise_for_status()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("telegram send failed", extra={"event": event, "error": str(exc)})
-            return False
 
 
 class AlertManager:

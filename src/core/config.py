@@ -124,13 +124,7 @@ class MonitoringSettings:
     def __init__(
         self,
         log_level: str = "INFO",
-        telegram_enabled: bool = False,
-        telegram_bot_token: str = "",
-        telegram_chat_id: str = "",
         alert_dedup_window_seconds: int = 300,
     ) -> None:
         self.log_level = log_level
-        self.telegram_enabled = telegram_enabled
-        self.telegram_bot_token = telegram_bot_token
-        self.telegram_chat_id = telegram_chat_id
         self.alert_dedup_window_seconds = alert_dedup_window_seconds
