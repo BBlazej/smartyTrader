@@ -46,7 +46,7 @@ pip install yfinance        # only needed for stocks data (optional)
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 230 tests, no network needed
+pytest                      # 229 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 ```
@@ -108,10 +108,10 @@ thresholds. Key sections:
 |---|---|
 | `llm` | LM Studio endpoint, model, timeout, retries, JSON-schema opt-in |
 | `crypto_agent` | enabled, exchange, testnet flag, interval, pairs, `decision_history_limit` |
-| `stocks_agent` | enabled, broker, demo, interval, `market_hours`, symbols, `decision_history_limit` |
+| `stocks_agent` | enabled, broker, demo, interval, `market_hours`, `market_timezone` (zone the window is in), symbols, `decision_history_limit` |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence |
 | `execution` | paper-executor fee % and slippage % (so paper PnL is realistic) |
-| `storage` | SQLite path |
+| `storage` | SQLite path (WAL mode — concurrent reads while the agent writes) |
 | `monitoring` | log level, alert dedup window |
 
 ### Environment variables
@@ -150,7 +150,10 @@ fee/slippage modeling, monitoring (structured logging), both
 entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
 + realized PnL fed back to the LLM), and the **crypto agent on real data**
 (the paper path fetches live public Kraken OHLCV — no API key needed — while
-execution stays simulated). **230 tests passing at ~95% coverage.**
+execution stays simulated), the **timezone-aware market-hours guard** (the
+stocks window is compared in the config-driven `market_timezone`, so a UTC host
+stays correct), and **SQLite WAL mode** (concurrent reads while the agent
+writes). **229 tests passing at ~95% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

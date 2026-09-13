@@ -6,7 +6,7 @@ This is an autonomous paper-trading agent system powered by a local LLM (LM Stud
 
 - Python 3.11+, async-first (`asyncio`)
 - Data models: Pydantic `BaseModel`
-- DB: SQLite via SQLAlchemy + aiosqlite
+- DB: SQLite via SQLAlchemy + aiosqlite (WAL mode — one writer, concurrent readers for the dashboard/backtester)
 - Scheduling: APScheduler
 - HTTP client: httpx (for LLM calls)
 - Crypto data/orders: CCXT → Kraken testnet
@@ -76,6 +76,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - API keys live in `.env` — never commit them, never log them.
 - The risk rules are **hard-coded deterministic guards**, not LLM decisions.
 - **Paper mode runs on live public data:** `scripts/run_crypto_agent.py` always fetches real Kraken OHLCV via CCXT (public endpoints need no API key, no sandbox mode), so even paper mode stores real snapshots/decisions. Execution is what stays simulated — no `KRAKEN_API_KEY` → `PaperExecutor`; key set → `KrakenExecutor` on a separate sandboxed, keyed client.
+- **Market-hours guard is timezone-aware:** the stocks guard compares the *local* wall clock to the `market_hours` window, localized via the config-driven `stocks_agent.market_timezone` (default `Europe/Warsaw`) so a UTC host stays correct. The zone is a setting, never hardcoded.
 
 ### Documentation Rules
 

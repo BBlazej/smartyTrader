@@ -24,7 +24,7 @@ from pathlib import Path
 
 import structlog
 
-from src.agents.stocks_agent import StocksAgent
+from src.agents.stocks_agent import DEFAULT_MARKET_TIMEZONE, StocksAgent
 from src.core.config import Settings
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.llm_client import LLMClient
@@ -107,6 +107,7 @@ async def run() -> None:
         symbols=settings.stocks_agent.symbols,
         timeframe="1d",
         market_hours=settings.stocks_agent.market_hours or "09:00-16:30",
+        market_timezone=settings.stocks_agent.market_timezone or DEFAULT_MARKET_TIMEZONE,
         alerts=_build_alerts(settings),
     )
 

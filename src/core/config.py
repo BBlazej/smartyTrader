@@ -64,6 +64,7 @@ class AgentConfig:
         pairs: list[str] | None = None,
         symbols: list[str] | None = None,
         market_hours: str | None = None,
+        market_timezone: str | None = None,
         decision_history_limit: int = 10,
     ) -> None:
         self.enabled = enabled
@@ -75,6 +76,11 @@ class AgentConfig:
         self.pairs = pairs or []
         self.symbols = symbols or []
         self.market_hours = market_hours
+        # IANA zone for the market-hours guard (e.g. "Europe/Warsaw"). The window
+        # is a local wall-clock range, so ``now`` is rendered in this zone before
+        # comparison — a UTC host otherwise runs the guard 1–2h off. Falls back
+        # to the agent's default zone when unset.
+        self.market_timezone = market_timezone
         # How many of this agent's prior decisions to feed back into the LLM
         # prompt ("learn from its own track record"). 0 disables the section.
         self.decision_history_limit = decision_history_limit

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     select,
+    text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -109,10 +110,23 @@ class Storage:
         sync_uri = f"sqlite:///{db_path}"
         sync_engine = create_engine(sync_uri)
         try:
+            self._enable_wal(sync_engine)
             Base.metadata.create_all(sync_engine)
             self._apply_migrations(sync_engine)
         finally:
             sync_engine.dispose()
+
+    @staticmethod
+    def _enable_wal(engine) -> None:
+        """Switch the database to Write-Ahead Logging (WAL) mode.
+
+        WAL lets a reader (dashboard, backtester) proceed while the agent writes,
+        avoiding ``database is locked`` errors when concurrent agents run. The mode
+        is a persistent property of the SQLite file, so setting it here (once per
+        startup) covers every subsequent connection, including the async engine.
+        """
+        with engine.begin() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
 
     @staticmethod
     def _apply_migrations(engine) -> None:

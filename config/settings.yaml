@@ -20,7 +20,8 @@ stocks_agent:
   broker: xtb
   demo: true
   interval_minutes: 15
-  market_hours: "09:00-16:30"
+  market_hours: "09:00-16:30"   # local wall-clock window for the exchange
+  market_timezone: "Europe/Warsaw"   # zone the window is in (so a UTC host stays correct)
   symbols:
     - AAPL
     - MSFT

@@ -218,6 +218,22 @@ class TestPortfolioSnapshots:
 
 class TestStorageLifecycle:
     @pytest.mark.asyncio
+    async def test_initialize_enables_wal(self, tmp_db_path: str) -> None:
+        """WAL lets the dashboard/backtester read while the agent writes."""
+        from sqlalchemy import text
+
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+
+        # WAL is a persistent property of the SQLite file — assert it through the
+        # async engine the agent actually uses.
+        async with storage._engine.connect() as conn:
+            mode = (await conn.execute(text("PRAGMA journal_mode"))).scalar()
+
+        await storage.close()
+        assert str(mode).lower() == "wal"
+
+    @pytest.mark.asyncio
     async def test_initialize_creates_tables(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path)
         await storage.initialize()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -25,6 +26,10 @@ from ..monitoring.alerts import AlertManager
 
 # Default Warsaw Stock Exchange trading hours (local wall-clock).
 DEFAULT_MARKET_HOURS = "09:00-16:30"
+# The exchange the default hours assume. The market-hours window is a *local*
+# wall-clock range, so ``now`` must be rendered in this zone before comparison —
+# otherwise a UTC host runs the guard 1–2h off (CET/CEST).
+DEFAULT_MARKET_TIMEZONE = "Europe/Warsaw"
 
 
 def parse_market_hours(spec: str) -> tuple[time, time]:
@@ -75,6 +80,7 @@ class StocksAgent:
         symbols: list[str],
         timeframe: str = "1d",
         market_hours: str = DEFAULT_MARKET_HOURS,
+        market_timezone: str = DEFAULT_MARKET_TIMEZONE,
         alerts: AlertManager | None = None,
     ) -> None:
         self._pipeline = pipeline
@@ -84,6 +90,7 @@ class StocksAgent:
         self._symbols = symbols
         self._timeframe = timeframe
         self._market_hours = market_hours
+        self._market_timezone = market_timezone
         self._alerts = alerts or AlertManager()
         self._logger = structlog.get_logger().bind(component="stocks_agent")
         self._running = False
@@ -107,6 +114,18 @@ class StocksAgent:
     def running(self) -> bool:
         return self._running
 
+    def _local_now(self) -> datetime:
+        """Current time in the market's local zone (falls back to UTC).
+
+        The market-hours window is a local wall-clock range, so the guard must be
+        evaluated against the exchange's zone, not the host's. An unknown zone name
+        degrades gracefully to UTC rather than crashing the cycle.
+        """
+        try:
+            return datetime.now(UTC).astimezone(ZoneInfo(self._market_timezone))
+        except Exception:  # noqa: BLE001
+            return datetime.now(UTC)
+
     async def shutdown(self) -> None:
         """Stop the agent and release the LLM client connection."""
         await self.stop()
@@ -120,8 +139,11 @@ class StocksAgent:
         A cycle is a bounded, finite operation (one pipeline run per symbol) and
         always completes. If the exchange is closed for the configured window, the
         cycle is skipped (no decision recorded) rather than trading on stale data.
+
+        The guard is evaluated in the market's local zone (see ``_local_now``), so
+        a UTC host runs the WSE window at the correct local hours.
         """
-        if not is_market_open(datetime.now(UTC), self._market_hours):
+        if not is_market_open(self._local_now(), self._market_hours):
             self._logger.info("cycle skipped (market closed)", market_hours=self._market_hours)
             return []
 
