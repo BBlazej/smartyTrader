@@ -157,4 +157,6 @@ writes). **229 tests passing at ~95% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)
-for the full list.
+for the full list — reordered after the 2026-09-15 full-codebase review
+(low-hanging fruit first, then High → Low severity); its detailed findings
+live in `review.MD` at the repo root.
