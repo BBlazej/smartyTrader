@@ -46,7 +46,7 @@ pip install yfinance        # only needed for stocks data (optional)
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 229 tests, no network needed
+pytest                      # 233 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 ```
@@ -152,8 +152,10 @@ entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
 (the paper path fetches live public Kraken OHLCV — no API key needed — while
 execution stays simulated), the **timezone-aware market-hours guard** (the
 stocks window is compared in the config-driven `market_timezone`, so a UTC host
-stays correct), and **SQLite WAL mode** (concurrent reads while the agent
-writes). **229 tests passing at ~95% coverage.**
+stays correct), **SQLite WAL mode** (concurrent reads while the agent writes),
+and **per-cycle position marking** (open paper positions are re-marked at each
+snapshot's last close before the risk check, so unrealized PnL and the
+daily-loss rule track the market). **233 tests passing at ~95% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

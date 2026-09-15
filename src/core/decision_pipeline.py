@@ -151,6 +151,12 @@ class DecisionPipeline:
             step_logger.error("fetch failed", error=str(exc))
             return PipelineResult(symbol=symbol, error=f"Fetch failed: {exc}")
 
+        # Step 1b — Mark open positions to this cycle's close (paper mode).
+        # Done before the risk check so the portfolio handed to the risk engine
+        # — and the daily-loss baseline the agent updates afterwards — reflects
+        # market moves, not a position frozen at its fill price.
+        self._mark_positions(symbol, snapshot)
+
         # Step 2 — Compute indicators
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.COMPUTE_INDICATORS)
         try:
@@ -245,6 +251,29 @@ class DecisionPipeline:
         positions = await self.executor.get_positions()
         cash = await self.executor.get_cash()
         return PortfolioState(cash=cash, positions=positions)
+
+    def _mark_positions(self, symbol: str, snapshot: MarketSnapshot) -> None:
+        """Re-mark open executor positions at the snapshot's last close.
+
+        Uses the optional ``update_price(symbol, price)`` hook implemented by
+        :class:`PaperExecutor`: without it a paper position keeps its fill
+        price forever, so unrealized PnL stays 0 and the daily-loss rule can
+        never see market moves. Executors that report live venue prices
+        (Kraken, XTB) do not implement the hook and are left untouched.
+        Fail-soft: a marking failure must never break a trading cycle.
+        """
+        if not snapshot.candles:
+            return
+        last_close = snapshot.candles[-1].close
+        if last_close <= 0:
+            return
+        update_price = getattr(self.executor, "update_price", None)
+        if not callable(update_price):
+            return
+        try:
+            update_price(symbol, last_close)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to mark position price", symbol=symbol, error=str(exc))
 
     def _calculate_quantity(
         self,

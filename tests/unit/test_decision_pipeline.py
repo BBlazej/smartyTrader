@@ -16,6 +16,7 @@ from src.core.models import (
     OHLCV,
     Action,
     DecisionRecord,
+    Executor,
     MarketSnapshot,
     OrderSide,
     RiskResult,
@@ -379,9 +380,12 @@ class TestOutcomeRecording:
         last_close = sample_candles[-1].close
 
         # Pre-open a position well below the current close so a pipeline sell is a win.
+        # Sized generously (200 units) because the cycle now marks the position to
+        # market before sizing, so the sell slice (10% of a higher total_value) can
+        # exceed 100 units — sells are not clamped to units held (known §7.19).
         executor = PaperExecutor(initial_cash=100_000.0, slippage_pct=0.0)
         await executor.place_order(
-            "BTC/USDT", OrderSide.BUY, quantity=100.0, price=last_close * 0.5
+            "BTC/USDT", OrderSide.BUY, quantity=200.0, price=last_close * 0.5
         )
 
         mock_provider = AsyncMock()
@@ -472,3 +476,166 @@ class TestGetRecentDecisions:
 
         # Must not propagate — a context-fetch failure must not break a cycle.
         assert await self._pipeline(storage).get_recent_decisions("BTC/USDT") == []
+
+
+class TestPositionMarking:
+    """Regression tests for [R-H1]: every cycle must re-mark open paper
+    positions at the snapshot's last close **before** the risk check, so
+    unrealized PnL, total value and the daily-loss rule track the market
+    instead of a price frozen at entry."""
+
+    @staticmethod
+    def _candles(*closes: float) -> list[OHLCV]:
+        return [OHLCV(open=c, high=c + 1.0, low=c - 1.0, close=c, volume=1000.0) for c in closes]
+
+    @staticmethod
+    def _approved_risk(risk_settings: RiskSettings) -> MagicMock:
+        mock_risk = MagicMock()
+        mock_risk.settings = risk_settings
+        mock_risk.evaluate.return_value = RiskResult(verdict=RiskVerdict.APPROVED)
+        return mock_risk
+
+    @pytest.mark.asyncio
+    async def test_cycle_re_marks_position_to_last_close(self, risk_settings: RiskSettings) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        mock_provider = AsyncMock()
+        mock_llm = AsyncMock()
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=self._approved_risk(risk_settings),
+            executor=executor,
+        )
+
+        # Cycle 1 — buy at close 100; the position is marked at its fill price.
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(98.0, 99.0, 100.0)
+        )
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.85,
+            reasoning="bullish",
+            stop_loss=95.0,
+        )
+        await pipeline.run(symbol="BTC/USDT")
+
+        positions = await executor.get_positions()
+        assert len(positions) == 1
+        assert positions[0].current_price == pytest.approx(100.0)
+        # Sizing: 10% of 10_000 at price 100 → 10 units, cash 9_000.
+        assert positions[0].quantity == pytest.approx(10.0)
+
+        # Cycle 2 — market drops to 80; the cycle must re-mark the position.
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(85.0, 82.0, 80.0)
+        )
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.HOLD,
+            confidence=0.4,
+            reasoning="ranging",
+        )
+        await pipeline.run(symbol="BTC/USDT")
+
+        positions = await executor.get_positions()
+        assert positions[0].current_price == pytest.approx(80.0)
+
+        # The plan's acceptance check: unrealized PnL is no longer frozen at 0.
+        portfolio = await pipeline._get_portfolio_state()
+        assert portfolio.unrealized_pnl != 0.0
+        assert portfolio.unrealized_pnl == pytest.approx(-200.0)  # 10 × (80 − 100)
+        assert portfolio.total_value == pytest.approx(9_800.0)
+
+    @pytest.mark.asyncio
+    async def test_risk_check_sees_market_valued_portfolio(
+        self, risk_settings: RiskSettings
+    ) -> None:
+        # The marking must happen BEFORE evaluate(), so the daily-loss rule
+        # sees total_value at market — not the frozen entry valuation.
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=10.0, price=100.0)
+
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(85.0, 82.0, 80.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.HOLD,
+            confidence=0.4,
+            reasoning="ranging",
+        )
+        mock_risk = self._approved_risk(risk_settings)
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=mock_risk,
+            executor=executor,
+        )
+        await pipeline.run(symbol="BTC/USDT")
+
+        portfolio_arg = mock_risk.evaluate.call_args.args[1]
+        assert portfolio_arg.total_value == pytest.approx(9_800.0)  # 9_000 cash + 10 × 80
+        assert portfolio_arg.unrealized_pnl == pytest.approx(-200.0)
+
+    @pytest.mark.asyncio
+    async def test_marking_does_not_create_positions(self, risk_settings: RiskSettings) -> None:
+        # A cycle on a symbol with no open position must not materialise one.
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="ETH/USDT", timeframe="1h", candles=self._candles(50.0, 49.0, 48.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="ETH/USDT",
+            action=Action.HOLD,
+            confidence=0.5,
+            reasoning="no edge",
+        )
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=self._approved_risk(risk_settings),
+            executor=executor,
+        )
+        await pipeline.run(symbol="ETH/USDT")
+
+        assert await executor.get_positions() == []
+
+    @pytest.mark.asyncio
+    async def test_executor_without_marking_hook_is_skipped(
+        self, risk_settings: RiskSettings
+    ) -> None:
+        # Real-venue executors (Kraken/XTB) report live prices and implement no
+        # update_price hook — the pipeline must run unaffected.
+        venue = AsyncMock(spec=Executor)
+        venue.get_positions.return_value = []
+        venue.get_cash.return_value = 10_000.0
+
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(98.0, 99.0, 100.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.HOLD,
+            confidence=0.5,
+            reasoning="no edge",
+        )
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=self._approved_risk(risk_settings),
+            executor=venue,
+        )
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert result.error is None
+        assert result.signal is not None

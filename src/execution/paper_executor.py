@@ -191,7 +191,13 @@ class PaperExecutor:
         )
 
     async def get_positions(self) -> list[Position]:
-        """Return current positions with updated prices."""
+        """Return current positions.
+
+        ``current_price`` reflects the most recent mark applied by the decision
+        pipeline (each cycle re-marks open positions to the snapshot's last
+        close via :meth:`update_price`); prices do not move on their own
+        between cycles.
+        """
         return list(self._positions.values())
 
     async def cancel_order(self, order_id: str) -> bool:
@@ -203,7 +209,13 @@ class PaperExecutor:
         return True
 
     def update_price(self, symbol: str, new_price: float) -> None:
-        """Update the current price for a position. Used by agents to simulate market moves."""
+        """Re-mark an open position at the latest market price.
+
+        Called by :class:`DecisionPipeline` every cycle with the snapshot's
+        last close, so paper positions are never valued at a frozen entry
+        price (keeps unrealized PnL, portfolio snapshots and the daily-loss
+        rule market-honest). No-op for symbols with no open position.
+        """
         if symbol in self._positions:
             self._positions[symbol].current_price = new_price
 
