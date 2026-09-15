@@ -46,10 +46,16 @@ pip install yfinance        # only needed for stocks data (optional)
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 233 tests, no network needed
+pytest                      # 239 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
+python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
 ```
+
+A disabled agent (`crypto_agent.enabled: false` / `stocks_agent.enabled: false`)
+exits immediately **without running anything** — no cycles, LLM calls, order
+placement or DB writes. Single-cycle mode is the explicit `--once` flag, never
+a side effect of disabling an agent.
 
 **Paper mode is the default.** The crypto agent always runs on **live public
 market data** — Kraken's public OHLCV endpoint needs no API key and no sandbox
@@ -140,6 +146,8 @@ Tests mock all external dependencies — **no real network calls** in the suite.
 - **Risk engine runs before every order.** Nothing executes without approval.
 - **API keys live in `.env`** — never committed, never logged (see `.gitignore`).
 - **Risk rules are hard-coded, deterministic guards** — not LLM decisions.
+- **`enabled: false` means nothing runs.** The runner exits before constructing
+  any component; use `--once` when a single intentional cycle is wanted.
 
 ## Status
 
@@ -155,7 +163,9 @@ stocks window is compared in the config-driven `market_timezone`, so a UTC host
 stays correct), **SQLite WAL mode** (concurrent reads while the agent writes),
 and **per-cycle position marking** (open paper positions are re-marked at each
 snapshot's last close before the risk check, so unrealized PnL and the
-daily-loss rule track the market). **233 tests passing at ~95% coverage.**
+daily-loss rule track the market), and **honest `enabled: false` semantics**
+(both runners exit without running anything when an agent is disabled; `--once`
+is the explicit single-cycle flag). **239 tests passing at ~95% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

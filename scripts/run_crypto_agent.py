@@ -10,10 +10,16 @@ The **data feed is always live public market data**
 generates real snapshots, indicators, and LLM signals. Execution is safe by
 default — the paper executor is used unless ``KRAKEN_API_KEY``/
 ``KRAKEN_API_SECRET`` are set (in the environment or ``.env``).
+
+``crypto_agent.enabled: false`` means **do nothing**: the runner exits before
+constructing any component — no cycles, LLM calls, order placement or DB
+writes. For an intentional single-cycle run (e.g. cron), pass ``--once``,
+which runs exactly one full cycle and exits cleanly.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 from pathlib import Path
@@ -110,11 +116,22 @@ def _build_data_and_execution(settings: Settings) -> tuple[Any, Any, str]:
     return provider, executor, "paper"
 
 
-async def run() -> None:
+async def run(run_once: bool = False) -> None:
     _load_dotenv()
     settings = Settings()
     setup_logging(settings.monitoring.log_level)
     log = structlog.get_logger().bind(component="runner")
+
+    # "disabled" must mean *nothing happens*: exit before constructing any
+    # component so no cycle, LLM call, order placement or DB write can occur.
+    # Single-cycle runs are an explicit choice via --once, never a side effect
+    # of disabling the agent.
+    if not settings.crypto_agent.enabled:
+        log.warning(
+            "crypto agent disabled in config (crypto_agent.enabled: false); "
+            "exiting without running anything"
+        )
+        return
 
     storage = Storage(settings.storage.database_path)
     await storage.initialize()
@@ -152,12 +169,17 @@ async def run() -> None:
         alerts=_build_alerts(settings),
     )
 
-    if not settings.crypto_agent.enabled:
-        log.warning("crypto agent disabled in config; running one cycle then exiting")
-        await agent.run_cycle()
-        await provider.close()
-        await executor.close()
-        await storage.close()
+    if run_once:
+        # Explicit single-cycle mode: one full cycle, then a clean shutdown.
+        # A failing cycle propagates so the operator sees a non-zero exit code.
+        log.info("running a single cycle (--once) then exiting")
+        try:
+            await agent.run_cycle()
+        finally:
+            await agent.shutdown()
+            await provider.close()
+            await executor.close()
+            await storage.close()
         return
 
     from src.core.scheduler import AsyncSchedulerManager
@@ -194,8 +216,20 @@ async def run() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the crypto agent on a schedule. A disabled agent "
+            "(crypto_agent.enabled: false) exits without running anything."
+        )
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one decision cycle and exit instead of the scheduled loop.",
+    )
+    args = parser.parse_args()
     try:
-        asyncio.run(run())
+        asyncio.run(run(run_once=args.once))
     except KeyboardInterrupt:
         pass
 

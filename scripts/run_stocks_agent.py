@@ -14,10 +14,16 @@ XTB's xAPI requires an **approved demo account** and an **OAuth2 flow** (see
 ``PLAN.md``). The :class:`XTBExecutor` is the execution seam; until a real xAPI client
 is provided, this runner keeps the paper executor as the default and logs a clear
 notice when XTB credentials are present but no xAPI client is wired yet.
+
+``stocks_agent.enabled: false`` means **do nothing**: the runner exits before
+constructing any component — no cycles, LLM calls, order placement or DB
+writes. For an intentional single-cycle run (e.g. cron), pass ``--once``,
+which runs exactly one full cycle and exits cleanly.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 from pathlib import Path
@@ -61,11 +67,22 @@ def _build_alerts(settings: Settings) -> AlertManager:
     return AlertManager(dedup_window=float(settings.monitoring.alert_dedup_window_seconds))
 
 
-async def run() -> None:
+async def run(run_once: bool = False) -> None:
     _load_dotenv()
     settings = Settings()
     setup_logging(settings.monitoring.log_level)
     log = structlog.get_logger().bind(component="runner")
+
+    # "disabled" must mean *nothing happens*: exit before constructing any
+    # component so no cycle, LLM call, order placement or DB write can occur.
+    # Single-cycle runs are an explicit choice via --once, never a side effect
+    # of disabling the agent.
+    if not settings.stocks_agent.enabled:
+        log.warning(
+            "stocks agent disabled in config (stocks_agent.enabled: false); "
+            "exiting without running anything"
+        )
+        return
 
     storage = Storage(settings.storage.database_path)
     await storage.initialize()
@@ -111,12 +128,17 @@ async def run() -> None:
         alerts=_build_alerts(settings),
     )
 
-    if not settings.stocks_agent.enabled:
-        log.warning("stocks agent disabled in config; running one cycle then exiting")
-        await agent.run_cycle()
-        await provider.close()
-        await executor.close()
-        await storage.close()
+    if run_once:
+        # Explicit single-cycle mode: one full cycle, then a clean shutdown.
+        # A failing cycle propagates so the operator sees a non-zero exit code.
+        log.info("running a single cycle (--once) then exiting")
+        try:
+            await agent.run_cycle()
+        finally:
+            await agent.shutdown()
+            await provider.close()
+            await executor.close()
+            await storage.close()
         return
 
     from src.core.scheduler import AsyncSchedulerManager
@@ -152,8 +174,20 @@ async def run() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the stocks agent on a schedule. A disabled agent "
+            "(stocks_agent.enabled: false) exits without running anything."
+        )
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one decision cycle and exit instead of the scheduled loop.",
+    )
+    args = parser.parse_args()
     try:
-        asyncio.run(run())
+        asyncio.run(run(run_once=args.once))
     except KeyboardInterrupt:
         pass
 

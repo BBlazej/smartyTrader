@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from scripts.run_crypto_agent import _build_data_and_execution, _load_dotenv
+import pytest
+
+from scripts.run_crypto_agent import _build_data_and_execution, _load_dotenv, run
 
 
 class TestLoadDotenv:
@@ -169,3 +171,134 @@ class TestBuildDataAndExecution:
 
         # Both the data feed and (in testnet mode) the order feed use the configured exchange.
         assert mock_provider.call_args_list[0].kwargs["exchange_id"] == "binance"
+
+
+# ── enabled / --once semantics [R-H3] ─────────────────────────────
+
+
+def _run_settings(enabled: bool) -> SimpleNamespace:
+    """A settings stub covering everything ``run()`` reads before the agent."""
+    return SimpleNamespace(
+        llm=SimpleNamespace(),
+        crypto_agent=SimpleNamespace(
+            enabled=enabled,
+            exchange="kraken",
+            testnet=True,
+            interval_minutes=5,
+            pairs=["BTC/USDT"],
+            decision_history_limit=10,
+        ),
+        risk=SimpleNamespace(),
+        execution=SimpleNamespace(paper_fee_pct=0.0, paper_slippage_pct=0.0),
+        storage=SimpleNamespace(database_path=":memory:"),
+        monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
+    )
+
+
+class _FakeAgent:
+    """Records lifecycle calls so tests can assert exactly what ran."""
+
+    def __init__(self, fail_cycle: bool = False) -> None:
+        self.cycles = 0
+        self.starts = 0
+        self.shutdowns = 0
+        self._fail_cycle = fail_cycle
+
+    async def start(self) -> None:
+        self.starts += 1
+
+    async def run_cycle(self) -> None:
+        self.cycles += 1
+        if self._fail_cycle:
+            raise RuntimeError("cycle boom")
+
+    async def shutdown(self) -> None:
+        self.shutdowns += 1
+
+
+class TestEnabledSemantics:
+    """``enabled: false`` must run *nothing*; single-cycle is an explicit ``--once``."""
+
+    async def test_disabled_exits_before_constructing_anything(self) -> None:
+        settings = _run_settings(enabled=False)
+        with (
+            patch("scripts.run_crypto_agent.Settings", return_value=settings),
+            patch("scripts.run_crypto_agent.setup_logging"),
+            patch("scripts.run_crypto_agent.Storage") as mock_storage,
+            patch("scripts.run_crypto_agent.LLMClient") as mock_llm,
+            patch("scripts.run_crypto_agent._build_data_and_execution") as mock_build,
+            patch("scripts.run_crypto_agent.DecisionPipeline") as mock_pipeline,
+            patch("scripts.run_crypto_agent.CryptoAgent") as mock_agent_cls,
+        ):
+            await run()
+
+        # A disabled agent must not touch the DB, the LLM, the provider/executor,
+        # the pipeline or the agent itself — no cycles, orders or writes.
+        mock_storage.assert_not_called()
+        mock_llm.assert_not_called()
+        mock_build.assert_not_called()
+        mock_pipeline.assert_not_called()
+        mock_agent_cls.assert_not_called()
+
+    async def test_run_once_runs_exactly_one_cycle_then_shuts_down(self) -> None:
+        settings = _run_settings(enabled=True)
+        fake_agent = _FakeAgent()
+        storage = AsyncMock()
+        provider = MagicMock()
+        provider.close = AsyncMock()
+        executor = MagicMock()
+        executor.close = AsyncMock()
+
+        with (
+            patch("scripts.run_crypto_agent.Settings", return_value=settings),
+            patch("scripts.run_crypto_agent.setup_logging"),
+            patch("scripts.run_crypto_agent.Storage", return_value=storage),
+            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
+            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch(
+                "scripts.run_crypto_agent._build_data_and_execution",
+                return_value=(provider, executor, "paper"),
+            ),
+            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
+            patch("src.core.scheduler.AsyncSchedulerManager") as mock_manager_cls,
+        ):
+            await run(run_once=True)
+
+        assert fake_agent.cycles == 1
+        assert fake_agent.shutdowns == 1
+        provider.close.assert_awaited_once()
+        executor.close.assert_awaited_once()
+        storage.close.assert_awaited_once()
+        # Single-cycle mode never starts the scheduler.
+        mock_manager_cls.assert_not_called()
+
+    async def test_run_once_failure_still_releases_resources(self) -> None:
+        settings = _run_settings(enabled=True)
+        fake_agent = _FakeAgent(fail_cycle=True)
+        storage = AsyncMock()
+        provider = MagicMock()
+        provider.close = AsyncMock()
+        executor = MagicMock()
+        executor.close = AsyncMock()
+
+        with (
+            patch("scripts.run_crypto_agent.Settings", return_value=settings),
+            patch("scripts.run_crypto_agent.setup_logging"),
+            patch("scripts.run_crypto_agent.Storage", return_value=storage),
+            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
+            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch(
+                "scripts.run_crypto_agent._build_data_and_execution",
+                return_value=(provider, executor, "paper"),
+            ),
+            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
+            pytest.raises(RuntimeError, match="cycle boom"),
+        ):
+            await run(run_once=True)
+
+        # A failed --once cycle propagates (non-zero exit) but still cleans up.
+        provider.close.assert_awaited_once()
+        executor.close.assert_awaited_once()
+        storage.close.assert_awaited_once()

@@ -71,6 +71,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 
 ### Safety Rules
 
+- **`enabled: false` means nothing runs:** both runners check `<agent>.enabled` right after loading config and exit *before constructing any component* — no cycles, LLM calls, order placement or DB writes. Single-cycle runs are the explicit `--once` CLI flag, never a side effect of disabling an agent.
 - Paper executor (`paper_executor.py`) is the default. Never assume live trading.
 - Risk engine runs before every order. Nothing executes without approval.
 - API keys live in `.env` — never commit them, never log them.
