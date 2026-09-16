@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    delete,
     select,
     text,
 )
@@ -72,6 +73,9 @@ class OrderRow(Base):
     status: Mapped[str] = mapped_column(String(20))
     decision_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Storage time for retention pruning (§7.12): ``filled_at`` is only set on
+    # fills, so it cannot bound the age of pending/rejected/cancelled rows.
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
 class PortfolioSnapshotRow(Base):
@@ -142,19 +146,31 @@ class Storage:
         from sqlalchemy import inspect, text
 
         inspector = inspect(engine)
-        if not inspector.has_table("llm_decisions"):
-            return
-        existing = {c["name"] for c in inspector.get_columns("llm_decisions")}
-        if "realized_pnl" not in existing:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE llm_decisions ADD COLUMN realized_pnl FLOAT NULL"))
-        if "is_fallback" not in existing:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE llm_decisions ADD COLUMN is_fallback INTEGER NOT NULL DEFAULT 0"
+        if inspector.has_table("llm_decisions"):
+            existing = {c["name"] for c in inspector.get_columns("llm_decisions")}
+            if "realized_pnl" not in existing:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("ALTER TABLE llm_decisions ADD COLUMN realized_pnl FLOAT NULL")
                     )
-                )
+            if "is_fallback" not in existing:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE llm_decisions "
+                            "ADD COLUMN is_fallback INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
+        # orders.created_at (§7.12): retention pruning needs a storage-time bound
+        # for rows that never filled; backfill what we can from fills.
+        if inspector.has_table("orders"):
+            order_cols = {c["name"] for c in inspector.get_columns("orders")}
+            if "created_at" not in order_cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN created_at DATETIME NULL"))
+                    conn.execute(
+                        text("UPDATE orders SET created_at = filled_at WHERE created_at IS NULL")
+                    )
 
     async def close(self) -> None:
         await self._engine.dispose()
@@ -421,3 +437,43 @@ class Storage:
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    # ── Retention (§7.12) ─────────────────────────────────────
+
+    async def prune(self, snapshot_days: int, history_days: int = 0) -> dict[str, int]:
+        """Delete rows older than the retention windows; returns ``{table: deleted}``.
+
+        - ``market_snapshots`` older than ``snapshot_days`` — the space hogs (~100-candle
+          JSON per symbol-cycle). They are re-creatable cache: the backtester pulls
+          fresh candles rather than replaying stored snapshots.
+        - ``llm_decisions`` + ``orders`` older than ``history_days`` — the trade record
+          (audit trail, fine-tuning dataset, and cooldown rehydration walks closed
+          decisions), so this window is opt-in: ``0`` keeps everything.
+        - ``portfolio_snapshots`` are **never pruned**: the drawdown high-water seed
+          reads MAX over their full history, and pruning them would silently weaken
+          that guard after a restart. They are also tiny (no candle blobs).
+
+        A window of ``<= 0`` disables deletion for it; both disabled ⇒ no-op.
+        Timestamps compare as naive UTC (SQLite has no tz-aware storage).
+        """
+        counts: dict[str, int] = {}
+        if snapshot_days <= 0 and history_days <= 0:
+            return counts
+        now = datetime.now(UTC).replace(tzinfo=None)
+        async with await self._session() as session:
+            if snapshot_days > 0:
+                cutoff = now - timedelta(days=snapshot_days)
+                result = await session.execute(
+                    delete(MarketSnapshotRow).where(MarketSnapshotRow.fetched_at < cutoff)
+                )
+                counts["market_snapshots"] = result.rowcount or 0
+            if history_days > 0:
+                cutoff = now - timedelta(days=history_days)
+                result = await session.execute(
+                    delete(LLMDecisionRow).where(LLMDecisionRow.timestamp < cutoff)
+                )
+                counts["llm_decisions"] = result.rowcount or 0
+                result = await session.execute(delete(OrderRow).where(OrderRow.created_at < cutoff))
+                counts["orders"] = result.rowcount or 0
+            await session.commit()
+        return counts

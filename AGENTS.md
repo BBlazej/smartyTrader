@@ -86,6 +86,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - **Market-hours guard is timezone-aware:** the stocks guard compares the *local* wall clock to the `market_hours` window, localized via the config-driven `stocks_agent.market_timezone` (default `Europe/Warsaw`) so a UTC host stays correct. The zone is a setting, never hardcoded.
 - **Market-hours guard is weekend/holiday aware (§7.10):** Saturdays/Sundays are always closed when a real window is configured; `stocks_agent.market_holidays` (ISO dates, validated at startup) covers exchange holidays; overnight windows (`"22:00-08:00"`) wrap across midnight instead of silently never running. Skips log the reason (`weekend` / `holiday` / `outside trading window`).
 - **Stocks data depth & NaN integrity (§7.11):** daily stock candles are fetched over a `"6mo"` window so MACD (≥26 closes) exists in the prompt, and any candle row with a NaN OHLC cell is dropped rather than zero-filled — fake zero-lows would poison ATR/Bollinger readings the LLM sees.
+- **Storage retention (§7.12):** both runners prune expired rows at startup and on `storage.prune_interval_minutes` via `core/retention.py` (fail-soft); defaults prune market snapshots older than `snapshot_retention_days` (30) while decisions/orders are kept unless `history_retention_days > 0`. `portfolio_snapshots` are never pruned — they seed the drawdown high-water mark. `scripts/prune_storage.py` runs the same policy out-of-band.
 
 ### Documentation Rules
 

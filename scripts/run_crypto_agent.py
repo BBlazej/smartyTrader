@@ -32,6 +32,7 @@ from src.core.config import Settings
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.llm_client import LLMClient
 from src.core.rehydration import rehydrate_from_storage
+from src.core.retention import prune_storage
 from src.core.risk_engine import RiskEngine
 from src.core.scheduler import create_async_scheduler
 from src.core.storage import Storage
@@ -165,6 +166,10 @@ async def run(run_once: bool = False) -> None:
     # restart never silently resets cash, positions or the loss guards (§7.7).
     await rehydrate_from_storage(risk_engine, executor, storage)
 
+    # Retention pruning (§7.12): one pass at startup — so even --once cron usage
+    # stays hygienic — plus a scheduled pass while running (registered below).
+    await prune_storage(storage, settings.storage)
+
     pipeline = DecisionPipeline(
         provider=provider,
         llm_client=llm_client,
@@ -202,6 +207,12 @@ async def run(run_once: bool = False) -> None:
     manager.schedule_cycle(
         agent.run_cycle, settings.crypto_agent.interval_minutes, job_id="crypto_cycle"
     )
+    if settings.storage.prune_interval_minutes > 0:
+        manager.schedule_cycle(
+            lambda: prune_storage(storage, settings.storage),
+            settings.storage.prune_interval_minutes,
+            job_id="storage_prune",
+        )
 
     await agent.start()
     manager.start()

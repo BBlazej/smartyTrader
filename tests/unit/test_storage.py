@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.core.storage import Storage
+from src.core.storage import OrderRow, Storage
 
 
 @pytest.fixture()
@@ -391,3 +391,158 @@ class TestStorageLifecycle:
 
         await storage.close()
         assert storage._closed
+
+
+class TestPruning:
+    """Retention pruning (§7.12)."""
+
+    @staticmethod
+    async def _backdate(storage: Storage, table: str, column: str, row_id: int, days: int) -> None:
+        """Move a row's timestamp back in time (as naive UTC, like the schema stores)."""
+        from sqlalchemy import text
+
+        old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+        async with await storage._session() as session:
+            await session.execute(
+                text(f"UPDATE {table} SET {column} = :old WHERE id = :rid"),
+                {"old": old, "rid": row_id},
+            )
+            await session.commit()
+
+    async def test_prunes_old_snapshots_keeps_recent(self, storage: Storage) -> None:
+        old_id = await storage.save_market_snapshot("BTC/USDT", "5m", "[]")
+        recent_id = await storage.save_market_snapshot("BTC/USDT", "5m", "[]")
+        await self._backdate(storage, "market_snapshots", "fetched_at", old_id, days=40)
+
+        counts = await storage.prune(snapshot_days=30)
+
+        assert counts["market_snapshots"] == 1
+        remaining = {r.id for r in await storage.get_recent_snapshots("BTC/USDT", limit=10)}
+        assert remaining == {recent_id}
+
+    async def test_history_window_off_keeps_decisions_and_orders(self, storage: Storage) -> None:
+        decision_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="buy",
+            confidence=0.8,
+            reasoning="old trade",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        await self._backdate(storage, "llm_decisions", "timestamp", decision_id, days=400)
+
+        counts = await storage.prune(snapshot_days=30, history_days=0)
+
+        assert "llm_decisions" not in counts
+        recent = await storage.get_recent_decisions("BTC/USDT")
+        assert [d.id for d in recent] == [decision_id]
+
+    async def test_history_window_prunes_old_decisions_and_orders(self, storage: Storage) -> None:
+        old_decision = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="buy",
+            confidence=0.8,
+            reasoning="ancient",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        new_decision = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="sell",
+            confidence=0.7,
+            reasoning="recent",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        await self._backdate(storage, "llm_decisions", "timestamp", old_decision, days=200)
+
+        order_id = await storage.save_order(
+            order_id="ord-old",
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=1.0,
+            price=50_000.0,
+            status="filled",
+        )  # created_at stamped now; backdate it too
+        assert order_id > 0
+        await self._backdate(storage, "orders", "created_at", order_id, days=200)
+
+        counts = await storage.prune(snapshot_days=0, history_days=90)
+
+        assert counts["llm_decisions"] == 1
+        assert counts["orders"] == 1
+        remaining = {d.id for d in await storage.get_recent_decisions("BTC/USDT", limit=10)}
+        assert remaining == {new_decision}
+
+    async def test_orders_get_created_at_stamped(self, storage: Storage) -> None:
+        order_id = await storage.save_order(
+            order_id="ord-stamp",
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=1.0,
+            price=50_000.0,
+            status="open",
+        )
+        async with await storage._session() as session:
+            row = await session.get(OrderRow, order_id)
+        assert row is not None
+        assert row.created_at is not None
+
+    async def test_portfolio_snapshots_are_never_pruned(self, storage: Storage) -> None:
+        snap_id = await storage.save_portfolio_snapshot(
+            cash=1.0, positions_json="[]", total_value=1.0
+        )
+        await self._backdate(storage, "portfolio_snapshots", "timestamp", snap_id, days=900)
+
+        counts = await storage.prune(snapshot_days=1, history_days=1)
+
+        assert "portfolio_snapshots" not in counts
+        assert await storage.get_max_portfolio_value() == pytest.approx(1.0)
+
+    async def test_disabled_windows_is_a_noop(self, storage: Storage) -> None:
+        old_id = await storage.save_market_snapshot("BTC/USDT", "5m", "[]")
+        await self._backdate(storage, "market_snapshots", "fetched_at", old_id, days=9999)
+
+        counts = await storage.prune(snapshot_days=0, history_days=0)
+
+        assert counts == {}
+        assert len(await storage.get_recent_snapshots("BTC/USDT")) == 1
+
+
+class TestMigrations:
+    """Pre-existing databases get the new columns (§7.12)."""
+
+    async def test_orders_created_at_added_and_backfilled(self, tmp_db_path: str) -> None:
+        import sqlite3
+
+        # A database created *before* orders.created_at existed.
+        conn = sqlite3.connect(tmp_db_path)
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
+            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
+            "filled_at TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO orders (order_id, symbol, side, quantity, price, status, filled_at) "
+            "VALUES ('ord-legacy', 'BTC/USDT', 'buy', 1.0, 50000.0, 'filled', "
+            "'2026-01-01 00:00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+
+        orders = await storage.get_recent_orders("BTC/USDT")
+        assert len(orders) == 1
+        # Backfilled from filled_at so the legacy row is prunable by the history window.
+        assert orders[0].created_at is not None
+        assert orders[0].created_at.year == 2026
+
+        await storage.close()

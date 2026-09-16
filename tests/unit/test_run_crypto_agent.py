@@ -199,7 +199,14 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
         execution=SimpleNamespace(
             paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
         ),
-        storage=SimpleNamespace(database_path=":memory:"),
+        # Retention fields (§7.12): windows off here so lifecycle tests stay
+        # focused; pruning itself is covered in test_storage/test_retention.
+        storage=SimpleNamespace(
+            database_path=":memory:",
+            snapshot_retention_days=0,
+            history_retention_days=0,
+            prune_interval_minutes=0,
+        ),
         monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
     )
 
@@ -311,3 +318,36 @@ class TestEnabledSemantics:
         provider.close.assert_awaited_once()
         executor.close.assert_awaited_once()
         storage.close.assert_awaited_once()
+
+
+class TestStartupPruning:
+    """§7.12: with retention enabled, the runner prunes once at startup — even in --once mode."""
+
+    async def test_run_once_prunes_before_the_cycle(self) -> None:
+        settings = _run_settings(enabled=True)
+        settings.storage.snapshot_retention_days = 30
+        fake_agent = _FakeAgent()
+        storage = AsyncMock()
+        storage.prune.return_value = {"market_snapshots": 3}
+        provider = MagicMock()
+        provider.close = AsyncMock()
+        executor = MagicMock()
+        executor.close = AsyncMock()
+
+        with (
+            patch("scripts.run_crypto_agent.Settings", return_value=settings),
+            patch("scripts.run_crypto_agent.setup_logging"),
+            patch("scripts.run_crypto_agent.Storage", return_value=storage),
+            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
+            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch(
+                "scripts.run_crypto_agent._build_data_and_execution",
+                return_value=(provider, executor, "paper"),
+            ),
+            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
+        ):
+            await run(run_once=True)
+
+        storage.prune.assert_awaited_once_with(snapshot_days=30, history_days=0)
+        assert fake_agent.cycles == 1

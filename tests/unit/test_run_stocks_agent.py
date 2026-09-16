@@ -33,7 +33,14 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
         execution=SimpleNamespace(
             paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
         ),
-        storage=SimpleNamespace(database_path=":memory:"),
+        # Retention fields (§7.12): windows off here so lifecycle tests stay
+        # focused; pruning itself is covered in test_storage/test_retention.
+        storage=SimpleNamespace(
+            database_path=":memory:",
+            snapshot_retention_days=0,
+            history_retention_days=0,
+            prune_interval_minutes=0,
+        ),
         monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
     )
 
@@ -168,3 +175,31 @@ class TestYFinanceFailFast:
             pytest.raises(SystemExit, match="yfinance"),
         ):
             await run(run_once=True)
+
+
+class TestStartupPruning:
+    """§7.12: with retention enabled, the runner prunes once at startup — even in --once mode."""
+
+    async def test_run_once_prunes_before_the_cycle(self) -> None:
+        settings = _run_settings(enabled=True)
+        settings.storage.snapshot_retention_days = 30
+        fake_agent = _FakeAgent()
+        provider, executor, storage = _mock_env()
+        storage.prune.return_value = {"market_snapshots": 3}
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("scripts.run_stocks_agent.Settings", return_value=settings),
+            patch("scripts.run_stocks_agent.setup_logging"),
+            patch("scripts.run_stocks_agent.Storage", return_value=storage),
+            patch("scripts.run_stocks_agent.LLMClient", return_value=MagicMock()),
+            patch("scripts.run_stocks_agent.RiskEngine"),
+            patch("scripts.run_stocks_agent.create_xtb_provider", return_value=provider),
+            patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor),
+            patch("scripts.run_stocks_agent.DecisionPipeline"),
+            patch("scripts.run_stocks_agent.StocksAgent", return_value=fake_agent),
+        ):
+            await run(run_once=True)
+
+        storage.prune.assert_awaited_once_with(snapshot_days=30, history_days=0)
+        assert fake_agent.cycles == 1

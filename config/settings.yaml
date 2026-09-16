@@ -55,6 +55,14 @@ execution:
 
 storage:
   database_path: "data/trading_agent.db"
+  # Retention (§7.12). Market snapshots are re-creatable cache (~100-candle JSON
+  # per symbol-cycle — the space hog), so they prune by default. Decisions/orders
+  # are the trade record (audit + fine-tuning data): kept forever unless you set
+  # history_retention_days > 0. portfolio_snapshots are NEVER pruned — the
+  # drawdown high-water seed reads MAX over their full history.
+  snapshot_retention_days: 30
+  history_retention_days: 0
+  prune_interval_minutes: 1440   # how often runners prune while alive (startup always)
 
 monitoring:
   log_level: INFO

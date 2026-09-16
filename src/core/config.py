@@ -136,8 +136,23 @@ class ExecutionSettings:
 
 
 class StorageSettings:
-    def __init__(self, database_path: str) -> None:
+    def __init__(
+        self,
+        database_path: str,
+        # Retention windows in days (§7.12). Market snapshots are the space hogs
+        # (~100-candle JSON per symbol-cycle) and are re-creatable cache, so they
+        # prune by default; decisions/orders are the trade record and kept forever
+        # unless explicitly bounded. portfolio_snapshots are never pruned (the
+        # drawdown high-water seed reads MAX over their full history).
+        snapshot_retention_days: int = 30,
+        history_retention_days: int = 0,
+        # How often the runners run the pruning job while alive.
+        prune_interval_minutes: int = 1440,
+    ) -> None:
         self.database_path = database_path
+        self.snapshot_retention_days = snapshot_retention_days
+        self.history_retention_days = history_retention_days
+        self.prune_interval_minutes = prune_interval_minutes
 
 
 class MonitoringSettings:
