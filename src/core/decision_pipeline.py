@@ -118,6 +118,44 @@ class DecisionPipeline:
         self._storage = storage
         self._decision_history_limit = decision_history_limit
 
+    @property
+    def decision_history_limit(self) -> int:
+        """How many prior decisions the prompt carries (control-plane tunable, §7.15)."""
+        return self._decision_history_limit
+
+    @decision_history_limit.setter
+    def decision_history_limit(self, value: int) -> None:
+        self._decision_history_limit = max(0, int(value))
+
+    async def close_all_positions(self) -> list[tuple[str, OrderResult]]:
+        """Close every open position at its current mark through the executor (§7.15).
+
+        The dashboard's *close-all* latch lands here — mirrors §7.9 exit enforcement:
+        **no LLM call and no risk gate**, because closes only reduce exposure. Orders
+        are placed as market sells at each position's latest mark; a position without
+        a usable price is skipped (never guessed at). Returns ``(symbol, OrderResult)``
+        pairs so the caller can persist outcomes and backfill entry decisions.
+        """
+        closed: list[tuple[str, OrderResult]] = []
+        for position in await self.executor.get_positions():
+            if position.quantity <= 0:
+                continue
+            price = position.current_price
+            if not price or price <= 0:
+                logger.warning(
+                    "close-all skipping position without a usable mark",
+                    symbol=position.symbol,
+                )
+                continue
+            order = await self.executor.place_order(
+                symbol=position.symbol,
+                side=OrderSide.SELL,
+                quantity=position.quantity,
+                price=price,
+            )
+            closed.append((position.symbol, order))
+        return closed
+
     async def get_recent_decisions(
         self, symbol: str, limit: int | None = None
     ) -> list[DecisionRecord]:

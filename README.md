@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 380 tests, no network needed
+pytest                      # 414 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -81,6 +81,8 @@ src/
 │   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
 │   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
 │   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
+│   ├── control_api.py        # Agent-side FastAPI control API (pause/resume/close-all/config) (§7.15)
+│   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (Kraken)
@@ -126,6 +128,7 @@ thresholds. Key sections:
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
 | `monitoring` | log level, alert dedup window |
+| `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 
 ### Environment variables
 
@@ -191,7 +194,7 @@ closed on the next cycle without asking the LLM or the risk gate — toggle with
 `risk.enforce_exit_levels`), and **decision-replay backtesting** (re-simulates the
 agent's own stored decisions against fresh historical candles through the same risk
 engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`).
-**380 tests passing at ~95% coverage.**
+**414 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

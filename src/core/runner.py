@@ -33,6 +33,7 @@ import structlog
 
 from ..monitoring.alerts import AlertManager
 from .config import Settings
+from .control_config import parse_and_apply
 from .decision_pipeline import DecisionPipeline
 from .llm_client import LLMClient
 from .rehydration import rehydrate_from_storage
@@ -133,6 +134,13 @@ async def run_agent(
 
     agent = build_agent(pipeline, storage, risk_engine, llm_client)
 
+    # Control plane (§7.15): the agent re-reads its ``agent_control`` row each cycle;
+    # stored safe-config overrides land on *these* live objects via the closure below.
+    if hasattr(agent, "set_control_overrides_applier"):
+        agent.set_control_overrides_applier(
+            lambda raw: parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
+        )
+
     if run_once:
         # Explicit single-cycle mode: one full cycle, then a clean shutdown.
         # A failing cycle propagates so the operator sees a non-zero exit code.
@@ -158,6 +166,32 @@ async def run_agent(
             job_id="storage_prune",
         )
 
+    # Control API (§7.15 P2): in-process FastAPI server when explicitly enabled.
+    # Fail-soft — a port clash must never take the trading loop down with it.
+    control_server = None
+    control_task = None
+    control_cfg = getattr(settings, "control_api", None)
+    if control_cfg is not None and getattr(control_cfg, "enabled", False):
+        try:
+            import uvicorn
+
+            from .control_api import create_control_app
+
+            port = control_cfg.stocks_port if component == "stocks" else control_cfg.crypto_port
+            app = create_control_app(
+                storage=storage,
+                agent_name=component,
+                settings=settings,
+                get_positions=getattr(executor, "get_positions", None),
+            )
+            control_server = uvicorn.Server(
+                uvicorn.Config(app, host=control_cfg.host, port=port, log_level="warning")
+            )
+            control_task = asyncio.create_task(control_server.serve())
+            log.info("control API serving", host=control_cfg.host, port=port)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not start control API; continuing without it", error=str(exc))
+
     await agent.start()
     manager.start()
     log.info(f"{component} agent running; Ctrl+C to stop")
@@ -173,6 +207,13 @@ async def run_agent(
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        if control_server is not None:
+            control_server.should_exit = True
+        if control_task is not None:
+            try:
+                await asyncio.wait_for(control_task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                control_task.cancel()
         manager.shutdown()
         await agent.shutdown()
         # Release the data provider / execution adapter (the ccxt client owns an

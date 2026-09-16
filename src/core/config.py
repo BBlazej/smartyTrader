@@ -28,6 +28,7 @@ class Settings:
         self.execution = ExecutionSettings(**raw.get("execution", {}))
         self.storage = StorageSettings(**raw["storage"])
         self.monitoring = MonitoringSettings(**raw["monitoring"])
+        self.control_api = ControlApiSettings(**raw.get("control_api", {}))
 
 
 class LLMSettings:
@@ -163,3 +164,24 @@ class MonitoringSettings:
     ) -> None:
         self.log_level = log_level
         self.alert_dedup_window_seconds = alert_dedup_window_seconds
+
+
+class ControlApiSettings:
+    """Agent-side control API (§7.15 P2): off unless explicitly enabled.
+
+    Binds to loopback by default — the dashboard shares the Docker network (or the
+    same host), never the public internet. It exposes only safe config + control
+    latches; credentials are structurally absent from every endpoint.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        host: str = "127.0.0.1",
+        crypto_port: int = 8101,
+        stocks_port: int = 8102,
+    ) -> None:
+        self.enabled = enabled
+        self.host = host
+        self.crypto_port = crypto_port
+        self.stocks_port = stocks_port

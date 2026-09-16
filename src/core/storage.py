@@ -101,6 +101,27 @@ class PortfolioSnapshotRow(Base):
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
+class AgentControlRow(Base):
+    """Control-plane row per agent (§7.15): the DB stays the single source of truth.
+
+    The dashboard/control API *write* intent here (pause, close-all, safe config
+    overrides); the agent re-reads it at the top of every cycle (a cheap SQLite
+    read) and carries out the actions. One row per agent, keyed by name.
+    """
+
+    __tablename__ = "agent_control"
+
+    agent: Mapped[str] = mapped_column(String(20), primary_key=True)  # crypto | stocks
+    state: Mapped[str] = mapped_column(String(10), default="running")  # running | paused
+    close_all_requested: Mapped[bool] = mapped_column(default=False)
+    last_cycle_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Safe config overrides (whitelist-validated JSON) applied by the agent each
+    # cycle; NULL/empty means plain settings.yaml. Credentials are never stored.
+    config_override_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
 # ── Repository ────────────────────────────────────────────────
 
 
@@ -324,21 +345,22 @@ class Storage:
         self,
         symbol: str | None = None,
         limit: int = 10,
+        include_fallback: bool = False,
     ) -> list[LLMDecisionRow]:
         """Return the most recent decisions, most-recent first.
 
         Each row now carries its ``realized_pnl`` outcome (None while the
         position is still open), which is surfaced to the LLM as context.
+        ``include_fallback=True`` widens the view for audit surfaces (control API /
+        dashboard); prompt context keeps using the default that excludes them (§7.8).
         """
         async with await self._session() as session:
             # LLM-unavailable fallback rows are audit-only context — never re-fed
             # to the model as if it had genuinely decided to HOLD (§7.8).
-            stmt = (
-                select(LLMDecisionRow)
-                .where(LLMDecisionRow.is_fallback.isnot(True))
-                .order_by(LLMDecisionRow.timestamp.desc())
-                .limit(limit)
-            )
+            stmt = select(LLMDecisionRow)
+            if not include_fallback:
+                stmt = stmt.where(LLMDecisionRow.is_fallback.isnot(True))
+            stmt = stmt.order_by(LLMDecisionRow.timestamp.desc()).limit(limit)
             if symbol:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
             result = await session.execute(stmt)
@@ -477,6 +499,50 @@ class Storage:
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    # ── Agent control plane (§7.15) ───────────────────────
+
+    async def get_agent_control(self, agent: str) -> AgentControlRow | None:
+        """Fetch the control row for ``agent`` (``None`` = never touched, use defaults)."""
+        async with await self._session() as session:
+            return await session.get(AgentControlRow, agent)
+
+    async def _upsert_agent_control(self, agent: str, **values: object) -> AgentControlRow:
+        """Create the control row on first write, then patch the given columns."""
+        async with await self._session() as session:
+            row = await session.get(AgentControlRow, agent)
+            if row is None:
+                row = AgentControlRow(agent=agent)
+                session.add(row)
+            for key, value in values.items():
+                setattr(row, key, value)
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            await session.commit()
+            return row
+
+    async def set_agent_state(self, agent: str, state: str) -> AgentControlRow:
+        """Pause/resume an agent. The agent picks the change up on its next cycle."""
+        if state not in ("running", "paused"):
+            raise ValueError(f"invalid agent state: {state!r}")
+        return await self._upsert_agent_control(agent, state=state)
+
+    async def request_close_all(self, agent: str, requested: bool = True) -> AgentControlRow:
+        """Set/clear the close-all latch; the agent closes every position then clears it."""
+        return await self._upsert_agent_control(agent, close_all_requested=requested)
+
+    async def record_cycle_health(
+        self, agent: str, last_error: str | None = None
+    ) -> AgentControlRow:
+        """Heartbeat after a cycle: stamp ``last_cycle_at`` and the latest error."""
+        return await self._upsert_agent_control(
+            agent,
+            last_cycle_at=datetime.now(UTC).replace(tzinfo=None),
+            last_error=last_error,
+        )
+
+    async def set_config_override(self, agent: str, overrides_json: str | None) -> AgentControlRow:
+        """Persist the whitelist-validated safe-config overrides (``None`` clears them)."""
+        return await self._upsert_agent_control(agent, config_override_json=overrides_json)
 
     # ── Retention (§7.12) ─────────────────────────────────────
 

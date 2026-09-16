@@ -13,6 +13,7 @@ pipeline + risk gate.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import structlog
@@ -20,7 +21,7 @@ import structlog
 from ..core.decision_pipeline import DecisionPipeline, PipelineResult
 from ..core.llm_client import LLMClient
 from ..core.risk_engine import RiskEngine
-from ..core.storage import Storage
+from ..core.storage import AgentControlRow, Storage
 from ..monitoring.alerts import AlertManager
 
 
@@ -59,6 +60,22 @@ class BaseTradingAgent:
         self._alerts = alerts or AlertManager()
         self._logger = structlog.get_logger().bind(component=component)
         self._running = False
+        # Control plane (§7.15): the component name keys the ``agent_control`` row;
+        # the runner injects an applier closure over its own Settings/pipeline.
+        self._control_agent = component
+        self._overrides_applier: Callable[[str], None] | None = None
+
+    def set_symbols(self, symbols: list[str]) -> None:
+        """Replace the traded symbol list (safe config override, §7.15)."""
+        if symbols and symbols != self._symbols:
+            self._logger.info(
+                "symbol list updated by config override", old=self._symbols, new=symbols
+            )
+            self._symbols = symbols
+
+    def set_control_overrides_applier(self, applier: Callable[[str], None] | None) -> None:
+        """Install a hook applying stored safe-config overrides (raw JSON) each cycle."""
+        self._overrides_applier = applier
 
     # ── Market-specific hooks ─────────────────────────────────
 
@@ -103,6 +120,15 @@ class BaseTradingAgent:
         always completes, even when called directly (e.g. a single manual cycle).
         A truthy :meth:`_skip_cycle_reason` skips everything (no decisions recorded).
         """
+        # Control plane first (§7.15): pause/close-all/config overrides are read from
+        # the DB every cycle (cheap), *before* any market-hours skip so a close-all
+        # still executes while the market window is closed.
+        control = await self._read_control()
+        if control is not None:
+            paused_reason = await self._handle_control(control)
+            if paused_reason is not None:
+                return []
+
         skip = self._skip_cycle_reason()
         if skip is not None:
             self._logger.info("cycle skipped (market closed)", reason=skip)
@@ -110,16 +136,91 @@ class BaseTradingAgent:
 
         self._logger.info("cycle start", symbols=self._symbols)
         results: list[PipelineResult] = []
+        cycle_error: str | None = None
         for symbol in self._symbols:
             try:
                 result = await self._pipeline.run(symbol=symbol, timeframe=self._timeframe)
             except Exception as exc:  # noqa: BLE001
                 self._logger.error("pipeline run failed", symbol=symbol, error=str(exc))
+                cycle_error = f"{symbol}: {exc}"
                 continue
+            if result.error is not None:
+                cycle_error = f"{symbol}: {result.error}"
             await self._post_process(symbol, result)
             results.append(result)
         self._logger.info("cycle end", executed=sum(1 for r in results if r.executed))
+        await self._record_health(cycle_error)
         return results
+
+    # ── Control plane (§7.15) ──────────────────────────
+
+    async def _read_control(self) -> AgentControlRow | None:
+        """Fetch this agent's control row; ``None`` when absent or the read fails.
+
+        Fail-soft in the *trading-safe* direction: a broken control read must not
+        halt cycles, and never fabricates a row — defaults are plain running/no-latch.
+        """
+        try:
+            return await self._storage.get_agent_control(self._control_agent)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("control-plane read failed; running with defaults", error=str(exc))
+            return None
+
+    async def _handle_control(self, control: AgentControlRow) -> str | None:
+        """Carry out stored control intent; returns a reason to skip the rest of the cycle.
+
+        Order matters: overrides first (the cycle should run under them), then
+        close-all (must execute even while paused), then the pause check itself.
+        Strict ``is True`` / equality checks — an un-configured or stubbed row must
+        never accidentally trigger actions.
+        """
+        raw_overrides = getattr(control, "config_override_json", None)
+        if raw_overrides:
+            if self._overrides_applier is not None:
+                try:
+                    self._overrides_applier(raw_overrides)
+                except Exception as exc:  # noqa: BLE001 - bad override must not kill the cycle
+                    self._logger.warning(
+                        "config overrides rejected; keeping previous config", error=str(exc)
+                    )
+            else:
+                self._logger.debug("stored config overrides ignored (no applier installed)")
+
+        if getattr(control, "close_all_requested", False) is True:
+            await self._close_all_positions()
+            try:  # clear the latch once attempted — a failed close alerts, it must not loop
+                await self._storage.request_close_all(self._control_agent, requested=False)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("could not clear close-all latch", error=str(exc))
+
+        if getattr(control, "state", "running") == "paused":
+            self._logger.info("cycle skipped (paused via control plane)")
+            return "paused"
+        return None
+
+    async def _close_all_positions(self) -> None:
+        """Close every open position through the pipeline — no LLM, no risk gate."""
+        try:
+            closed = await self._pipeline.close_all_positions()
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error("close-all failed", error=str(exc))
+            await self._alerts.send("error", f"close-all failed: {exc}", severity="error")
+            return
+        for symbol, order in closed:
+            result = PipelineResult(
+                symbol=symbol,
+                order_result=order,
+                exit_reason="close_all",
+            )
+            await self._post_process(symbol, result)
+        self._logger.info("close-all executed", closed=len(closed))
+
+    async def _record_health(self, last_error: str | None) -> None:
+        """Heartbeat for the dashboard (``last_cycle_at`` / ``last_error``). Fail-soft."""
+        try:
+            await self._storage.record_cycle_health(self._control_agent, last_error=last_error)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("health heartbeat failed", error=str(exc))
 
     async def _post_process(self, symbol: str, result: PipelineResult) -> None:
         """Update risk tracking and persist the decision / order / portfolio."""
