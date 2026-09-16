@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 353 tests, no network needed
+pytest                      # 354 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -77,6 +77,8 @@ src/
 │   ├── storage.py            # SQLite (SQLAlchemy + aiosqlite) repository
 │   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → persist decision → execute
 │   ├── rehydration.py        # Restores paper book + risk trackers from SQLite at startup
+│   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
+│   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (Kraken)
@@ -87,8 +89,9 @@ src/
 │   ├── kraken_executor.py    # Kraken testnet orders via CCXT
 │   └── xtb_executor.py       # XTB demo orders (xAPI seam)
 ├── agents/
-│   ├── crypto_agent.py       # Crypto cycle: pipeline + risk tracking + order/portfolio persistence
-│   └── stocks_agent.py       # Stocks cycle + market-hours guard
+│   ├── base_agent.py         # Shared cycle loop, post-process, persistence, alerts (§7.13)
+│   ├── crypto_agent.py       # Thin subclass (24/7, no hours guard)
+│   └── stocks_agent.py       # Thin subclass + market-hours guard (weekend/holiday/wrap)
 ├── analysis/
 │   └── __init__.py           # (empty — indicators & prompt currently live in core)
 └── monitoring/
@@ -96,8 +99,9 @@ src/
     └── alerts.py             # AlertManager + sinks (Noop)
 
 scripts/
-├── run_crypto_agent.py       # Entry point — wires config → core → scheduler (crypto)
-└── run_stocks_agent.py       # Entry point — wires config → core → scheduler (stocks)
+├── run_crypto_agent.py       # Entry point — crypto-specific factories + shared runner
+├── run_stocks_agent.py       # Entry point — stocks-specific factories + shared runner
+└── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
 tests/

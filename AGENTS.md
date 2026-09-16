@@ -39,8 +39,8 @@ Tests use `pytest-asyncio` in auto mode. Mock external APIs — no real network 
 The project follows a layered architecture:
 
 ```
-agents/          ← Per-market agents (crypto, stocks) — orchestrate the cycle
-core/            ← Shared infrastructure (LLM client, risk engine, storage, models)
+agents/          ← Per-market agents (crypto, stocks) — thin subclasses of base_agent
+core/            ← Shared infrastructure (LLM client, risk engine, storage, scheduler, runner factory)
 data/            ← Market data providers (ccxt, xtb, yfinance)
 execution/       ← Order placement adapters (kraken, xtb, paper)
 analysis/        ← Feature engineering + prompt building
@@ -72,6 +72,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 ### Safety Rules
 
 - **`enabled: false` means nothing runs:** both runners check `<agent>.enabled` right after loading config and exit *before constructing any component* — no cycles, LLM calls, order placement or DB writes. Single-cycle runs are the explicit `--once` CLI flag, never a side effect of disabling an agent.
+- **One lifecycle implementation (§7.13):** the enabled-gate, wiring, rehydration/pruning startup passes, `--once` and scheduled loops live in `core/runner.py::run_agent`; scripts pass only market-specific `build_components`/`build_agent` callbacks. Agent behavior (cycle loop, persistence, alerts) lives in `agents/base_agent.py::BaseTradingAgent`; market quirks hook via `_skip_cycle_reason()`.
 - Paper executor (`paper_executor.py`) is the default. Never assume live trading.
 - Risk engine runs before every order. Nothing executes without approval.
 - API keys live in `.env` — never commit them, never log them.

@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from scripts.run_crypto_agent import _build_data_and_execution, _load_dotenv, run
+from scripts.run_crypto_agent import _build_data_and_execution, run
+from src.core.runner import load_dotenv
 
 
 class TestLoadDotenv:
@@ -19,7 +20,7 @@ class TestLoadDotenv:
 
         os.environ.pop("FOO_TEST_KEY", None)
         os.environ.pop("BAZ_TEST_KEY", None)
-        _load_dotenv(env_file)
+        load_dotenv(env_file)
 
         assert os.environ["FOO_TEST_KEY"] == "bar"
         assert os.environ["BAZ_TEST_KEY"] == "qux"
@@ -32,7 +33,7 @@ class TestLoadDotenv:
             f.write("# full-line comment\n\nREAL_KEY=value\n\n")
 
         os.environ.pop("REAL_KEY", None)
-        _load_dotenv(env_file)
+        load_dotenv(env_file)
         assert os.environ["REAL_KEY"] == "value"
         os.environ.pop("REAL_KEY", None)
 
@@ -42,7 +43,7 @@ class TestLoadDotenv:
             f.write('QUOTED_TEST_KEY="hello world"\n')
 
         os.environ.pop("QUOTED_TEST_KEY", None)
-        _load_dotenv(env_file)
+        load_dotenv(env_file)
         assert os.environ["QUOTED_TEST_KEY"] == "hello world"
         os.environ.pop("QUOTED_TEST_KEY", None)
 
@@ -52,13 +53,13 @@ class TestLoadDotenv:
             f.write("PRIORITY_TEST_KEY=from_file\n")
 
         os.environ["PRIORITY_TEST_KEY"] = "from_real_env"
-        _load_dotenv(env_file)
+        load_dotenv(env_file)
         assert os.environ["PRIORITY_TEST_KEY"] == "from_real_env"
         os.environ.pop("PRIORITY_TEST_KEY", None)
 
     def test_missing_file_is_noop(self, tmp_path: object) -> None:
         # Should not raise.
-        _load_dotenv(os.path.join(str(tmp_path), "does_not_exist.env"))
+        load_dotenv(os.path.join(str(tmp_path), "does_not_exist.env"))
 
 
 def _settings(
@@ -240,10 +241,10 @@ class TestEnabledSemantics:
         with (
             patch("scripts.run_crypto_agent.Settings", return_value=settings),
             patch("scripts.run_crypto_agent.setup_logging"),
-            patch("scripts.run_crypto_agent.Storage") as mock_storage,
-            patch("scripts.run_crypto_agent.LLMClient") as mock_llm,
+            patch("src.core.runner.Storage") as mock_storage,
+            patch("src.core.runner.LLMClient") as mock_llm,
             patch("scripts.run_crypto_agent._build_data_and_execution") as mock_build,
-            patch("scripts.run_crypto_agent.DecisionPipeline") as mock_pipeline,
+            patch("src.core.runner.DecisionPipeline") as mock_pipeline,
             patch("scripts.run_crypto_agent.CryptoAgent") as mock_agent_cls,
         ):
             await run()
@@ -268,14 +269,14 @@ class TestEnabledSemantics:
         with (
             patch("scripts.run_crypto_agent.Settings", return_value=settings),
             patch("scripts.run_crypto_agent.setup_logging"),
-            patch("scripts.run_crypto_agent.Storage", return_value=storage),
-            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
-            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.LLMClient", return_value=MagicMock()),
+            patch("src.core.runner.RiskEngine"),
             patch(
                 "scripts.run_crypto_agent._build_data_and_execution",
                 return_value=(provider, executor, "paper"),
             ),
-            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
             patch("src.core.scheduler.AsyncSchedulerManager") as mock_manager_cls,
         ):
@@ -301,20 +302,72 @@ class TestEnabledSemantics:
         with (
             patch("scripts.run_crypto_agent.Settings", return_value=settings),
             patch("scripts.run_crypto_agent.setup_logging"),
-            patch("scripts.run_crypto_agent.Storage", return_value=storage),
-            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
-            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.LLMClient", return_value=MagicMock()),
+            patch("src.core.runner.RiskEngine"),
             patch(
                 "scripts.run_crypto_agent._build_data_and_execution",
                 return_value=(provider, executor, "paper"),
             ),
-            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
             pytest.raises(RuntimeError, match="cycle boom"),
         ):
             await run(run_once=True)
 
         # A failed --once cycle propagates (non-zero exit) but still cleans up.
+        provider.close.assert_awaited_once()
+        executor.close.assert_awaited_once()
+        storage.close.assert_awaited_once()
+
+
+class TestScheduledModeLifecycle:
+    """The shared scheduled loop (§7.13): start, first cycle, jobs, cleanup on cancel."""
+
+    async def test_scheduled_loop_runs_starts_jobs_and_cleans_up(self) -> None:
+        import asyncio
+
+        settings = _run_settings(enabled=True)
+        settings.storage.snapshot_retention_days = 30
+        settings.storage.prune_interval_minutes = 1440
+        fake_agent = _FakeAgent()
+        storage = AsyncMock()
+        storage.prune.return_value = {"market_snapshots": 0}
+        provider = MagicMock()
+        provider.close = AsyncMock()
+        executor = MagicMock()
+        executor.close = AsyncMock()
+        manager = MagicMock()
+
+        with (
+            patch("scripts.run_crypto_agent.Settings", return_value=settings),
+            patch("scripts.run_crypto_agent.setup_logging"),
+            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.LLMClient", return_value=MagicMock()),
+            patch("src.core.runner.RiskEngine"),
+            patch(
+                "scripts.run_crypto_agent._build_data_and_execution",
+                return_value=(provider, executor, "paper"),
+            ),
+            patch("src.core.runner.DecisionPipeline"),
+            patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
+            patch("src.core.scheduler.AsyncSchedulerManager", return_value=manager),
+            patch("src.core.scheduler.create_async_scheduler", return_value=MagicMock()),
+        ):
+            task = asyncio.create_task(run())
+            await asyncio.sleep(0.05)  # let the loop reach its Event wait
+
+            assert fake_agent.starts == 1
+            assert fake_agent.cycles >= 1  # first cycle runs immediately (§7.2)
+            manager.start.assert_called_once()
+            job_ids = {c.kwargs.get("job_id") for c in manager.schedule_cycle.call_args_list}
+            assert {"crypto_cycle", "storage_prune"} <= job_ids
+
+            task.cancel()
+            await task  # CancelledError is caught; cleanup runs in finally
+
+        assert fake_agent.shutdowns == 1
+        manager.shutdown.assert_called_once()
         provider.close.assert_awaited_once()
         executor.close.assert_awaited_once()
         storage.close.assert_awaited_once()
@@ -337,14 +390,14 @@ class TestStartupPruning:
         with (
             patch("scripts.run_crypto_agent.Settings", return_value=settings),
             patch("scripts.run_crypto_agent.setup_logging"),
-            patch("scripts.run_crypto_agent.Storage", return_value=storage),
-            patch("scripts.run_crypto_agent.LLMClient", return_value=MagicMock()),
-            patch("scripts.run_crypto_agent.RiskEngine"),
+            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.LLMClient", return_value=MagicMock()),
+            patch("src.core.runner.RiskEngine"),
             patch(
                 "scripts.run_crypto_agent._build_data_and_execution",
                 return_value=(provider, executor, "paper"),
             ),
-            patch("scripts.run_crypto_agent.DecisionPipeline"),
+            patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_crypto_agent.CryptoAgent", return_value=fake_agent),
         ):
             await run(run_once=True)
