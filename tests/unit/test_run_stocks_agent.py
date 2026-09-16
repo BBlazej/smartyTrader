@@ -143,3 +143,25 @@ class TestEnabledSemantics:
         provider.close.assert_awaited_once()
         executor.close.assert_awaited_once()
         storage.close.assert_awaited_once()
+
+
+class TestYFinanceFailFast:
+    """A missing ``yfinance`` must fail fast with an actionable hint [§7.3]."""
+
+    async def test_missing_yfinance_exits_with_install_hint(self) -> None:
+        settings = _run_settings(enabled=True)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("scripts.run_stocks_agent.Settings", return_value=settings),
+            patch("scripts.run_stocks_agent.setup_logging"),
+            patch("scripts.run_stocks_agent.Storage", return_value=AsyncMock()),
+            patch("scripts.run_stocks_agent.LLMClient", return_value=MagicMock()),
+            patch("scripts.run_stocks_agent.RiskEngine"),
+            patch(
+                "scripts.run_stocks_agent.create_xtb_provider",
+                side_effect=ImportError("No module named 'yfinance'"),
+            ),
+            pytest.raises(SystemExit, match="yfinance"),
+        ):
+            await run(run_once=True)

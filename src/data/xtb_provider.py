@@ -168,7 +168,12 @@ def _f(value: Any) -> float:
 def create_xtb_provider(candles_limit: int = 100) -> XTBProvider:
     """Build a provider backed by a yfinance data source.
 
-    yfinance is imported lazily inside :class:`YFinanceSource`, so this factory only
-    fails (at fetch time, not import time) if the dependency is missing.
+    The ``yfinance`` import here is *eager on purpose*: this factory is
+    yfinance-specific, so a missing dependency surfaces at build time (where the
+    runner turns it into an actionable install hint) instead of re-raising as a
+    fetch error every cycle. :class:`XTBProvider` itself stays decoupled — inject
+    any :class:`StockDataSource` to run without yfinance.
     """
+    import yfinance  # noqa: F401 — eager availability check, used by YFinanceSource
+
     return XTBProvider(YFinanceSource(), candles_limit=candles_limit)

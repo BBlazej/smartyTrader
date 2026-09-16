@@ -1,0 +1,186 @@
+"""Property-based tests for the deterministic risk engine (hypothesis).
+
+These assert *invariants* that must hold for every input: the risk gate is the
+safety-critical layer between the LLM and the exchange, so a single hand-picked
+example per rule is not enough — we sweep the input space instead.
+"""
+
+from __future__ import annotations
+
+import hypothesis.strategies as st
+from hypothesis import given, settings
+
+from src.core.config import RiskSettings
+from src.core.models import Action, PortfolioState, Position, RiskVerdict, TradeSignal
+from src.core.risk_engine import RiskEngine
+
+# ── Strategies ────────────────────────────────────────────────
+
+positive_money = st.floats(min_value=0.01, max_value=1e9, allow_nan=False, allow_infinity=False)
+confidences = st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)
+prices = st.floats(min_value=0.01, max_value=1e6, allow_nan=False, allow_infinity=False)
+
+
+def make_settings() -> RiskSettings:
+    """Risk settings within the ranges the shipped config uses."""
+    return RiskSettings(
+        max_position_pct=0.10,
+        daily_loss_limit_pct=0.02,
+        max_drawdown_pct=0.05,
+        consecutive_losses_cooldown_minutes=60,
+        max_open_positions=5,
+        min_confidence=0.6,
+    )
+
+
+def make_portfolio(cash: float, extra_symbols: int) -> PortfolioState:
+    positions = [
+        Position(
+            symbol=f"SYM{i}/USDT",
+            quantity=1.0 + i,
+            avg_entry_price=100.0,
+            current_price=100.0,
+        )
+        for i in range(extra_symbols)
+    ]
+    return PortfolioState(cash=cash, positions=positions)
+
+
+@given(
+    confidence=confidences,
+    cash=positive_money,
+    extra_symbols=st.integers(min_value=0, max_value=12),
+    stop_loss=st.one_of(st.none(), prices),
+)
+def test_hold_is_always_approved(confidence: float, cash: float, extra_symbols: int, stop_loss):
+    """HOLD carries no exposure, so it must never be blocked — regardless of
+    confidence, portfolio size or missing stops."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(
+        symbol="BTC/USDT",
+        action=Action.HOLD,
+        confidence=confidence,
+        reasoning="r",
+        stop_loss=stop_loss,
+    )
+    result = engine.evaluate(signal, make_portfolio(cash, extra_symbols))
+    assert result.verdict == RiskVerdict.APPROVED
+
+
+@given(
+    action=st.sampled_from([Action.BUY, Action.SELL]),
+    confidence=confidences,
+    cash=positive_money,
+    extra_symbols=st.integers(min_value=0, max_value=12),
+)
+def test_approved_active_signal_has_a_stop(
+    action: Action, confidence: float, cash: float, extra_symbols: int
+):
+    """Any *approved* BUY/SELL must carry a stop-loss (the gate requires one)."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(symbol="BTC/USDT", action=action, confidence=confidence, reasoning="r")
+    result = engine.evaluate(signal, make_portfolio(cash, extra_symbols))
+    if result.verdict == RiskVerdict.APPROVED:
+        assert signal.stop_loss is not None
+
+
+@given(
+    action=st.sampled_from([Action.BUY, Action.SELL]),
+    cash=positive_money,
+    extra_symbols=st.integers(min_value=0, max_value=12),
+)
+def test_low_confidence_never_approved(action: Action, cash: float, extra_symbols: int):
+    """Confidence below the minimum must be rejected for active signals."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(
+        symbol="BTC/USDT",
+        action=action,
+        confidence=0.59,  # just below min_confidence=0.6
+        reasoning="r",
+        stop_loss=100.0,
+    )
+    result = engine.evaluate(signal, make_portfolio(cash, extra_symbols))
+    assert result.verdict == RiskVerdict.REJECTED
+
+
+@given(
+    action=st.sampled_from([Action.BUY, Action.SELL]),
+    cash=positive_money,
+    extra_symbols=st.integers(min_value=5, max_value=12),
+)
+def test_new_position_at_max_never_approved(action: Action, cash: float, extra_symbols: int):
+    """Opening a position beyond max_open_positions must be rejected."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(
+        symbol="NEW/USDT",  # not in the portfolio → an opening trade
+        action=action,
+        confidence=1.0,
+        reasoning="r",
+        stop_loss=100.0,
+    )
+    result = engine.evaluate(signal, make_portfolio(cash, extra_symbols))
+    assert result.verdict == RiskVerdict.REJECTED
+
+
+@given(
+    cash=positive_money,
+    # Strictly beyond the -2% limit: exactly at the boundary float rounding can
+    # land either side of the comparison, which is not what this property tests.
+    decline=st.floats(min_value=0.03, max_value=0.9, allow_nan=False),
+)
+def test_daily_loss_limit_blocks_active_signals(cash: float, decline: float):
+    """Once the daily loss breaches the limit, active signals are rejected."""
+    engine = RiskEngine(make_settings())
+    engine.update_daily_value(cash)  # sets today's baseline
+    engine.update_daily_value(cash * (1.0 - decline))
+
+    signal = TradeSignal(
+        symbol="BTC/USDT",
+        action=Action.BUY,
+        confidence=1.0,
+        reasoning="r",
+        stop_loss=100.0,
+    )
+    result = engine.evaluate(signal, make_portfolio(cash * (1.0 - decline), 0))
+    assert result.verdict == RiskVerdict.REJECTED
+
+
+@given(action=st.sampled_from([Action.BUY, Action.SELL]))
+def test_three_losses_trigger_cooldown(action: Action):
+    """Three consecutive losses must cool the engine down for active signals."""
+    engine = RiskEngine(make_settings())
+    portfolio = make_portfolio(100_000.0, 0)
+    signal = TradeSignal(
+        symbol="BTC/USDT",
+        action=action,
+        confidence=1.0,
+        reasoning="r",
+        stop_loss=100.0,
+    )
+    assert engine.evaluate(signal, portfolio).verdict == RiskVerdict.APPROVED
+
+    for _ in range(3):
+        engine.record_outcome(was_profitable=False)
+
+    result = engine.evaluate(signal, portfolio)
+    assert result.verdict == RiskVerdict.REJECTED
+    assert "cooldown" in (result.reason or "").lower()
+
+
+@given(confidence=confidences, cash=positive_money)
+@settings(max_examples=30)
+def test_engine_is_deterministic(confidence: float, cash: float):
+    """Same settings + same input ⇒ same verdict. The gate must never be random."""
+    signal = TradeSignal(
+        symbol="BTC/USDT",
+        action=Action.BUY,
+        confidence=confidence,
+        reasoning="r",
+        stop_loss=100.0,
+        take_profit=200.0,
+    )
+    portfolio = make_portfolio(cash, 1)
+
+    a = RiskEngine(make_settings()).evaluate(signal, portfolio)
+    b = RiskEngine(make_settings()).evaluate(signal, portfolio)
+    assert a.verdict == b.verdict

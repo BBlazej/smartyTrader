@@ -91,7 +91,16 @@ async def run(run_once: bool = False) -> None:
     risk_engine = RiskEngine(settings.risk)
 
     # Data feed: yfinance-backed provider (OHLCV → MarketSnapshot).
-    provider = create_xtb_provider()
+    # ``create_xtb_provider`` checks for yfinance eagerly; if it is missing, fail
+    # fast with an actionable message rather than surfacing a per-cycle fetch
+    # error (mirrors the ccxt hint in the crypto runner).
+    try:
+        provider = create_xtb_provider()
+    except ImportError as exc:
+        raise SystemExit(
+            "The stocks agent needs the `yfinance` package to fetch market data. "
+            "Install it with: pip install yfinance   (or: pip install -e '.[stocks]')"
+        ) from exc
 
     # Execution: paper by default. XTB demo execution needs an approved demo account
     # + OAuth2 (PLAN.md blocker); when credentials are present we log the gap and

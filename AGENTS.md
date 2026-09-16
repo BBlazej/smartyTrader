@@ -31,8 +31,8 @@ Tests use `pytest-asyncio` in auto mode. Mock external APIs — no real network 
 
 - **Unit tests** — Every pure function/method; mock all external deps; target >90% coverage on `core/`
 - **Integration tests** — Full decision pipeline with mocked provider + paper executor; agent lifecycle
-- **Property-based tests** — Risk engine invariants via `hypothesis`; storage consistency checks
-- Dev dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `responses`, `hypothesis`
+- **Property-based tests** — Risk engine invariants via `hypothesis` (`tests/unit/test_risk_engine_properties.py`); storage consistency checks
+- Dev dependencies live in `[project.optional-dependencies].dev` (`pytest`, `pytest-asyncio`, `pytest-cov`, `hypothesis`, `ruff`) — install with `pip install -e ".[dev]"`; stocks data extra: `pip install -e ".[stocks]"` (yfinance)
 
 ### Architecture
 

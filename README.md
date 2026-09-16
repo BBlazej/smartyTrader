@@ -39,10 +39,8 @@ installation step needed).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-# Core runtime deps (see pyproject.toml for the full list)
-pip install httpx sqlalchemy aiosqlite pydantic structlog pyyaml apscheduler
-pip install ccxt            # only needed for Kraken testnet
-pip install yfinance        # only needed for stocks data (optional)
+pip install -e ".[dev]"      # runtime deps + pytest/hypothesis/ruff (see pyproject.toml)
+pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
