@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 239 tests, no network needed
+pytest                      # 247 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -73,7 +73,7 @@ src/
 │   ├── models.py             # Pydantic models (TradeSignal, DecisionRecord, Position, OrderResult, Executor protocol)
 │   ├── config.py             # YAML + env settings loader
 │   ├── llm_client.py         # LM Studio HTTP client (retry + JSON parse + HOLD fallback)
-│   ├── risk_engine.py        # 7 deterministic risk rules
+│   ├── risk_engine.py        # Deterministic risk gate (5 live rules; drawdown + notional cap land in §7.5)
 │   ├── storage.py            # SQLite (SQLAlchemy + aiosqlite) repository
 │   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → execute (+ decision-history loop)
 │   └── scheduler.py          # APScheduler wrapper
@@ -163,7 +163,7 @@ and **per-cycle position marking** (open paper positions are re-marked at each
 snapshot's last close before the risk check, so unrealized PnL and the
 daily-loss rule track the market), and **honest `enabled: false` semantics**
 (both runners exit without running anything when an agent is disabled; `--once`
-is the explicit single-cycle flag). **239 tests passing at ~95% coverage.**
+is the explicit single-cycle flag). **247 tests passing at ~95% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

@@ -198,8 +198,8 @@ jinja2>=3.1           # server-rendered templates
 trading_agent/
 ├── pyproject.toml
 ├── config/
-│   ├── settings.yaml              # Global config (LLM, schedules, limits)
-│   └── .env.example               # API keys, LLM endpoint
+│   └── settings.yaml              # Global config (LLM, schedules, limits)
+├── .env.example                   # API keys, LLM endpoint (copy to .env)
 ├── src/
 │   ├── core/                      # Shared infrastructure
 │   │   ├── llm_client.py          # LM Studio HTTP client
@@ -596,7 +596,9 @@ Updated after the full-codebase review of **2026-09-15** — findings are tagged
    - **Done ✅:** removed `pandas-ta` and `python-dotenv` from dependencies (verified nothing imports them); added `[project.optional-dependencies].dev` (`pytest`, `pytest-asyncio`, `pytest-cov`, `hypothesis`, `ruff`) so `pip install -e ".[dev]"` reproduces the test env; installed `hypothesis`; added real property-based tests for risk-engine invariants in `tests/unit/test_risk_engine_properties.py` (HOLD always approved; approved active signals carry a stop; sub-minimum confidence rejected; opening beyond `max_open_positions` rejected; breached daily-loss blocks active trades; 3 consecutive losses ⇒ cooldown; deterministic verdicts). `AGENTS.md` corrected — `responses` dropped from the claim (it mocks `requests`, unused here), dev group documented.
    - **Also:** `create_xtb_provider` now checks for `yfinance` eagerly and both it + the stocks runner fail fast with an actionable install hint (mirrors the ccxt one) instead of erroring every cycle; new `TestYFinanceFailFast` covers it. 247 tests passing.
 
-4. **Docs/reality mismatches** ⏳ **[R-L]** — README quickstart says `cp .env.example .env` but no `.env.example` exists (add it, keys commented out); `AGENTS.md` documents docs living in `doc/`, the actual directory is `docs/`; README advertises "7 deterministic risk rules" while two are no-ops until §7.5 lands — restate the honest count or land §7.5 first.
+4. **Docs/reality mismatches** — ✅ **complete** **[R-L]**
+   - **Done ✅:** `.env.example` — one now lives at the **repo root** (where both runners load `.env` from), with all keys commented out/blank and the XTB + JSON-schema opt-in entries merged in; the divergent duplicate `config/.env.example` was deleted. (`AGENTS.md` docs path corrected `doc/` → `docs/`.)
+   - **Done ✅:** README no longer claims "7 deterministic risk rules" while two are stubs — the layout comment now reads *5 live rules; drawdown + notional cap land in §7.5* (restored to 7 once §7.5 lands). Test counts refreshed.
 
 ### B. High severity
 

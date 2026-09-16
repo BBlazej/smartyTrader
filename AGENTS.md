@@ -14,7 +14,7 @@ This is an autonomous paper-trading agent system powered by a local LLM (LM Stud
 - Structured logging: structlog
 - Config: YAML (`config/settings.yaml`) + `.env` for secrets
 - Documentation: Markdown (`*.md`), `AGENTS.md` (this file), `PLAN.md` (project plan), `README.md` (project overview)
-- Documentation: More specific topics are documented in `*.md` files in `doc/`
+- Documentation: More specific topics are documented in `*.md` files in `docs/`
 - Documentation: Code specifics are documented in comments and docstrings
 
 ### Commands
