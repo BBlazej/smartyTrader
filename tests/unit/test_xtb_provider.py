@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -154,10 +154,62 @@ class TestYFinanceSource:
 class TestPeriodMap:
     def test_known_timeframes(self) -> None:
         assert YFinanceSource._PERIOD_MAP["1h"] == ("1d", "1h")
-        assert YFinanceSource._PERIOD_MAP["1d"] == ("1mo", "1d")
+        assert YFinanceSource._PERIOD_MAP["1d"] == ("6mo", "1d")
         assert YFinanceSource._PERIOD_MAP["1w"] == ("1y", "1wk")
+
+    def test_daily_period_deep_enough_for_macd(self) -> None:
+        """§7.11: "1mo" ≈ 21 daily closes — below MACD's 26-close minimum."""
+        assert YFinanceSource._PERIOD_MAP["1d"][0] == "6mo"
 
     def test_unknown_timeframe_defaults(self) -> None:
         period, interval = YFinanceSource._PERIOD_MAP.get("99x", ("3mo", "1d"))
         assert period == "3mo"
         assert interval == "1d"
+
+
+class _NaNFrame:
+    """Fake yfinance frame with a missing-Low row (§7.11 poison case)."""
+
+    def iterrows(self):
+        base = datetime(2026, 1, 5, tzinfo=UTC)
+        yield base, {"Open": 10.0, "High": 11.0, "Low": 9.0, "Close": 10.5, "Volume": 100.0}
+        yield (
+            base + timedelta(days=1),
+            {
+                "Open": 10.5,
+                "High": float("nan"),
+                "Low": float("nan"),
+                "Close": 10.7,
+                "Volume": 200.0,
+            },
+        )
+        yield (
+            base + timedelta(days=2),
+            {
+                "Open": 10.6,
+                "High": 11.2,
+                "Low": 10.4,
+                "Close": 11.0,
+                "Volume": float("nan"),
+            },
+        )
+
+
+class TestNaNHandling:
+    """§7.11: a NaN OHLC row must be dropped, not zero-filled into an ATR/BB poison."""
+
+    def test_nan_ohlc_row_is_dropped(self) -> None:
+        rows = YFinanceSource._to_rows(_NaNFrame(), limit=10)
+        assert len(rows) == 2
+        # survivors keep their real values; no fabricated zeros anywhere
+        for row in rows:
+            assert all(v > 0 for v in row[1:5])
+
+    def test_nan_volume_becomes_zero(self) -> None:
+        rows = YFinanceSource._to_rows(_NaNFrame(), limit=10)
+        assert rows[-1][5] == 0.0  # volume NaN → 0.0 (not indicator-critical)
+
+    def test_limit_applies_after_dropping(self) -> None:
+        rows = YFinanceSource._to_rows(_NaNFrame(), limit=1)
+        assert len(rows) == 1
+        assert rows[0][4] == 11.0  # the last *surviving* close

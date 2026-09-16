@@ -112,10 +112,13 @@ class YFinanceSource:
     (and its tests) stays importable without the dependency installed.
     """
 
-    # timeframe → (yfinance period, yfinance interval)
+    # timeframe → (yfinance period, yfinance interval).
+    # Daily bars must be deep enough for MACD (needs ≥ 26 closes + signal window):
+    # the old "1mo" request ≈ 21 closes silently left the stocks prompt without
+    # MACD while crypto (100 candles) had it (§7.11). "6mo" ≈ 126 trading days.
     _PERIOD_MAP: ClassVar[dict[str, tuple[str, str]]] = {
         "1h": ("1d", "1h"),
-        "1d": ("1mo", "1d"),
+        "1d": ("6mo", "1d"),
         "1w": ("1y", "1wk"),
     }
 
@@ -139,30 +142,53 @@ class YFinanceSource:
     def _to_rows(df: Any, limit: int) -> list[list[Any]]:
         """Flatten a yfinance-style frame (``iterrows()`` → (ts, row)) into row lists.
 
+        Rows with a NaN OHLC value are **dropped**: the old NaN→0.0 coercion
+        turned a missing Low into a zero-low candle that poisoned ATR and the
+        Bollinger bands downstream (§7.11). Volume is not indicator-critical, so
+        a NaN volume stays coerced to 0.0.
+
         Duck-typed so it works on a real pandas DataFrame *or* any object exposing
         ``iterrows()`` — keeping the provider decoupled from pandas in tests.
         """
         if df is None:
             return []
         rows: list[list[Any]] = []
+        dropped = 0
         for ts, row in df.iterrows():
+            ohlc = (_f(row["Open"]), _f(row["High"]), _f(row["Low"]), _f(row["Close"]))
+            if any(math.isnan(v) for v in ohlc):
+                dropped += 1
+                continue
             rows.append(
                 [
                     int(ts.timestamp() * 1000),
-                    _f(row["Open"]),
-                    _f(row["High"]),
-                    _f(row["Low"]),
-                    _f(row["Close"]),
-                    _f(row["Volume"]),
+                    ohlc[0],
+                    ohlc[1],
+                    ohlc[2],
+                    ohlc[3],
+                    _nan_to_zero(_f(row["Volume"])),
                 ]
+            )
+        if dropped:
+            logger.warning(
+                "dropped candles with NaN OHLC values (would poison indicators as fake zeros)",
+                dropped=dropped,
             )
         return rows[-limit:]
 
 
+def _nan_to_zero(value: float) -> float:
+    """Map a NaN to 0.0 — safe only for non-indicator-critical cells (volume)."""
+    return 0.0 if math.isnan(value) else value
+
+
 def _f(value: Any) -> float:
-    """Coerce a (possibly NaN) numeric cell to a float, mapping NaN → 0.0."""
-    result = float(value)
-    return 0.0 if math.isnan(result) else result
+    """Coerce a numeric cell to a float; NaN is *preserved* for the caller.
+
+    The old blanket NaN→0.0 coercion silently manufactured zero-priced candles
+    (§7.11); callers now decide — OHLC NaNs drop the row, volume NaNs become 0.0.
+    """
+    return float(value)
 
 
 def create_xtb_provider(candles_limit: int = 100) -> XTBProvider:
