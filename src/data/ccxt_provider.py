@@ -73,6 +73,52 @@ class CCXTProvider:
         candles = [self._to_candle(row) for row in raw]
         return MarketSnapshot(symbol=symbol, timeframe=timeframe, candles=candles)
 
+    async def fetch_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        page_size: int = 500,
+        max_pages: int = 40,
+    ) -> list[OHLCV]:
+        """Fetch historical candles in ``[start, end]`` (UTC), paginating CCXT (§7.14).
+
+        The backtester needs arbitrary date ranges — ``fetch_snapshot`` only returns
+        the most recent ``candles_limit`` bars, and the agent does not run 24/7 so
+        stored snapshots are too sparse to replay from. Pages advance by the last
+        returned timestamp; a page that makes no progress stops the loop (a venue
+        quirk must never spin). Results are de-duplicated and sorted oldest-first.
+        """
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        by_ts: dict[int, OHLCV] = {}
+        since_ms = start_ms
+        for _ in range(max_pages):
+            rows = await self._client.fetch_ohlcv(
+                symbol, timeframe, since=since_ms, limit=page_size
+            )
+            if not rows:
+                break
+            for row in rows:
+                candle = self._to_candle(row)
+                ts = row[0]
+                if ts is None or candle.timestamp is None:
+                    continue
+                if start_ms <= int(ts) <= end_ms:
+                    by_ts[int(ts)] = candle
+            last_ts = int(rows[-1][0])
+            if last_ts >= end_ms or last_ts <= since_ms:
+                break  # reached the end, or no forward progress — stop paginating
+            since_ms = last_ts + 1
+        else:
+            logger.warning(
+                "history pagination hit its page cap; range may be truncated",
+                symbol=symbol,
+                max_pages=max_pages,
+            )
+        return [by_ts[ts] for ts in sorted(by_ts)]
+
     @staticmethod
     def _to_candle(row: list[Any]) -> OHLCV:
         """Convert a CCXT OHLCV row ``[ts_ms, o, h, l, c, v]`` into a model."""

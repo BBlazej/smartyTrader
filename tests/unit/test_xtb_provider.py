@@ -110,6 +110,77 @@ class TestClose:
         await provider.close()  # must not raise
 
 
+class TestFetchHistoryRange:
+    """Range fetch for the backtester (§7.14)."""
+
+    @pytest.mark.asyncio
+    async def test_raises_when_source_lacks_range_support(self) -> None:
+        provider = XTBProvider(AsyncMock(spec=["fetch_ohlcv"]))
+        with pytest.raises(TypeError, match="does not support historical ranges"):
+            await provider.fetch_history(
+                "AAPL", "1d", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 5, tzinfo=UTC)
+            )
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_source_and_converts(self) -> None:
+        source = AsyncMock()
+        ts_ms = int(datetime(2026, 1, 2, tzinfo=UTC).timestamp() * 1000)
+        source.fetch_history.return_value = [[ts_ms, 100.0, 101.0, 99.0, 100.5, 10.0]]
+        provider = XTBProvider(source)
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 5, tzinfo=UTC)
+        candles = await provider.fetch_history("AAPL", "1d", start, end)
+
+        assert len(candles) == 1
+        assert candles[0].close == 100.5
+        source.fetch_history.assert_awaited_once_with("AAPL", "1d", start, end)
+
+    @pytest.mark.asyncio
+    async def test_yfinance_source_filters_to_window(self, monkeypatch) -> None:
+        frame = _DailyFrame(days=5)  # Jan 1..Jan 5, 2026 midnight UTC
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_fetch_range(symbol: str, start_iso: str, end_iso: str, interval: str):
+            calls.append((symbol, start_iso, end_iso, interval))
+            return frame
+
+        monkeypatch.setattr(YFinanceSource, "_fetch_range", staticmethod(fake_fetch_range))
+        source = YFinanceSource()
+
+        rows = await source.fetch_history(
+            "AAPL",
+            "1d",
+            datetime(2026, 1, 2, tzinfo=UTC),
+            datetime(2026, 1, 4, 12, tzinfo=UTC),
+        )
+
+        # yfinance's `end` is exclusive → padded to Jan 5; rows filtered strictly.
+        assert calls == [("AAPL", "2026-01-02", "2026-01-05", "1d")]
+        days = [datetime.fromtimestamp(r[0] / 1000, tz=UTC).day for r in rows]
+        assert days == [2, 3, 4]
+
+
+class _DailyFrame:
+    """Fake yfinance frame of daily bars starting 2026-01-01 (midnight UTC)."""
+
+    def __init__(self, days: int) -> None:
+        self._days = days
+
+    def iterrows(self):
+        for i in range(self._days):
+            yield (
+                datetime(2026, 1, 1 + i, tzinfo=UTC),
+                {
+                    "Open": 10.0 + i,
+                    "High": 11.0 + i,
+                    "Low": 9.0 + i,
+                    "Close": 10.5 + i,
+                    "Volume": 100.0,
+                },
+            )
+
+
 class _FakeFrame:
     """Minimal stand-in for a yfinance ``history()`` DataFrame (``iterrows()``)."""
 

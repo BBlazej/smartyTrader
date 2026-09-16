@@ -64,6 +64,89 @@ class TestFetchSnapshot:
         assert snapshot.candles == []
 
 
+class TestFetchHistory:
+    """Paginated range fetch for the backtester (§7.14)."""
+
+    @staticmethod
+    def _row(day: int, close: float = 100.0) -> list:
+        ts = int(datetime(2026, 1, day, tzinfo=UTC).timestamp() * 1000)
+        return [ts, 100.0, 101.0, 99.0, close, 10.0]
+
+    @pytest.mark.asyncio
+    async def test_paginates_until_end(
+        self, provider: CCXTProvider, mock_client: AsyncMock
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 3, tzinfo=UTC)
+        mock_client.fetch_ohlcv.side_effect = [
+            [self._row(1), self._row(2)],
+            [self._row(3)],
+        ]
+
+        candles = await provider.fetch_history("BTC/USDT", "1d", start, end)
+
+        assert [c.timestamp.day for c in candles] == [1, 2, 3]
+        calls = mock_client.fetch_ohlcv.call_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["since"] == int(start.timestamp() * 1000)
+        assert calls[1].kwargs["since"] > calls[0].kwargs["since"]
+
+    @pytest.mark.asyncio
+    async def test_rows_beyond_window_are_filtered(
+        self, provider: CCXTProvider, mock_client: AsyncMock
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 3, tzinfo=UTC)
+        # Venue overshoots the window on its only page.
+        mock_client.fetch_ohlcv.side_effect = [[self._row(2), self._row(5)]]
+
+        candles = await provider.fetch_history("BTC/USDT", "1d", start, end)
+
+        assert [c.timestamp.day for c in candles] == [2]
+
+    @pytest.mark.asyncio
+    async def test_empty_first_page_returns_nothing(
+        self, provider: CCXTProvider, mock_client: AsyncMock
+    ) -> None:
+        mock_client.fetch_ohlcv.side_effect = [[]]
+        candles = await provider.fetch_history(
+            "BTC/USDT", "1d", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)
+        )
+        assert candles == []
+
+    @pytest.mark.asyncio
+    async def test_no_progress_page_stops_loop(
+        self, provider: CCXTProvider, mock_client: AsyncMock
+    ) -> None:
+        # A venue quirk returning the same timestamp must never spin the loop.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 3, tzinfo=UTC)
+        stuck_page = [self._row(2)]
+        mock_client.fetch_ohlcv.side_effect = lambda *a, **k: stuck_page
+
+        candles = await provider.fetch_history("BTC/USDT", "1d", start, end, max_pages=50)
+
+        assert [c.timestamp.day for c in candles] == [2]
+        # first page advances past day 2; the repeat makes no progress → stop
+        assert mock_client.fetch_ohlcv.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_overlapping_pages_are_deduplicated(
+        self, provider: CCXTProvider, mock_client: AsyncMock
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 5, tzinfo=UTC)
+        mock_client.fetch_ohlcv.side_effect = [
+            [self._row(2), self._row(3)],
+            [self._row(3), self._row(4)],
+            [],
+        ]
+
+        candles = await provider.fetch_history("BTC/USDT", "1d", start, end)
+
+        assert [c.timestamp.day for c in candles] == [2, 3, 4]
+
+
 class TestToCandle:
     def test_converts_row(self) -> None:
         ts_ms = 1700000000000

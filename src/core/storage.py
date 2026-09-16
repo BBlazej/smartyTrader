@@ -19,7 +19,19 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# ── Base ──────────────────────────────────────────────────────
+
+def _as_naive_utc(value: datetime) -> datetime:
+    """Render an (aware or naive) UTC datetime as naive UTC for SQLite comparison.
+
+    Timestamps are stored via SQLAlchemy's SQLite DATETIME, which drops tz info —
+    so range comparisons must use the same naive-UTC wall clock.
+    """
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+# ── Base ──────────────────────────────────────────────
 
 
 class Base(DeclarativeBase):
@@ -329,6 +341,34 @@ class Storage:
             )
             if symbol:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_decisions_in_range(
+        self,
+        start: datetime,
+        end: datetime,
+        symbols: list[str] | None = None,
+        include_fallback: bool = False,
+    ) -> list[LLMDecisionRow]:
+        """Decisions within ``[start, end]`` (UTC), oldest first (§7.14 replay input).
+
+        LLM-fallback rows are excluded by default — they never produced a real
+        trade decision (§7.8) and would only add noise to the replay.
+        Timestamps are compared as naive UTC (SQLite has no tz-aware storage).
+        """
+        cutoff_start = _as_naive_utc(start)
+        cutoff_end = _as_naive_utc(end)
+        async with await self._session() as session:
+            stmt = select(LLMDecisionRow).where(
+                LLMDecisionRow.timestamp >= cutoff_start,
+                LLMDecisionRow.timestamp <= cutoff_end,
+            )
+            if symbols:
+                stmt = stmt.where(LLMDecisionRow.symbol.in_(symbols))
+            if not include_fallback:
+                stmt = stmt.where(LLMDecisionRow.is_fallback == False)
+            stmt = stmt.order_by(LLMDecisionRow.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())
 

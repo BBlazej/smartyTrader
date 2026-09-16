@@ -224,6 +224,72 @@ class TestDecisionAttribution:
         await storage.add_realized_pnl(99_999, 10.0)
 
 
+class TestDecisionsInRange:
+    """Range queries feeding the decision-replay backtester (§7.14)."""
+
+    @staticmethod
+    async def _save_at(
+        storage: Storage, symbol: str, days_ago: int, is_fallback: bool = False
+    ) -> int:
+        from sqlalchemy import text
+
+        rid = await storage.save_llm_decision(
+            symbol=symbol,
+            action="buy",
+            confidence=0.8,
+            reasoning="replay input",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+            is_fallback=is_fallback,
+        )
+        old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days_ago)
+        async with await storage._session() as session:
+            await session.execute(
+                text("UPDATE llm_decisions SET timestamp = :old WHERE id = :rid"),
+                {"old": old, "rid": rid},
+            )
+            await session.commit()
+        return rid
+
+    async def test_window_bounds_and_ordering(self, storage: Storage) -> None:
+        old = await self._save_at(storage, "BTC/USDT", days_ago=8)
+        mid = await self._save_at(storage, "BTC/USDT", days_ago=5)
+        recent = await self._save_at(storage, "BTC/USDT", days_ago=2)
+
+        rows = await storage.get_decisions_in_range(
+            datetime.now(UTC) - timedelta(days=6), datetime.now(UTC) - timedelta(days=1)
+        )
+
+        assert [r.id for r in rows] == [mid, recent]  # oldest first; `old` outside window
+        assert old not in [r.id for r in rows]
+
+    async def test_symbol_filter(self, storage: Storage) -> None:
+        btc = await self._save_at(storage, "BTC/USDT", days_ago=2)
+        await self._save_at(storage, "ETH/USDT", days_ago=2)
+
+        rows = await storage.get_decisions_in_range(
+            datetime.now(UTC) - timedelta(days=3),
+            datetime.now(UTC),
+            symbols=["BTC/USDT"],
+        )
+
+        assert [r.id for r in rows] == [btc]
+
+    async def test_fallback_rows_excluded_unless_requested(self, storage: Storage) -> None:
+        real = await self._save_at(storage, "BTC/USDT", days_ago=2)
+        await self._save_at(storage, "BTC/USDT", days_ago=2, is_fallback=True)
+
+        start = datetime.now(UTC) - timedelta(days=3)
+        end = datetime.now(UTC)
+        default_rows = await storage.get_decisions_in_range(start, end)
+        with_fallback = await storage.get_decisions_in_range(start, end, include_fallback=True)
+
+        assert [r.id for r in default_rows] == [real]
+        assert len(with_fallback) == 2
+
+
 class TestOrders:
     @pytest.mark.asyncio
     async def test_save_order(self, storage: Storage) -> None:

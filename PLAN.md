@@ -18,7 +18,7 @@ Both agents use the same decision pipeline, risk engine, and storage layer — o
 
 > ### Status (as of this revision)
 > **Built & tested (354 tests passing, ~94% coverage):** core (LLM client, risk engine, storage, scheduler, decision pipeline with inline indicators + prompt), crypto provider + executor + agent, **stocks provider (xAPI + yfinance) + executor + agent**, paper executor, monitoring (structured logging), both entry scripts, the **"learn from its own track record" loop** (the LLM sees each prior decision **and its realized PnL outcome** — now attributed FIFO to the *entry* decision through the shared `execution/position_tracker.py`, on paper and on real venues alike — §7.8), **fee modeling in the paper executor**, the **crypto agent running on real data** (paper path fetches live public Kraken OHLCV via CCXT; execution stays simulated), the **timezone-aware market-hours guard**, **SQLite WAL mode**, **weekend/holiday-aware market-hours guard with wrap-around windows** (§7.10), **per-cycle position marking** (§7.1), **all seven risk rules live** including the peak-equity drawdown gate and the notional cap enforced at the gate (§7.5), a **hardened keyed-Kraken path** (real ccxt balance/fill payloads; spot `fetch_positions` degradation — §7.6, live testnet smoke still pending), **restart-safe paper portfolio + risk state** rehydrated from SQLite (`core/rehydration.py`, §7.7), **storage retention pruning** (startup + scheduled passes, `orders.created_at` for un-filled rows; portfolio snapshots exempt — §7.12), a **shared base agent + runner factory** (`agents/base_agent.py`, `core/runner.py` — the two agents and two scripts are now thin market-specific shells — §7.13), and **deterministic stop-loss / take-profit enforcement** (levels carried on positions; a breach closes the position on the next cycle without an LLM call and bypassing the gate — §7.9). Config-driven via `decision_history_limit`, the `execution:` block, `stocks_agent.market_timezone` / `market_holidays`, and `risk.enforce_exit_levels`.
-> **Not yet implemented (do not assume these exist):** news/sentiment feed, economic-calendar feed, `analysis/indicators.py` + `analysis/prompt_builder.py` (indicators & prompt currently live inline in `core/decision_pipeline.py`), `scripts/backtest.py`, XTB demo OAuth2 flow, dashboard/control UI, and **venue-side** stop/take orders (our SL/TP checks are local to the agent). Full list incl. findings from the 2026-09-15 code review (`review.MD`): see §7 Gaps & Next Steps.
+> **Not yet implemented (do not assume these exist):** news/sentiment feed, economic-calendar feed, `analysis/indicators.py` + `analysis/prompt_builder.py` (indicators & prompt currently live inline in `core/decision_pipeline.py`), XTB demo OAuth2 flow, dashboard/control UI, and **venue-side** stop/take orders (our SL/TP checks are local to the agent). Full list incl. findings from the 2026-09-15 code review (`review.MD`): see §7 Gaps & Next Steps.
 
 ---
 
@@ -184,7 +184,7 @@ jinja2>=3.1           # server-rendered templates
 ### Test additions (Week 6)
 
 - `tests/unit/test_control_api.py` — pause/resume/close-all/config round-trips; config whitelist rejects credentials.
-- `tests/unit/test_backtest.py` — replay math (return, win-rate, max DD, Sharpe) on synthetic candles; benchmark comparison.
+- `tests/unit/test_backtester.py` — replay math (exact PnL, return, win-rate, max DD, Sharpe) on synthetic candles; benchmark comparison.
 - `tests/integration/test_dashboard.py` — dashboard reads a seeded SQLite; control endpoints drive the `agent_control` table.
 - Property-based: "close-all leaves no open positions"; "config override never contains a key/credential."
 
@@ -238,7 +238,7 @@ trading_agent/
 ├── scripts/
 │   ├── run_crypto_agent.py        # Entry point: crypto agent
 │   ├── run_stocks_agent.py        # Entry point: stocks agent
-│   └── backtest.py                # (planned — Week 6) Replay historical decisions
+│   └── backtest.py                # Decision replay over stored decisions vs fresh candles (§7.14)
 ├── data/                          # Local cache for market snapshots
 └── docs/
     └── API_NOTES.md               # Kraken + XTB API quirks
@@ -372,15 +372,15 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 - Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
 - Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring (portfolio value over time, recent decisions, LLM confidence distribution, win rate) **plus control** (pause/resume, close-all) **and safe config management** — ⏳ *planned (Week 6)*. Full design: §"Data Pipeline, Storage & Dashboard (Week 6)" and §7.15.
 
-### 3.3 Backtesting (`scripts/backtest.py`) — ⏳ planned (Week 6)
+### 3.3 Backtesting (`scripts/backtest.py`) — ✅ implemented (Week 6)
 
-**Decision replay** (locked): re-simulate the *stored* `llm_decisions` (+ `orders`, realized PnL) against the price path that followed, through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Price history comes from **fresh historical candles** (Kraken via CCXT / yfinance) for arbitrary date ranges, since the agent does not run 24/7; stored `market_snapshots` are a secondary/audit source.
+**Decision replay**: `DecisionReplayBacktester` (`src/core/backtester.py`) re-simulates the *stored* `llm_decisions` against **fresh historical candles** (Kraken via CCXT paginated `fetch_history` / yfinance range fetch) through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Exit levels and position sizing are shared functions (`exit_level_breach` / `calculate_quantity`) so replay cannot drift from live. Stored `market_snapshots` remain a secondary/audit source.
 
-Metrics:
-- Total return vs. buy-and-hold benchmark
-- Win rate, average win/loss ratio
-- Max drawdown, Sharpe ratio
-- Per-symbol performance breakdown
+Metrics (CLI summary + `--report` JSON):
+- Total return vs. per-symbol buy-and-hold benchmark (+ equal-weight blend)
+- Win rate, average win/loss
+- Max drawdown, annualized Sharpe (coarse for stock gaps — documented)
+- Auto-exit / risk-rejected / hold counts, per-symbol breakdown, equity curve
 
 > LLM *replay* (feeding history to the model for fresh signals) is a separate, later experiment — non-deterministic and costly on the local 27B model. See §"Data Pipeline, Storage & Dashboard (Week 6)".
 
@@ -564,7 +564,7 @@ stocks = ["yfinance>=0.2"]   # optional; stocks data fallback (pulls in pandas)
 3. **Week 3:** `ccxt_provider.py`, `kraken_executor.py`, `crypto_agent.py`, `scheduler.py`, `run_crypto_agent.py` + integration tests ✅
 4. **Week 4:** Monitoring (structured logging) ✅; **decision-history prompt wiring** ✅; **crypto agent paper mode on real data** ✅ (the paper path now fetches live public Kraken OHLCV — no API key required — and executes via the fee/slippage-aware `PaperExecutor`; Kraken testnet execution remains opt-in via `KRAKEN_API_KEY`)
 5. **Week 5:** `xtb_provider.py`, `xtb_executor.py`, `stocks_agent.py` + tests ✅ (68 new tests added)
-6. **Week 6:** Data-pipeline + Docker dashboard (FastAPI + HTMX: monitor / control / safe config), **decision-replay backtesting** on fresh historical candles, alerting ◄ **(Next)** — see §"Data Pipeline, Storage & Dashboard (Week 6)" and §7.15 (phased)
+6. **Week 6:** **decision-replay backtesting** on fresh historical candles ✅ (§7.14); Docker dashboard (FastAPI + HTMX: monitor / control / safe config) ◄ **(Next)** — see §"Data Pipeline, Storage & Dashboard (Week 6)" and §7.15 (phased)
 
 ---
 
@@ -665,12 +665,14 @@ Updated after the full-codebase review of **2026-09-15** — findings are tagged
    - **Done ✅ (runner factory):** new `src/core/runner.py` — one implementation of `load_dotenv`, `build_alerts`, the enabled-gate (still exits *before constructing anything*), storage/LLM/risk wiring, drawdown seeding, rehydration + retention pruning, pipeline build, the `--once` path and the scheduled loop with guaranteed cleanup. Both scripts keep only their market-specific seams (`_build_data_and_execution` for crypto's keyed-testnet switch, `_make_components` for stocks' yfinance fail-fast + XTB notice) passed as callbacks.
    - **Tests:** runner tests retargeted to `src.core.runner.*` patch points (script-level factories still asserted where market-specific); new `TestScheduledModeLifecycle` pins the previously-uncovered shared scheduled loop: agent started, first cycle immediate, both jobs (`crypto_cycle` + `storage_prune`) scheduled, cancel ⇒ full cleanup. Net **−500 lines**; 94% coverage held. 354 tests passing.
 
-14. **Backtesting (`scripts/backtest.py`)** ⏳ (Week 6) — design in §"Data Pipeline, Storage & Dashboard (Week 6)"
-   - **Type (locked): decision replay** — re-simulate the *stored* `llm_decisions` (+ `orders`, realized PnL) against the price path that followed, through the **same** risk engine + fee/slippage model as live. **Deterministic, zero LLM calls.** (LLM replay — feeding history to the model for fresh signals — is a separate, later experiment: non-deterministic + costly on the local 27B model.)
-   - **Price history (locked): fresh historical candles** from the source (Kraken via CCXT / yfinance) for arbitrary date ranges — the agent doesn't run 24/7, so stored `market_snapshots` alone is too sparse; stored snapshots remain a secondary/audit source.
-   - **Metrics:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
-   - **Phased build:** (1) historical-candle ingestion for a window (reuse providers); (2) decision-replay engine reusing risk engine + `PaperExecutor` fee/slippage; (3) metrics + report (CLI + JSON); (4) tests on synthetic data (return, win-rate, max DD, Sharpe; benchmark comparison).
-   - **Note on LLM non-determinism (Risks):** moot for decision replay (we reuse *stored* decisions, not model calls); still log full prompt+response for the live agent's audit (tracked in §7.8).
+14. **Backtesting (`scripts/backtest.py`)** — ✅ **complete** (Week 6)
+   - **Done ✅ (type):** decision replay as locked — `src/core/backtester.py::DecisionReplayBacktester` re-simulates stored `llm_decisions` against fresh historical candles through the **same** `RiskEngine` and `PaperExecutor` fee/slippage model as live. Deterministic, zero LLM calls (identical inputs ⇒ identical report, pinned by test).
+   - **Done ✅ (shared rules):** extracted `exit_level_breach()` + `calculate_quantity()` out of `DecisionPipeline` into module-level functions in `core/decision_pipeline.py` — the live pipeline delegates to them, so replay sizing and §7.9 exit enforcement can never drift from live.
+   - **Done ✅ (history ingestion):** `CCXTProvider.fetch_history` paginates CCXT `fetch_ohlcv(since=…)` pages up to a page cap (dedupes by timestamp, stops on no-progress or ≥ end); `YFinanceSource.fetch_history` + `XTBProvider.fetch_history` do the same for stocks (yfinance's exclusive `end` padded, rows strictly filtered to the window; sources without range support raise `TypeError`). `Storage.get_decisions_in_range(start, end, symbols, include_fallback)` feeds the replay (fallback rows excluded by default, naive-UTC comparisons).
+   - **Replay semantics:** merged candle/decision timeline (candle-before-decision at equal timestamps mirrors a live cycle); every candle re-marks open positions (`update_price`), exit levels auto-close on breach *without* the risk gate (same as §7.9), entries are sized by `calculate_quantity` and gated by `RiskEngine.evaluate(planned_notional=…)` — what the gate approves is what fills; realized outcomes feed the loss-streak/cooldown tracker exactly like live.
+   - **Done ✅ (metrics/report):** total return vs per-symbol buy-and-hold (+ equal-weight blend), max drawdown, annualized Sharpe (coarse for stock gaps — documented), win rate, avg win/loss, auto-exit / risk-rejected / hold counts, per-symbol breakdown, equity curve. `scripts/backtest.py` CLI: `--start/--end/--days/--symbols/--provider ccxt|yfinance/--timeframe/--report out.json`; prints a human summary, optional full JSON.
+   - **Known simplification (documented in module docstring + `nightly_finds.md` #10):** the risk engine's daily-loss/cooldown trackers key off wall-clock now, so a replay sees one continuous "today" (whole-window loss cap) rather than per-day windows.
+   - **Tests:** 15 in `test_backtester.py` (exact-number buy/sell PnL with live sell-slice sizing, stop/take-profit auto exits + disable switch, gate rejects, fee flows into net PnL and equity, benchmarks, multi-symbol shared book, unpriceable-decision skip, determinism) + 5 `CCXTProvider.fetch_history` pagination tests, 3 stocks range tests (incl. yfinance window padding via fake frames), 4 `get_decisions_in_range` tests. **380 tests passing, 95% coverage.**
 
 15. **Dashboard + control (Docker WebUI)** ⏳ (Week 6) — design in §"Data Pipeline, Storage & Dashboard (Week 6)"
    - **Stack (locked):** FastAPI + Jinja2/HTMX; uPlot charts via CDN; one slim Docker image (no Node build). Monitor + control + safe config.

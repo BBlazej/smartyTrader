@@ -68,3 +68,28 @@ fixed unless explicitly marked.
    lots on sells only, matching this system's spot-only usage. If shorts are ever
    supported (see #4), `PositionTracker.on_sell` must also handle opening shorts and
    buys closing them. **Status: open (by design for now).**
+
+## Found while implementing §7.14 (decision-replay backtesting)
+
+10. **Risk-engine trackers are wall-clock-bound during replay** (`risk_engine.py`
+    via `backtester.py`): `DailyLossTracker` and the losing-streak cooldown derive
+    "today" from `datetime.now(UTC)`, so a replay of months of decisions behaves as
+    one continuous day — the daily-loss cap becomes a whole-window cap, and
+    cooldowns are relative to replay execution rather than each decision's own
+    date. Live behavior is correct; only replay fidelity is affected. A fix means
+    injecting a clock into `RiskEngine` (and updating its many tests); for now the
+    limitation is documented in the backtester module docstring and CLI output.
+    **Status: open (documented).**
+
+11. **Sharpe annualization is coarse for non-24/7 series** (`backtester.py`):
+    equity-curve returns are scaled by √(timeframe's nominal periods/year), which
+    ignores weekends/holiday gaps in stock candles — stock Sharpes are overstated
+    relative to crypto. Acceptable for v1 comparison; revisit with calendar-aware
+    period counts if the stocks backtest becomes important. **Status: open
+    (documented).**
+
+12. **`YFinanceSource.fetch_history` dropped the interval argument** (found by
+    lint while writing §7.14 tests): `_fetch_range` was called without the mapped
+    yfinance interval, so an hourly-window backtest would have silently fetched
+    daily bars. **Status: fixed in §7.14** — interval is passed through and pinned
+    by `TestFetchHistoryRange.test_yfinance_source_filters_to_window`.

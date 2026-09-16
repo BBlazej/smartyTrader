@@ -44,10 +44,11 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 354 tests, no network needed
+pytest                      # 380 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
+python -m scripts.backtest --days 30        # replay stored decisions vs fresh candles (§7.14)
 ```
 
 A disabled agent (`crypto_agent.enabled: false` / `stocks_agent.enabled: false`)
@@ -79,6 +80,7 @@ src/
 │   ├── rehydration.py        # Restores paper book + risk trackers from SQLite at startup
 │   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
 │   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
+│   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (Kraken)
@@ -101,7 +103,8 @@ src/
 scripts/
 ├── run_crypto_agent.py       # Entry point — crypto-specific factories + shared runner
 ├── run_stocks_agent.py       # Entry point — stocks-specific factories + shared runner
-└── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
+├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
+└── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
 tests/
@@ -185,10 +188,12 @@ fallback HOLDs are stored for audit but never re-fed into prompts, and each live
 decision's full prompt+response is logged), and **deterministic stop-loss /
 take-profit exits** (levels ride on the position through restarts; a breach is
 closed on the next cycle without asking the LLM or the risk gate — toggle with
-`risk.enforce_exit_levels`).
-**323 tests passing at ~94% coverage.**
+`risk.enforce_exit_levels`), and **decision-replay backtesting** (re-simulates the
+agent's own stored decisions against fresh historical candles through the same risk
+engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`).
+**380 tests passing at ~95% coverage.**
 
-Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
+Not yet built: news/sentiment + economic-calendar feeds,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review
 (low-hanging fruit first, then High → Low severity); its detailed findings

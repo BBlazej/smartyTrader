@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Protocol
 
 import structlog
@@ -86,6 +86,23 @@ class XTBProvider:
         candles = [self._to_candle(row) for row in raw]
         return MarketSnapshot(symbol=symbol, timeframe=timeframe, candles=candles)
 
+    async def fetch_history(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> list[OHLCV]:
+        """Historical candles in ``[start, end]`` (UTC) for the backtester (§7.14).
+
+        Delegates to an optional ``fetch_history`` on the injected source; sources
+        without range support raise — the backtester needs arbitrary windows, which
+        ``fetch_snapshot``'s trailing-N contract cannot provide.
+        """
+        fetch_history = getattr(self._source, "fetch_history", None)
+        if fetch_history is None:
+            raise TypeError(
+                f"data source {type(self._source).__name__} does not support historical ranges"
+            )
+        raw = await fetch_history(symbol, timeframe, start, end) or []
+        return [self._to_candle(row) for row in raw]
+
     @staticmethod
     def _to_candle(row: list[Any]) -> OHLCV:
         """Convert a stock OHLCV row ``[ts_ms, o, h, l, c, v]`` into a model."""
@@ -132,11 +149,40 @@ class YFinanceSource:
         df = await asyncio.to_thread(self._fetch, symbol, period, yf_interval)
         return self._to_rows(df, limit)
 
+    async def fetch_history(
+        self,
+        symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[list[Any]]:
+        """Historical rows in ``[start, end]`` (UTC) for the backtester (§7.14).
+
+        yfinance's ``end`` argument is *exclusive*, so we pad a day to keep the
+        requested last day inside the window; the rows are then filtered strictly.
+        """
+        _, yf_interval = self._PERIOD_MAP.get(interval, ("3mo", "1d"))
+        start_iso = start.astimezone(UTC).date().isoformat()
+        end_exclusive_iso = (end.astimezone(UTC).date() + timedelta(days=1)).isoformat()
+        df = await asyncio.to_thread(
+            self._fetch_range, symbol, start_iso, end_exclusive_iso, yf_interval
+        )
+        rows = self._to_rows(df, limit=10**9)
+        start_ms = int(start.astimezone(UTC).timestamp() * 1000)
+        end_ms = int(end.astimezone(UTC).timestamp() * 1000)
+        return [row for row in rows if row[0] is not None and start_ms <= row[0] <= end_ms]
+
     @staticmethod
     def _fetch(symbol: str, period: str, interval: str) -> Any:
         import yfinance as yf  # lazy import
 
         return yf.Ticker(symbol).history(period=period, interval=interval)
+
+    @staticmethod
+    def _fetch_range(symbol: str, start_iso: str, end_iso: str, interval: str) -> Any:
+        import yfinance as yf  # lazy import
+
+        return yf.Ticker(symbol).history(start=start_iso, end=end_iso, interval=interval)
 
     @staticmethod
     def _to_rows(df: Any, limit: int) -> list[list[Any]]:

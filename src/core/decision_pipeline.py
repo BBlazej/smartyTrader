@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from .config import RiskSettings
 from .llm_client import LLMClient
 from .models import (
     Action,
@@ -16,6 +17,7 @@ from .models import (
     OrderResult,
     OrderSide,
     PortfolioState,
+    Position,
     RiskResult,
     RiskVerdict,
     TradeSignal,
@@ -329,11 +331,7 @@ class DecisionPipeline:
         if position is None:
             return None
 
-        reason: str | None = None
-        if position.stop_loss is not None and mark <= position.stop_loss:
-            reason = "stop_loss"
-        elif position.take_profit is not None and mark >= position.take_profit:
-            reason = "take_profit"
+        reason = exit_level_breach(position, mark)
         if reason is None:
             return None
 
@@ -477,32 +475,59 @@ class DecisionPipeline:
         current_price: float | None = None,
     ) -> float:
         """Calculate position size based on risk settings and available cash."""
-        # Use max_position_pct from risk settings to cap position size
-        max_position_value = portfolio.total_value * self.risk_engine.settings.max_position_pct
+        return calculate_quantity(signal, portfolio, self.risk_engine.settings, current_price)
 
-        price = (
-            current_price if (current_price is not None and current_price > 0) else signal.stop_loss
-        )
-        if price is None or price <= 0:
-            price = 1.0
 
-        quantity = max_position_value / price
+# ── Shared trading rules (live pipeline ⇄ backtester, §7.14) ──────
 
-        # Ensure we don't spend more cash than available for buys
-        if signal.action == Action.BUY:
-            max_qty_by_cash = portfolio.cash / price
-            quantity = min(quantity, max_qty_by_cash)
 
-        # ...and never sell more than is actually held. The notional cap above
-        # scales with *total* value (marked to market), so a sell slice can
-        # otherwise exceed the position and produce a guaranteed-rejected order
-        # loop (§7.1 side effect / §7.19 sizing nit).
-        if signal.action == Action.SELL:
-            held = sum(p.quantity for p in portfolio.positions if p.symbol == signal.symbol)
-            if held > 0:
-                quantity = min(quantity, held)
+def exit_level_breach(position: Position, mark: float) -> str | None:
+    """Return ``"stop_loss"``/``"take_profit"`` when *mark* breaches the position's level.
 
-        return round(quantity, 8)
+    Single source for §7.9 semantics so the live pipeline and the backtester's replay
+    can never drift apart.
+    """
+    if position.stop_loss is not None and mark <= position.stop_loss:
+        return "stop_loss"
+    if position.take_profit is not None and mark >= position.take_profit:
+        return "take_profit"
+    return None
+
+
+def calculate_quantity(
+    signal: TradeSignal,
+    portfolio: PortfolioState,
+    settings: RiskSettings,
+    current_price: float | None = None,
+) -> float:
+    """Position size: ``max_position_pct`` of total value, cash- and holdings-clamped.
+
+    Used by the live pipeline *and* the decision-replay backtester so sizing rules
+    stay identical between them (§7.14).
+    """
+    max_position_value = portfolio.total_value * settings.max_position_pct
+
+    price = current_price if (current_price is not None and current_price > 0) else signal.stop_loss
+    if price is None or price <= 0:
+        price = 1.0
+
+    quantity = max_position_value / price
+
+    # Ensure we don't spend more cash than available for buys
+    if signal.action == Action.BUY:
+        max_qty_by_cash = portfolio.cash / price
+        quantity = min(quantity, max_qty_by_cash)
+
+    # ...and never sell more than is actually held. The notional cap above
+    # scales with *total* value (marked to market), so a sell slice can
+    # otherwise exceed the position and produce a guaranteed-rejected order
+    # loop (§7.1 side effect / §7.19 sizing nit).
+    if signal.action == Action.SELL:
+        held = sum(p.quantity for p in portfolio.positions if p.symbol == signal.symbol)
+        if held > 0:
+            quantity = min(quantity, held)
+
+    return round(quantity, 8)
 
 
 # ── Indicator Computation ─────────────────────────────────────
