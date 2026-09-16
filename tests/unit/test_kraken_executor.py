@@ -164,6 +164,86 @@ class TestGetCash:
         mock_client.fetch_free_balance.assert_awaited_once_with("USDT")
 
 
+class TestRealCcxtShapes:
+    """Payload shapes taken from real ccxt (4.5.x) responses [§7.6].
+
+    The keyed path used to crash or silently mis-report on every one of these:
+    ``float(balance)`` on a dict, no fill metadata on closed orders, and an
+    exception every cycle because Kraken spot rejects ``fetch_positions``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nested_free_balance_dict(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        # Real fetch_free_balance(): currency code → {free, used, total}.
+        mock_client.fetch_free_balance.return_value = {
+            "BTC": {"free": 0.5, "used": 0.0, "total": 0.5},
+            "USDT": {"free": 1234.5, "used": 10.0, "total": 1244.5},
+        }
+        assert await executor.get_cash() == pytest.approx(1234.5)  # free, not total
+
+    @pytest.mark.asyncio
+    async def test_free_balance_total_fallback_and_case_insensitive_key(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.fetch_free_balance.return_value = {"usdt": {"total": 77.0}}
+        assert await executor.get_cash() == pytest.approx(77.0)
+
+    @pytest.mark.asyncio
+    async def test_missing_quote_currency_is_zero(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.fetch_free_balance.return_value = {"BTC": {"free": 1.0}}
+        assert await executor.get_cash() == 0.0
+
+    @pytest.mark.asyncio
+    async def test_closed_order_records_fill_price_and_time(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        # A marketable limit comes back closed in the create_order payload.
+        mock_client.create_order.return_value = {
+            "id": "D-XYZ",
+            "status": "closed",
+            "amount": 0.25,
+            "filled": 0.25,
+            "average": 61234.5,
+            "timestamp": 1757900000000,
+            "updated": 1757900005000,
+        }
+
+        result = await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=0.25, price=61230.0)
+
+        assert result.status == "filled"
+        assert result.price == pytest.approx(61234.5)  # fill average, not the limit
+        assert result.quantity == pytest.approx(0.25)
+        assert result.filled_at is not None
+        assert result.filled_at.timestamp() == pytest.approx(1757900005.0)
+
+    @pytest.mark.asyncio
+    async def test_open_order_stays_pending_without_fill_time(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
+        result = await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=1.0)
+        assert result.status == "pending"
+        assert result.filled_at is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_positions_not_supported_degrades_gracefully(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        # Kraken spot via CCXT raises NotSupported here; every cycle must not crash.
+        class NotSupported(Exception):
+            pass
+
+        mock_client.fetch_positions.side_effect = NotSupported(
+            "fetch_positions is not supported by Kraken"
+        )
+        assert await executor.get_positions() == []
+        assert await executor.get_positions() == []  # repeat cycles stay safe
+
+
 class TestClose:
     """close() must release the keyed exchange's aiohttp session.
 

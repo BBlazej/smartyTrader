@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 260 tests, no network needed
+pytest                      # 266 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -166,7 +166,10 @@ daily-loss rule track the market), and **honest `enabled: false` semantics**
 is the explicit single-cycle flag), and the **drawdown guard is live** (peak
 equity high-water mark persisted via SQLite, seeded at startup) with the
 **order-size cap enforced at the gate** (oversized plans are rejected before
-execution; sells clamp to units held). **260 tests passing at ~95% coverage.**
+execution; sells clamp to units held), and the **keyed Kraken path hardened
+against real ccxt payloads** (nested balances, fill price/time recording,
+graceful spot `fetch_positions` degradation — live testnet smoke still pending).
+**266 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)
