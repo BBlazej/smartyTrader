@@ -85,6 +85,10 @@ class KrakenExecutor:
         # entry decisions via closed_entries (§7.8). Venue fees are not in the
         # create_order payload, so tracked PnL is gross of commission.
         self._tracker = PositionTracker()
+        # Exit levels from our own entry signals (§7.9). Kraken spot reports no
+        # positions at all, so this map only matters once position visibility
+        # lands; kept for parity with the other executors.
+        self._exit_levels: dict[str, tuple[float | None, float | None]] = {}
 
     @property
     def client(self) -> ExchangeClient:
@@ -118,6 +122,8 @@ class KrakenExecutor:
         quantity: float,
         price: float | None = None,
         decision_id: int | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> OrderResult:
         order_type = "limit" if price is not None else "market"
         raw = await self._client.create_order(symbol, order_type, side.value, quantity, price=price)
@@ -155,6 +161,9 @@ class KrakenExecutor:
             fill = float(fill_price)
             if side == OrderSide.BUY:
                 self._tracker.on_buy(symbol, filled_qty, fill, decision_id=decision_id)
+                # Remember the plan; these are *not* venue-side stop orders —
+                # enforcement is the pipeline's per-cycle check (§7.9).
+                self._exit_levels[symbol] = (stop_loss, take_profit)
             elif self._tracker.quantity(symbol) > 0:
                 outcome = self._tracker.on_sell(symbol, filled_qty, fill)
                 # Gross of venue commission (not reported by create_order); the
@@ -168,6 +177,8 @@ class KrakenExecutor:
                     "closing sell has no locally tracked lots; PnL not reported",
                     symbol=symbol,
                 )
+            if self._tracker.quantity(symbol) <= 0:
+                self._exit_levels.pop(symbol, None)
         return result
 
     async def get_positions(self) -> list[Position]:
@@ -193,12 +204,15 @@ class KrakenExecutor:
                 continue
             avg_entry = float(pos.get("entryPrice") or pos.get("averageCost") or 0.0)
             current = float(pos.get("markPrice") or pos.get("entryPrice") or avg_entry)
+            levels = self._exit_levels.get(str(pos.get("symbol")))
             positions.append(
                 Position(
                     symbol=str(pos.get("symbol")),
                     quantity=quantity,
                     avg_entry_price=avg_entry,
                     current_price=current,
+                    stop_loss=levels[0] if levels else None,
+                    take_profit=levels[1] if levels else None,
                 )
             )
         return positions

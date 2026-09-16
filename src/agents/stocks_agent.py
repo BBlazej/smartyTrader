@@ -209,6 +209,17 @@ class StocksAgent:
             )
             return
 
+        if result.auto_exit:
+            order = result.order_result
+            closed = f"{order.quantity} {symbol} ({order.status})" if order else symbol
+            await self._alerts.send(
+                "exit_level",
+                f"{result.exit_reason} breached — attempted auto-close of {closed}",
+                severity="warning",
+                symbol=symbol,
+            )
+            return
+
         if result.executed:
             assert result.order_result is not None
             await self._alerts.send(

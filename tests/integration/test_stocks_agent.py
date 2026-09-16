@@ -271,7 +271,9 @@ class TestRealizedPnlBackfill:
         risk_engine: RiskEngine,
         paper_executor: PaperExecutor,
     ) -> None:
-        provider = make_provider([160.0, 180.0])
+        # Cycle 2 sits between the entry signal's stop (150) and take-profit (180)
+        # so the LLM-driven close — not the §7.9 auto-exit — is what runs here.
+        provider = make_provider([160.0, 170.0])
         llm = make_llm([buy_signal(), sell_signal()])
         pipeline = DecisionPipeline(
             provider=provider,

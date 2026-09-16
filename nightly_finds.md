@@ -46,7 +46,8 @@ fixed unless explicitly marked.
    can't be closed by the LLM at all. Meaningless for an exit — the stop belongs to
    the position, not the close. Integration tests had to pass dummy stops to get a
    sell through. §7.9 (deterministic SL/TP enforcement) should exempt closes from
-   this rule while keeping it for entries. **Status: open.**
+   this rule while keeping it for entries. **Status: resolved in §7.9** — the rule
+   now applies to entries only, and exits bypass the gate entirely.
 
 7. **Venue FIFO ledgers are memory-only across restarts** (`kraken_executor.py`,
    `xtb_executor.py`, `paper_executor.load_portfolio_state`): the local lot ledger

@@ -291,9 +291,12 @@ class RiskEngine:
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_stop_loss(self, signal: TradeSignal) -> RiskResult:
-        if signal.action in (Action.BUY, Action.SELL) and signal.stop_loss is None:
+        # Entries only. A *close* reduces exposure and the position's own exit
+        # levels (§7.9) govern it, so demanding a stop on a sell was nonsense —
+        # it blocked legitimate exits while adding no protection.
+        if signal.action == Action.BUY and signal.stop_loss is None:
             return RiskResult(
                 verdict=RiskVerdict.REJECTED,
-                reason="Active trade signal must include a stop-loss",
+                reason="Opening a position requires a stop-loss",
             )
         return RiskResult(verdict=RiskVerdict.APPROVED)

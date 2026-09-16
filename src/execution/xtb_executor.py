@@ -69,6 +69,9 @@ class XTBExecutor:
         # sells + attribution back to entry decisions via closed_entries.
         # xAPI's create_order reports no commission, so tracked PnL is gross.
         self._tracker = PositionTracker()
+        # Exit levels from our entry signals, re-attached to positions the venue
+        # reports (xAPI payloads don't carry them) so §7.9 can enforce them.
+        self._exit_levels: dict[str, tuple[float | None, float | None]] = {}
 
     @property
     def client(self) -> XTBClient:
@@ -101,6 +104,8 @@ class XTBExecutor:
         quantity: float,
         price: float | None = None,
         decision_id: int | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> OrderResult:
         raw = await self._client.create_order(symbol, side.value, quantity, price=price)
         raw = raw or {}
@@ -124,6 +129,9 @@ class XTBExecutor:
         if status == "filled" and price is not None:
             if side == OrderSide.BUY:
                 self._tracker.on_buy(symbol, filled_qty, float(price), decision_id=decision_id)
+                # Local levels only — enforcement is the pipeline's per-cycle
+                # check, not a venue-side stop order (§7.9).
+                self._exit_levels[symbol] = (stop_loss, take_profit)
             elif self._tracker.quantity(symbol) > 0:
                 outcome = self._tracker.on_sell(symbol, filled_qty, float(price))
                 result.realized_pnl = outcome.gross_pnl
@@ -135,6 +143,8 @@ class XTBExecutor:
                     "closing sell has no locally tracked lots; PnL not reported",
                     symbol=symbol,
                 )
+            if self._tracker.quantity(symbol) <= 0:
+                self._exit_levels.pop(symbol, None)
         return result
 
     async def get_positions(self) -> list[Position]:
@@ -146,12 +156,15 @@ class XTBExecutor:
                 continue
             avg_entry = float(pos.get("avg_entry_price") or pos.get("entry_price") or 0.0)
             current = float(pos.get("current_price") or pos.get("mark_price") or avg_entry)
+            levels = self._exit_levels.get(str(pos.get("symbol")))
             positions.append(
                 Position(
                     symbol=str(pos.get("symbol")),
                     quantity=quantity,
                     avg_entry_price=avg_entry,
                     current_price=current,
+                    stop_loss=levels[0] if levels else None,
+                    take_profit=levels[1] if levels else None,
                 )
             )
         return positions

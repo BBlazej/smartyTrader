@@ -248,7 +248,9 @@ class TestRealizedPnlBackfill:
         risk_engine: RiskEngine,
         paper_executor: PaperExecutor,
     ):
-        provider = make_provider([100.0, 120.0])
+        # Cycle 2 sits between the entry signal's stop (95) and take-profit (110)
+        # so the LLM-driven close — not the §7.9 auto-exit — is what runs here.
+        provider = make_provider([100.0, 105.0])
         llm = make_llm([buy_signal(), sell_signal()])
         pipeline = DecisionPipeline(
             provider=provider,
@@ -315,6 +317,49 @@ class TestRealizedPnlBackfill:
         sell_order = next(o for o in orders.values() if o.side == "sell")
         assert buy_order.decision_id == first.decision_id
         assert sell_order.decision_id == second.decision_id
+
+
+class TestAutoExit:
+    """§7.9 end-to-end: a breached stop closes the position on the next cycle
+    without an LLM call, and the outcome still lands on the entry decision."""
+
+    async def test_stop_loss_exit_persisted_and_backfilled(
+        self,
+        storage: Storage,
+        risk_engine: RiskEngine,
+        paper_executor: PaperExecutor,
+    ) -> None:
+        provider = make_provider([100.0, 90.0])  # cycle 2 sits below the 95 stop
+        llm = make_llm([buy_signal()])  # a second LLM call would raise here
+        pipeline = DecisionPipeline(
+            provider=provider,
+            llm_client=llm,
+            risk_engine=risk_engine,
+            executor=paper_executor,
+            storage=storage,
+        )
+        agent = make_agent(pipeline, storage, risk_engine, paper_executor)
+
+        first = (await agent.run_cycle())[0]
+        assert first.decision_id is not None
+
+        results = await agent.run_cycle()
+        assert len(results) == 1
+        second = results[0]
+        assert second.auto_exit is True
+        assert second.exit_reason == "stop_loss"
+        assert second.signal is None
+
+        # The exit order is on record, linked to no decision (the LLM never acted).
+        orders = {o.side: o for o in await storage.get_recent_orders()}
+        assert orders["sell"].decision_id is None
+
+        # Still exactly one decision row — and it carries the closed outcome.
+        decisions = {d.id: d for d in await storage.get_recent_decisions()}
+        assert len(decisions) == 1
+        entry = decisions[first.decision_id]
+        assert entry.realized_pnl is not None
+        assert entry.realized_pnl < 0
 
 
 class TestCycleErrorIsolation:

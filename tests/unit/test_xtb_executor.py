@@ -189,6 +189,46 @@ class TestRealizedPnlAttribution:
         assert result.realized_pnl is None
 
 
+class TestExitLevelCarrying:
+    """§7.9: exit levels from entry signals are re-attached to positions xAPI
+    reports (the payloads don't carry them) and dropped once the position closes."""
+
+    @pytest.mark.asyncio
+    async def test_levels_attached_then_dropped_on_close(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.get_positions.return_value = [
+            {"symbol": "AAPL", "quantity": 2.0, "avg_entry_price": 100.0}
+        ]
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "quantity": 2.0,
+        }
+        await executor.place_order(
+            "AAPL",
+            OrderSide.BUY,
+            quantity=2.0,
+            price=100.0,
+            stop_loss=95.0,
+            take_profit=120.0,
+        )
+
+        positions = await executor.get_positions()
+        assert positions[0].stop_loss == 95.0
+        assert positions[0].take_profit == 120.0
+
+        mock_client.create_order.return_value = {
+            "order_id": "2",
+            "status": "filled",
+            "quantity": 2.0,
+        }
+        await executor.place_order("AAPL", OrderSide.SELL, quantity=2.0, price=90.0)
+
+        assert executor._exit_levels == {}
+        assert (await executor.get_positions())[0].stop_loss is None
+
+
 class TestClose:
     """close() must release the underlying xAPI client (its session, if any)."""
 

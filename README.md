@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 309 tests, no network needed
+pytest                      # 323 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -115,7 +115,7 @@ thresholds. Key sections:
 | `llm` | LM Studio endpoint, model, timeout, retries, JSON-schema opt-in |
 | `crypto_agent` | enabled, exchange, testnet flag, interval, pairs, `decision_history_limit` |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours`, `market_timezone` (zone the window is in), symbols, `decision_history_limit` |
-| `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence |
+| `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence, `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes) |
 | `monitoring` | log level, alert dedup window |
@@ -178,8 +178,11 @@ outcome attribution** (one shared FIFO tracker gives every executor's closing
 fills a `realized_pnl` plus per-entry-decision `closed_entries`, so the PnL of a
 closed position lands back on the buy decision that opened it; LLM-unavailable
 fallback HOLDs are stored for audit but never re-fed into prompts, and each live
-decision's full prompt+response is logged).
-**309 tests passing at ~94% coverage.**
+decision's full prompt+response is logged), and **deterministic stop-loss /
+take-profit exits** (levels ride on the position through restarts; a breach is
+closed on the next cycle without asking the LLM or the risk gate — toggle with
+`risk.enforce_exit_levels`).
+**323 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

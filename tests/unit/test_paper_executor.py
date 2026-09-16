@@ -294,6 +294,63 @@ class TestClosedEntryAttribution:
         assert result.realized_pnl == pytest.approx(40.0)
 
 
+class TestExitLevels:
+    """§7.9: exit levels from the entry signal ride on the position so the
+    pipeline can enforce them later (and portfolio snapshots persist them)."""
+
+    async def test_levels_attached_on_buy(self, executor: PaperExecutor) -> None:
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0, stop_loss=95.0, take_profit=120.0
+        )
+
+        position = (await executor.get_positions())[0]
+        assert position.stop_loss == 95.0
+        assert position.take_profit == 120.0
+
+    async def test_levels_optional(self, executor: PaperExecutor) -> None:
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+
+        position = (await executor.get_positions())[0]
+        assert position.stop_loss is None
+        assert position.take_profit is None
+
+    async def test_adding_updates_levels_when_given(self, executor: PaperExecutor) -> None:
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0, stop_loss=95.0
+        )
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=110.0)
+        position = (await executor.get_positions())[0]
+        assert position.stop_loss == 95.0  # untouched when the new order omits them
+
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=120.0, stop_loss=115.0
+        )
+        position = (await executor.get_positions())[0]
+        assert position.stop_loss == 115.0  # latest plan wins (§7.9)
+
+    async def test_levels_survive_rehydration(self) -> None:
+        from src.core.models import Position
+
+        executor = PaperExecutor(initial_cash=0.0, slippage_pct=0.0)
+        executor.load_portfolio_state(
+            cash=100.0,
+            positions=[
+                Position(
+                    symbol="BTC/USDT",
+                    quantity=1.0,
+                    avg_entry_price=100.0,
+                    current_price=100.0,
+                    stop_loss=95.0,
+                    take_profit=130.0,
+                )
+            ],
+        )
+
+        position = (await executor.get_positions())[0]
+        assert position.stop_loss == 95.0
+        assert position.take_profit == 130.0
+
+
 class TestUpdatePrice:
     async def test_updates_existing_position(self, executor: PaperExecutor) -> None:
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)

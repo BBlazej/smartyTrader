@@ -19,6 +19,7 @@ from src.core.models import (
     Executor,
     MarketSnapshot,
     OrderSide,
+    PortfolioState,
     RiskResult,
     RiskVerdict,
     TradeSignal,
@@ -526,9 +527,10 @@ class TestPositionMarking:
         # Sizing: 10% of 10_000 at price 100 → 10 units, cash 9_000.
         assert positions[0].quantity == pytest.approx(10.0)
 
-        # Cycle 2 — market drops to 80; the cycle must re-mark the position.
+        # Cycle 2 — market drops to 96 (still above the 95 stop, which would now
+        # auto-close it, §7.9); the cycle must re-mark the position.
         mock_provider.fetch_snapshot.return_value = MarketSnapshot(
-            symbol="BTC/USDT", timeframe="1h", candles=self._candles(85.0, 82.0, 80.0)
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(98.0, 97.0, 96.0)
         )
         mock_llm.ask_trade_signal.return_value = TradeSignal(
             symbol="BTC/USDT",
@@ -539,13 +541,13 @@ class TestPositionMarking:
         await pipeline.run(symbol="BTC/USDT")
 
         positions = await executor.get_positions()
-        assert positions[0].current_price == pytest.approx(80.0)
+        assert positions[0].current_price == pytest.approx(96.0)
 
         # The plan's acceptance check: unrealized PnL is no longer frozen at 0.
         portfolio = await pipeline._get_portfolio_state()
         assert portfolio.unrealized_pnl != 0.0
-        assert portfolio.unrealized_pnl == pytest.approx(-200.0)  # 10 × (80 − 100)
-        assert portfolio.total_value == pytest.approx(9_800.0)
+        assert portfolio.unrealized_pnl == pytest.approx(-40.0)  # 10 × (96 − 100)
+        assert portfolio.total_value == pytest.approx(9_960.0)
 
     @pytest.mark.asyncio
     async def test_risk_check_sees_market_valued_portfolio(
@@ -880,3 +882,202 @@ class TestDecisionPersistence:
 
         assert result.executed
         assert result.decision_id is None
+
+
+class TestExitLevelEnforcement:
+    """§7.9: when a position's mark price breaches the stop-loss / take-profit
+    carried from its entry signal, the pipeline closes it on the next cycle —
+    without calling the LLM and without the risk gate."""
+
+    @staticmethod
+    def _candles(price: float) -> list[OHLCV]:
+        return [
+            OHLCV(
+                open=price,
+                high=price + 1.0,
+                low=price - 1.0,
+                close=price,
+                volume=1_000.0,
+            )
+            for _ in range(3)
+        ]
+
+    def _pipeline(
+        self,
+        risk_settings: RiskSettings,
+        executor: PaperExecutor,
+        prices: list[float],
+        signals: list[TradeSignal],
+    ) -> tuple[DecisionPipeline, AsyncMock]:
+        from src.core.risk_engine import RiskEngine
+
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot = AsyncMock(
+            side_effect=[
+                MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=self._candles(p))
+                for p in prices
+            ]
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal = AsyncMock(side_effect=signals)
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+        return pipeline, mock_llm
+
+    @staticmethod
+    def _entry(stop_loss: float | None, take_profit: float | None) -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="enter",
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+
+    @staticmethod
+    def _hold() -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT", action=Action.HOLD, confidence=0.5, reasoning="sit out"
+        )
+
+    async def test_stop_loss_breach_closes_without_llm(self, risk_settings: RiskSettings) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        pipeline, llm = self._pipeline(
+            risk_settings,
+            executor,
+            prices=[100.0, 90.0],
+            signals=[self._entry(stop_loss=95.0, take_profit=None), self._hold()],
+        )
+
+        first = await pipeline.run(symbol="BTC/USDT")
+        assert first.executed
+        positions = await executor.get_positions()
+        assert positions[0].stop_loss == 95.0  # levels ride on the position (§7.9)
+
+        second = await pipeline.run(symbol="BTC/USDT")
+        assert second.auto_exit is True
+        assert second.exit_reason == "stop_loss"
+        assert second.executed
+        assert second.order_result is not None
+        assert second.order_result.side == OrderSide.SELL
+        assert second.order_result.realized_pnl is not None
+        assert second.order_result.realized_pnl < 0
+        assert await executor.get_positions() == []
+        # The LLM was asked once (cycle 1); the exit cycle never consults it,
+        # so no new entry can be taken on top of the close.
+        assert llm.ask_trade_signal.await_count == 1
+        assert second.signal is None
+
+    async def test_take_profit_breach_closes_with_profit(self, risk_settings: RiskSettings) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        pipeline, _llm = self._pipeline(
+            risk_settings,
+            executor,
+            prices=[100.0, 130.0],
+            signals=[self._entry(stop_loss=95.0, take_profit=120.0), self._hold()],
+        )
+
+        await pipeline.run(symbol="BTC/USDT")
+        second = await pipeline.run(symbol="BTC/USDT")
+
+        assert second.auto_exit is True
+        assert second.exit_reason == "take_profit"
+        assert second.order_result is not None
+        assert second.order_result.realized_pnl is not None
+        assert second.order_result.realized_pnl > 0
+        assert await executor.get_positions() == []
+
+    async def test_no_breach_runs_the_normal_llm_path(self, risk_settings: RiskSettings) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        pipeline, llm = self._pipeline(
+            risk_settings,
+            executor,
+            prices=[100.0, 98.0],  # above the 95 stop
+            signals=[self._entry(stop_loss=95.0, take_profit=None), self._hold()],
+        )
+
+        await pipeline.run(symbol="BTC/USDT")
+        second = await pipeline.run(symbol="BTC/USDT")
+
+        assert second.auto_exit is False
+        assert llm.ask_trade_signal.await_count == 2
+
+    async def test_enforcement_can_be_disabled(self) -> None:
+        settings = RiskSettings(
+            max_position_pct=0.10,
+            daily_loss_limit_pct=0.02,
+            max_drawdown_pct=0.05,
+            consecutive_losses_cooldown_minutes=60,
+            max_open_positions=5,
+            min_confidence=0.6,
+            enforce_exit_levels=False,
+        )
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        pipeline, llm = self._pipeline(
+            settings,
+            executor,
+            prices=[100.0, 90.0],  # would breach the stop if enforcement were on
+            signals=[self._entry(stop_loss=95.0, take_profit=None), self._hold()],
+        )
+
+        await pipeline.run(symbol="BTC/USDT")
+        second = await pipeline.run(symbol="BTC/USDT")
+
+        assert second.auto_exit is False
+        assert llm.ask_trade_signal.await_count == 2
+        assert len(await executor.get_positions()) == 1
+
+    async def test_exit_happens_even_while_the_gate_blocks_entries(
+        self, risk_settings: RiskSettings
+    ) -> None:
+        """Cooldown must not strand a losing position: exits bypass the gate (§7.9)."""
+        from src.core.risk_engine import RiskEngine
+
+        engine = RiskEngine(risk_settings)
+        for _ in range(3):  # trigger the consecutive-loss cooldown
+            engine.record_outcome(was_profitable=False)
+        assert engine._loss_tracker.in_cooldown is True
+
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot = AsyncMock(
+            side_effect=[
+                MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=self._candles(p))
+                for p in (100.0, 90.0)
+            ]
+        )
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=AsyncMock(),
+            risk_engine=engine,
+            executor=executor,
+        )
+
+        # The engine is in cooldown; a gate-checked order would be rejected.
+        blocked = engine.evaluate(
+            self._entry(stop_loss=95.0, take_profit=None), PortfolioState(cash=10_000.0)
+        )
+        assert blocked.verdict == RiskVerdict.REJECTED
+
+        result = await pipeline._check_exit_levels(
+            "BTC/USDT",
+            MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=self._candles(90.0)),
+        )
+        # Nothing held yet → nothing to exit.
+        assert result is None
+
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0, stop_loss=95.0
+        )
+        closed = await pipeline._check_exit_levels(
+            "BTC/USDT",
+            MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=self._candles(90.0)),
+        )
+        assert closed is not None
+        assert closed.exit_reason == "stop_loss"
+        assert closed.executed  # closed despite the cooldown blocking new entries

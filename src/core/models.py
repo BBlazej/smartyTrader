@@ -76,6 +76,12 @@ class Position(BaseModel):
     quantity: float
     avg_entry_price: float
     current_price: float
+    # Deterministic exit levels carried from the entry signal (§7.9). The pipeline
+    # closes the position when the mark price breaches them, without consulting
+    # the LLM. ``None`` = level not set. Stored with portfolio snapshots, so they
+    # survive restarts.
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
     @property
     def pnl(self) -> float:
@@ -176,10 +182,14 @@ class Executor(Protocol):
         quantity: float,
         price: float | None = None,
         decision_id: int | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> OrderResult:
         """Place an order. ``decision_id`` links the order (and, via the shared
         FIFO tracker, its closing fills' ``closed_entries``) to the LLM decision
-        that produced it (§7.8)."""
+        that produced it (§7.8). ``stop_loss``/``take_profit`` are the entry
+        signal's exit levels, attached to the resulting position so the pipeline
+        can enforce them deterministically on later cycles (§7.9)."""
         ...
 
     async def get_positions(self) -> list[Position]: ...

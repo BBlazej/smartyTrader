@@ -95,6 +95,10 @@ class RiskSettings:
         consecutive_losses_cooldown_minutes: int = 60,
         max_open_positions: int = 5,
         min_confidence: float = 0.6,
+        # Deterministic stop-loss / take-profit enforcement (§7.9): when enabled,
+        # the pipeline closes a position as soon as its mark price breaches the
+        # levels carried from the entry signal, without asking the LLM.
+        enforce_exit_levels: bool = True,
     ) -> None:
         self.max_position_pct = max_position_pct
         self.daily_loss_limit_pct = daily_loss_limit_pct
@@ -102,6 +106,7 @@ class RiskSettings:
         self.consecutive_losses_cooldown_minutes = consecutive_losses_cooldown_minutes
         self.max_open_positions = max_open_positions
         self.min_confidence = min_confidence
+        self.enforce_exit_levels = enforce_exit_levels
 
 
 class ExecutionSettings:

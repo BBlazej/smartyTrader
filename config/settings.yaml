@@ -34,6 +34,10 @@ risk:
   consecutive_losses_cooldown_minutes: 60
   max_open_positions: 5
   min_confidence: 0.6
+  # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's
+  # mark price breaches the levels carried from its entry signal, the pipeline
+  # closes it on the next cycle without asking the LLM or the risk gate.
+  enforce_exit_levels: true
 
 # Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
 # fees/slippage. 0.26%/side matches a typical crypto taker fee; 0.1%/side slippage.

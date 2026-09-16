@@ -62,8 +62,13 @@ class PaperExecutor:
         quantity: float,
         price: float | None = None,
         decision_id: int | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> OrderResult:
-        """Place a simulated order. Returns filled result or rejection."""
+        """Place a simulated order. Returns filled result or rejection.
+
+        ``stop_loss``/``take_profit`` are attached to the opened position so the
+        pipeline can enforce them on later cycles (§7.9); ignored on sells."""
 
         # Market orders — use current market price from position if available
         effective_price: float
@@ -92,7 +97,14 @@ class PaperExecutor:
 
         if side == OrderSide.BUY:
             result = await self._execute_buy(
-                symbol, quantity, effective_price, order_id, now, decision_id
+                symbol,
+                quantity,
+                effective_price,
+                order_id,
+                now,
+                decision_id,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
             )
         else:
             result = await self._execute_sell(symbol, quantity, effective_price, order_id, now)
@@ -108,6 +120,8 @@ class PaperExecutor:
         order_id: str,
         filled_at: datetime,
         decision_id: int | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> OrderResult:
         cost = quantity * price
         fee = cost * self.fee_pct
@@ -132,12 +146,19 @@ class PaperExecutor:
             new_avg = (pos.avg_entry_price * pos.quantity + price * quantity) / total_qty
             pos.quantity = total_qty
             pos.avg_entry_price = new_avg
+            # Latest plan wins when adding to a position (§7.9).
+            if stop_loss is not None:
+                pos.stop_loss = stop_loss
+            if take_profit is not None:
+                pos.take_profit = take_profit
         else:
             self._positions[symbol] = Position(
                 symbol=symbol,
                 quantity=quantity,
                 avg_entry_price=price,
                 current_price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
             )
 
         self._tracker.on_buy(symbol, quantity, price, fee=fee, decision_id=decision_id)

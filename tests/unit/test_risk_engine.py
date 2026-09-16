@@ -149,6 +149,22 @@ class TestStopLossRequired:
         assert result.verdict == RiskVerdict.REJECTED
         assert "stop-loss" in (result.reason or "").lower()
 
+    def test_closing_sell_needs_no_stop(
+        self, engine: RiskEngine, healthy_portfolio: PortfolioState
+    ) -> None:
+        # §7.9: a close reduces exposure; requiring a stop on it only blocked
+        # legitimate exits (and stranded losing positions during cooldowns).
+        signal = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.SELL,
+            confidence=0.9,
+            reasoning="exit the trade",
+            stop_loss=None,
+        )
+
+        result = engine.evaluate(signal, healthy_portfolio)
+        assert result.verdict == RiskVerdict.APPROVED
+
 
 class TestDailyLossLimit:
     def test_rejects_on_daily_loss(self, engine: RiskEngine) -> None:

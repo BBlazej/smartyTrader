@@ -68,20 +68,29 @@ def test_hold_is_always_approved(confidence: float, cash: float, extra_symbols: 
 
 
 @given(
-    action=st.sampled_from([Action.BUY, Action.SELL]),
     confidence=confidences,
     cash=positive_money,
     extra_symbols=st.integers(min_value=0, max_value=12),
 )
-def test_approved_active_signal_has_a_stop(
-    action: Action, confidence: float, cash: float, extra_symbols: int
-):
-    """Any *approved* BUY/SELL must carry a stop-loss (the gate requires one)."""
+def test_approved_entry_has_a_stop(confidence: float, cash: float, extra_symbols: int):
+    """Any *approved* BUY must carry a stop-loss (the gate requires one for
+    entries). Closes are exempt since §7.9."""
     engine = RiskEngine(make_settings())
-    signal = TradeSignal(symbol="BTC/USDT", action=action, confidence=confidence, reasoning="r")
+    signal = TradeSignal(symbol="BTC/USDT", action=Action.BUY, confidence=confidence, reasoning="r")
     result = engine.evaluate(signal, make_portfolio(cash, extra_symbols))
     if result.verdict == RiskVerdict.APPROVED:
         assert signal.stop_loss is not None
+
+
+@given(cash=positive_money)
+def test_stopless_close_is_never_blocked_for_lacking_a_stop(cash: float):
+    """A SELL without a stop must not be rejected *for lacking one* — exits reduce
+    exposure, and blocking them strands the agent in losing positions (§7.9)."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="r")
+    result = engine.evaluate(signal, PortfolioState(cash=cash, positions=[]))
+    assert "stop-loss" not in (result.reason or "").lower()
+    assert result.verdict == RiskVerdict.APPROVED
 
 
 @given(

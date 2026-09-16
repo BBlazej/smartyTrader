@@ -40,6 +40,7 @@ class MarketDataProvider(Protocol):
 
 class PipelineStep(str):
     FETCH_DATA = "fetch_data"
+    ENFORCE_EXIT_LEVELS = "enforce_exit_levels"
     COMPUTE_INDICATORS = "compute_indicators"
     BUILD_PROMPT = "build_prompt"
     CALL_LLM = "call_llm"
@@ -59,6 +60,8 @@ class PipelineResult:
         snapshot: MarketSnapshot | None = None,
         error: str | None = None,
         decision_id: int | None = None,
+        auto_exit: bool = False,
+        exit_reason: str | None = None,
     ) -> None:
         self.symbol = symbol
         self.signal = signal
@@ -69,6 +72,11 @@ class PipelineResult:
         # Row id of this cycle's persisted decision (None when no storage or no
         # signal). Orders and outcome backfills link through it (§7.8).
         self.decision_id = decision_id
+        # True when the cycle ended in a deterministic stop-loss/take-profit
+        # close instead of an LLM decision; ``exit_reason`` says which level
+        # fired (§7.9).
+        self.auto_exit = auto_exit
+        self.exit_reason = exit_reason
 
     @property
     def executed(self) -> bool:
@@ -162,6 +170,15 @@ class DecisionPipeline:
         # market moves, not a position frozen at its fill price.
         self._mark_positions(symbol, snapshot)
 
+        # Step 1c — Deterministic exit levels (§7.9). A position that breaches its
+        # stop-loss or take-profit is closed here, *without* consulting the LLM and
+        # bypassing the risk gate: exits only reduce exposure, and a gate (cooldown,
+        # daily-loss block) must never strand us in a losing position. The cycle
+        # ends with this close — no new entry on the same symbol.
+        auto_exit = await self._check_exit_levels(symbol, snapshot)
+        if auto_exit is not None:
+            return auto_exit
+
         # Step 2 — Compute indicators
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.COMPUTE_INDICATORS)
         try:
@@ -244,6 +261,9 @@ class DecisionPipeline:
                 quantity=quantity,
                 price=current_price,
                 decision_id=decision_id,
+                # Carried onto the position so §7.9 can enforce them later.
+                stop_loss=signal.stop_loss,
+                take_profit=signal.take_profit,
             )
 
             # Record the realized outcome for consecutive-loss tracking. A
@@ -279,6 +299,91 @@ class DecisionPipeline:
                 error=f"Execution failed: {exc}",
                 decision_id=decision_id,
             )
+
+    async def _check_exit_levels(
+        self, symbol: str, snapshot: MarketSnapshot
+    ) -> PipelineResult | None:
+        """Close this symbol's position if the mark breached its exit levels (§7.9).
+
+        Levels come from the entry signal and live on the executor's ``Position``
+        (persisted with portfolio snapshots, so they survive restarts). Returns a
+        finished :class:`PipelineResult` when an exit fired — the LLM is never
+        asked, and the risk gate is deliberately skipped because closing can only
+        reduce risk. Returns ``None`` when there is nothing to do.
+        """
+        if not self.risk_engine.settings.enforce_exit_levels or not snapshot.candles:
+            return None
+        mark = snapshot.candles[-1].close
+        if mark <= 0:
+            return None
+
+        try:
+            positions = await self.executor.get_positions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "exit-level check skipped (positions unreadable)", symbol=symbol, error=str(exc)
+            )
+            return None
+
+        position = next((p for p in positions if p.symbol == symbol and p.quantity > 0), None)
+        if position is None:
+            return None
+
+        reason: str | None = None
+        if position.stop_loss is not None and mark <= position.stop_loss:
+            reason = "stop_loss"
+        elif position.take_profit is not None and mark >= position.take_profit:
+            reason = "take_profit"
+        if reason is None:
+            return None
+
+        logger.warning(
+            "exit level breached",
+            symbol=symbol,
+            exit_reason=reason,
+            mark=mark,
+            stop_loss=position.stop_loss,
+            take_profit=position.take_profit,
+            quantity=position.quantity,
+        )
+
+        step_logger = logger.bind(symbol=symbol, step=PipelineStep.ENFORCE_EXIT_LEVELS)
+        try:
+            order_result = await self.executor.place_order(
+                symbol=symbol,
+                side=OrderSide.SELL,
+                quantity=position.quantity,
+                price=mark,
+            )
+        except Exception as exc:  # noqa: BLE001
+            step_logger.error("exit-level close failed", error=str(exc))
+            return PipelineResult(
+                symbol=symbol,
+                snapshot=snapshot,
+                auto_exit=True,
+                exit_reason=reason,
+                error=f"Exit-level close failed: {exc}",
+            )
+
+        # A closed position is a real outcome for the loss-streak tracker, same
+        # rule as any other fill: only realized numbers count (§7.8).
+        if order_result.status == "filled" and order_result.realized_pnl is not None:
+            self.risk_engine.record_outcome(was_profitable=order_result.realized_pnl >= 0)
+
+        step_logger.info(
+            "position closed on exit level",
+            exit_reason=reason,
+            status=order_result.status,
+            quantity=order_result.quantity,
+            realized_pnl=order_result.realized_pnl,
+        )
+        return PipelineResult(
+            symbol=symbol,
+            order_result=order_result,
+            snapshot=snapshot,
+            auto_exit=True,
+            exit_reason=reason,
+        )
 
     async def _persist_decision(
         self,
