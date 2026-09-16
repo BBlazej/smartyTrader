@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import src.agents.stocks_agent as stocks_agent_module
-from src.agents.stocks_agent import StocksAgent, is_market_open, parse_market_hours
+from src.agents.stocks_agent import (
+    StocksAgent,
+    is_market_open,
+    market_closed_reason,
+    parse_holidays,
+    parse_market_hours,
+)
 
 
 class TestParseMarketHours:
@@ -58,6 +66,109 @@ class TestIsMarketOpen:
         plus_two = timezone(timedelta(hours=2))
         local_afternoon = datetime(2026, 1, 15, 14, 0, tzinfo=plus_two)
         assert is_market_open(local_afternoon, "09:00-16:30") is True
+
+
+class TestWeekendGuard:
+    """§7.10: time-of-day alone let a Saturday 10:00 tick run on Friday's stale candles."""
+
+    def test_saturday_inside_window_is_closed(self) -> None:
+        saturday = datetime(2026, 1, 17, 10, 30, tzinfo=UTC)  # a Saturday
+        assert is_market_open(saturday, "09:00-16:30") is False
+        assert market_closed_reason(saturday, "09:00-16:30") == "weekend"
+
+    def test_sunday_inside_window_is_closed(self) -> None:
+        sunday = datetime(2026, 1, 18, 12, 0, tzinfo=UTC)  # a Sunday
+        assert is_market_open(sunday, "09:00-16:30") is False
+
+    def test_friday_is_unaffected(self) -> None:
+        friday = datetime(2026, 1, 16, 10, 30, tzinfo=UTC)  # a Friday
+        assert is_market_open(friday, "09:00-16:30") is True
+        assert market_closed_reason(friday, "09:00-16:30") is None
+
+    def test_noop_window_stays_open_on_weekend(self) -> None:
+        # A bare spec disables the guard entirely — weekends included.
+        saturday = datetime(2026, 1, 17, 10, 30, tzinfo=UTC)
+        assert is_market_open(saturday, "24h") is True
+
+
+class TestOvernightWindow:
+    """§7.10 config trap: an overnight window made ``start <= t <= end`` never true."""
+
+    def test_evening_inside_wrapped_window(self) -> None:
+        # Thursday 23:00 is inside a 22:00-08:00 overnight window.
+        evening = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
+        assert is_market_open(evening, "22:00-08:00") is True
+
+    def test_early_morning_inside_wrapped_window(self) -> None:
+        morning = datetime(2026, 1, 15, 7, 30, tzinfo=UTC)
+        assert is_market_open(morning, "22:00-08:00") is True
+
+    def test_daytime_outside_wrapped_window(self) -> None:
+        midday = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        assert is_market_open(midday, "22:00-08:00") is False
+        assert market_closed_reason(midday, "22:00-08:00") == "outside trading window"
+
+
+class TestHolidays:
+    def test_parse_holidays(self) -> None:
+        assert parse_holidays(["2026-12-24", " 2026-01-01 "]) == {
+            date(2026, 12, 24),
+            date(2026, 1, 1),
+        }
+        assert parse_holidays(None) == set()
+        assert parse_holidays([]) == set()
+
+    def test_malformed_holiday_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="expected YYYY-MM-DD"):
+            parse_holidays(["24/12/2026"])
+
+    def test_holiday_date_is_closed(self) -> None:
+        # Thursday 2026-12-24, 10:00 — inside the trading window but a configured holiday.
+        now = datetime(2026, 12, 24, 10, 0, tzinfo=UTC)
+        assert is_market_open(now, "09:00-16:30", {date(2026, 12, 24)}) is False
+        assert market_closed_reason(now, "09:00-16:30", {date(2026, 12, 24)}) == "holiday"
+
+    def test_non_holiday_date_is_open(self) -> None:
+        now = datetime(2026, 12, 23, 10, 0, tzinfo=UTC)
+        assert is_market_open(now, "09:00-16:30", {date(2026, 12, 24)}) is True
+
+
+class TestAgentCycleSkip:
+    """run_cycle must skip (and name the reason) on weekends and holidays."""
+
+    def _make_agent(self, **kwargs) -> StocksAgent:
+        pipeline = MagicMock()
+        agent = StocksAgent(
+            pipeline=pipeline,
+            storage=MagicMock(),
+            risk_engine=MagicMock(),
+            llm_client=MagicMock(),
+            symbols=["AAPL"],
+            market_hours="09:00-16:30",
+            market_timezone="UTC",  # keep local == UTC so fixtures stay simple
+            **kwargs,
+        )
+        return agent
+
+    async def test_weekend_cycle_is_skipped(self) -> None:
+        agent = self._make_agent()
+        with patch.object(stocks_agent_module, "datetime") as patched:
+            patched.now.return_value = datetime(2026, 1, 17, 10, 0, tzinfo=UTC)  # Saturday
+            results = await agent.run_cycle()
+        assert results == []
+        agent._pipeline.run.assert_not_called()
+
+    async def test_holiday_cycle_is_skipped(self) -> None:
+        agent = self._make_agent(market_holidays=["2026-12-24"])
+        with patch.object(stocks_agent_module, "datetime") as patched:
+            patched.now.return_value = datetime(2026, 12, 24, 10, 0, tzinfo=UTC)  # Thursday
+            results = await agent.run_cycle()
+        assert results == []
+        agent._pipeline.run.assert_not_called()
+
+    def test_malformed_holiday_config_raises_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="market_holidays"):
+            self._make_agent(market_holidays=["nope"])
 
 
 class TestLocalNowTimezone:

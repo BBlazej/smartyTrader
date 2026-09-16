@@ -84,6 +84,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - **LLM-fallback HOLDs are audit-only:** `TradeSignal.is_fallback` (stripped from model output, never forgeable) is stored in `llm_decisions.is_fallback`, excluded from `get_recent_decisions`, and full prompt+response is logged as an `llm_exchange` structlog event.
 - **Exit levels are enforced deterministically:** `Position` carries the entry signal's `stop_loss`/`take_profit` (passed via `place_order`), and `DecisionPipeline._check_exit_levels` closes the position the moment a cycle's mark breaches them — no LLM call, no risk gate (exits only reduce exposure; cooldown/daily-loss blocks must not strand a position). Toggled by `risk.enforce_exit_levels`; these are local checks, not venue-side stop orders. The stop rule now requires stops on *entries* only.
 - **Market-hours guard is timezone-aware:** the stocks guard compares the *local* wall clock to the `market_hours` window, localized via the config-driven `stocks_agent.market_timezone` (default `Europe/Warsaw`) so a UTC host stays correct. The zone is a setting, never hardcoded.
+- **Market-hours guard is weekend/holiday aware (§7.10):** Saturdays/Sundays are always closed when a real window is configured; `stocks_agent.market_holidays` (ISO dates, validated at startup) covers exchange holidays; overnight windows (`"22:00-08:00"`) wrap across midnight instead of silently never running. Skips log the reason (`weekend` / `holiday` / `outside trading window`).
 
 ### Documentation Rules
 

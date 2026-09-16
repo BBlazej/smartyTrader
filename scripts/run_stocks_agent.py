@@ -148,6 +148,7 @@ async def run(run_once: bool = False) -> None:
         timeframe="1d",
         market_hours=settings.stocks_agent.market_hours or "09:00-16:30",
         market_timezone=settings.stocks_agent.market_timezone or DEFAULT_MARKET_TIMEZONE,
+        market_holidays=settings.stocks_agent.market_holidays,
         alerts=_build_alerts(settings),
     )
 

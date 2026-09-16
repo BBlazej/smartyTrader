@@ -26,6 +26,7 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             interval_minutes=15,
             market_hours="09:00-16:30",
             market_timezone="Europe/Warsaw",
+            market_holidays=[],
             decision_history_limit=10,
         ),
         risk=SimpleNamespace(),

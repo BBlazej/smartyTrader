@@ -22,6 +22,12 @@ stocks_agent:
   interval_minutes: 15
   market_hours: "09:00-16:30"   # local wall-clock window for the exchange
   market_timezone: "Europe/Warsaw"   # zone the window is in (so a UTC host stays correct)
+  # Exchange closure dates (§7.10, ISO YYYY-MM-DD). Weekends are always closed;
+  # fill in holidays/one-off shutdowns here (validated at startup — bad entries
+  # abort with an actionable error rather than silently disabling the guard).
+  market_holidays: []
+  #   - "2026-12-24"
+  #   - "2026-12-26"
   symbols:
     - AAPL
     - MSFT

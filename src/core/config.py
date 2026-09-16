@@ -65,6 +65,9 @@ class AgentConfig:
         symbols: list[str] | None = None,
         market_hours: str | None = None,
         market_timezone: str | None = None,
+        # Exchange closure dates (§7.10): ISO strings ("YYYY-MM-DD"). Weekends are
+        # always closed; this list covers holidays and one-off shutdowns.
+        market_holidays: list[str] | None = None,
         decision_history_limit: int = 10,
     ) -> None:
         self.enabled = enabled
@@ -81,7 +84,8 @@ class AgentConfig:
         # comparison — a UTC host otherwise runs the guard 1–2h off. Falls back
         # to the agent's default zone when unset.
         self.market_timezone = market_timezone
-        # How many of this agent's prior decisions to feed back into the LLM
+        self.market_holidays = market_holidays or []
+        # How many of this agent's prior decisions to feed back into the prompt
         # prompt ("learn from its own track record"). 0 disables the section.
         self.decision_history_limit = decision_history_limit
 

@@ -13,7 +13,8 @@ stale off-hours data.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, time
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -50,17 +51,63 @@ def _parse_time(value: str) -> time:
     return time(int(hours), int(minutes))
 
 
-def is_market_open(now: datetime, market_hours: str) -> bool:
-    """Return ``True`` when ``now`` falls within the ``market_hours`` window.
+def parse_holidays(holidays: Iterable[str] | None) -> set[date]:
+    """Parse ISO date strings (``"YYYY-MM-DD"``) into a set of ``date``.
 
-    The comparison is on the **local wall clock** of ``now``. The configured window
-    is therefore expected to be in the same local time zone as ``now`` (for the WSE
-    that is Europe/Warsaw). A no-op window (bare ``"HH:MM"``) is always open.
+    Raises :class:`ValueError` on a malformed entry: a holiday-config typo must fail
+    loudly at startup rather than silently disable the guard mid-run.
+    """
+    parsed: set[date] = set()
+    for raw in holidays or []:
+        try:
+            parsed.add(date.fromisoformat(raw.strip()))
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid market_holidays entry {raw!r} (expected YYYY-MM-DD)"
+            ) from exc
+    return parsed
+
+
+def market_closed_reason(
+    now: datetime, market_hours: str, holidays: set[date] | None = None
+) -> str | None:
+    """Return why the market is closed at ``now``, or ``None`` when it is open.
+
+    Three checks, all on the **local wall clock** of ``now`` (the configured window
+    is expected to be in the exchange's zone — for the WSE that is Europe/Warsaw):
+
+    1. **Weekend:** Saturday/Sunday are always closed when a real window is
+       configured — time-of-day alone used to let a Saturday 10:00 tick run on
+       Friday's stale daily candles.
+    2. **Holiday:** any date in ``holidays`` (config-driven, see
+       ``stocks_agent.market_holidays``) is closed.
+    3. **Trading window:** an overnight window (``start > end``, e.g.
+       ``"22:00-08:00"``) wraps across midnight instead of producing the old
+       never-true comparison that silently kept the agent from ever running.
+
+    A no-op window (bare ``"HH:MM"`` spec, e.g. ``"24h"``) disables the whole
+    guard — always open, weekends included.
     """
     start, end = parse_market_hours(market_hours)
     if start == time.min and end == time.max:
-        return True
-    return start <= now.time() <= end
+        return None
+    if now.weekday() >= 5:
+        return "weekend"
+    if holidays and now.date() in holidays:
+        return "holiday"
+    t = now.time()
+    if start > end:  # overnight window: open from start through midnight, then until end
+        return None if (t >= start or t <= end) else "outside trading window"
+    return None if start <= t <= end else "outside trading window"
+
+
+def is_market_open(now: datetime, market_hours: str, holidays: set[date] | None = None) -> bool:
+    """Return ``True`` when the market is open at ``now``.
+
+    Thin wrapper over :func:`market_closed_reason` — see there for the weekend,
+    holiday and wrap-around semantics.
+    """
+    return market_closed_reason(now, market_hours, holidays) is None
 
 
 class StocksAgent:
@@ -81,6 +128,7 @@ class StocksAgent:
         timeframe: str = "1d",
         market_hours: str = DEFAULT_MARKET_HOURS,
         market_timezone: str = DEFAULT_MARKET_TIMEZONE,
+        market_holidays: Iterable[str] | None = None,
         alerts: AlertManager | None = None,
     ) -> None:
         self._pipeline = pipeline
@@ -91,6 +139,8 @@ class StocksAgent:
         self._timeframe = timeframe
         self._market_hours = market_hours
         self._market_timezone = market_timezone
+        # Validated eagerly: a malformed holiday raises here (startup), not per cycle.
+        self._holidays = parse_holidays(market_holidays)
         self._alerts = alerts or AlertManager()
         self._logger = structlog.get_logger().bind(component="stocks_agent")
         self._running = False
@@ -137,14 +187,20 @@ class StocksAgent:
         """Run one decision cycle across all configured symbols.
 
         A cycle is a bounded, finite operation (one pipeline run per symbol) and
-        always completes. If the exchange is closed for the configured window, the
-        cycle is skipped (no decision recorded) rather than trading on stale data.
+        always completes. If the exchange is closed — weekend, configured holiday,
+        or outside the trading window — the cycle is skipped (no decision recorded)
+        rather than trading on stale data.
 
         The guard is evaluated in the market's local zone (see ``_local_now``), so
         a UTC host runs the WSE window at the correct local hours.
         """
-        if not is_market_open(self._local_now(), self._market_hours):
-            self._logger.info("cycle skipped (market closed)", market_hours=self._market_hours)
+        closed_reason = market_closed_reason(self._local_now(), self._market_hours, self._holidays)
+        if closed_reason is not None:
+            self._logger.info(
+                "cycle skipped (market closed)",
+                reason=closed_reason,
+                market_hours=self._market_hours,
+            )
             return []
 
         self._logger.info("cycle start", symbols=self._symbols)
