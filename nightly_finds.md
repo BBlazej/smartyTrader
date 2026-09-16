@@ -37,3 +37,33 @@ fixed unless explicitly marked.
 5. `review.MD` claimed "no `.env.example` exists" — stale: the repo has had one at
    the root since the init commit; what actually existed was a *divergent duplicate*
    at `config/.env.example`. Resolved in §7.4 by consolidating into the root file.
+
+## Found while implementing §7.8 (outcome attribution)
+
+6. **The stop-loss gate rejects exit orders that lack a stop** (`risk_engine.py::_check_stop_loss`):
+   `Action.SELL` is treated like an entry, so a closing order without `stop_loss`
+   is rejected ("Active trade signal must include a stop-loss") and the position
+   can't be closed by the LLM at all. Meaningless for an exit — the stop belongs to
+   the position, not the close. Integration tests had to pass dummy stops to get a
+   sell through. §7.9 (deterministic SL/TP enforcement) should exempt closes from
+   this rule while keeping it for entries. **Status: open.**
+
+7. **Venue FIFO ledgers are memory-only across restarts** (`kraken_executor.py`,
+   `xtb_executor.py`, `paper_executor.load_portfolio_state`): the local lot ledger
+   is rebuilt only approximately — paper from the avg entry price of the loaded
+   snapshot (one merged lot, no decision ids), Kraken/XTB not at all. Consequence:
+   a position opened before a restart closes afterwards with *no* realized-PnL
+   attribution (we deliberately report nothing rather than a fabricated number).
+   Fix would be replaying `orders` rows (buy fills carry `decision_id`, price and
+   quantity) into the tracker at startup. **Status: open.**
+
+8. **XTB tracking only works for priced orders** (`xtb_executor.py`): the xAPI seam's
+   `create_order` payload is mapped without a fill price, so a *market* order that
+   fills has no basis to record and its later close reports no outcome. The pipeline
+   always sends marketable limits, so it does not bite today; real xAPI work (§7.16)
+   should read fills from the venue's order/position stream instead. **Status: open.**
+
+9. **`closed_entries` assumes a single-sided (long-only) book**: the tracker consumes
+   lots on sells only, matching this system's spot-only usage. If shorts are ever
+   supported (see #4), `PositionTracker.on_sell` must also handle opening shorts and
+   buys closing them. **Status: open (by design for now).**

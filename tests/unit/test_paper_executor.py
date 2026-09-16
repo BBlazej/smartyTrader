@@ -236,6 +236,64 @@ class TestProtocolCompliance:
         assert await executor.close() is None
 
 
+class TestClosedEntryAttribution:
+    """Closing sells attribute realized PnL back to the decision that opened
+    each FIFO lot, so entry decisions (not just sell rows) carry outcomes (§7.8)."""
+
+    async def test_sell_attributes_pnl_to_entry_decision(self, executor: PaperExecutor) -> None:
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=2.0, price=100.0, decision_id=42
+        )
+
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=2.0, price=110.0)
+
+        assert result.realized_pnl == pytest.approx(20.0)
+        assert len(result.closed_entries) == 1
+        assert result.closed_entries[0].entry_decision_id == 42
+        assert result.closed_entries[0].pnl == pytest.approx(20.0)
+
+    async def test_multi_lot_sells_follow_fifo(self, executor: PaperExecutor) -> None:
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0, decision_id=1
+        )
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=200.0, decision_id=2
+        )
+
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=150.0)
+
+        # FIFO: the first lot (basis 100) closes first — not the average cost.
+        assert result.realized_pnl == pytest.approx(50.0)
+        assert [e.entry_decision_id for e in result.closed_entries] == [1]
+
+    async def test_no_attribution_without_decision_ids(self, executor: PaperExecutor) -> None:
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=105.0)
+
+        assert result.realized_pnl == pytest.approx(5.0)
+        assert [e.entry_decision_id for e in result.closed_entries] == [None]
+
+    async def test_rehydrated_book_keeps_cost_basis(self) -> None:
+        # After restart rehydration the tracker must know the loaded basis.
+        from src.core.models import Position
+
+        executor = PaperExecutor(initial_cash=0.0, slippage_pct=0.0)
+        executor.load_portfolio_state(
+            cash=500.0,
+            positions=[
+                Position(
+                    symbol="BTC/USDT", quantity=2.0, avg_entry_price=100.0, current_price=100.0
+                )
+            ],
+        )
+
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=2.0, price=120.0)
+
+        assert result.status == "filled"
+        assert result.realized_pnl == pytest.approx(40.0)
+
+
 class TestUpdatePrice:
     async def test_updates_existing_position(self, executor: PaperExecutor) -> None:
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)

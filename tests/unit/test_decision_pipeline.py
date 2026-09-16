@@ -755,3 +755,128 @@ class TestSizingAtTheGate:
         assert result.order_result.status == "filled"
         assert result.order_result.quantity == pytest.approx(1.0)
         assert await executor.get_positions() == []
+
+
+class TestDecisionPersistence:
+    """§7.8: the pipeline persists every decision (approved, rejected, HOLD and
+    fallback alike) right after the risk gate, and exposes its row id on the
+    result so orders can link back to it."""
+
+    @staticmethod
+    def _pipeline(
+        risk_settings: RiskSettings,
+        storage: object,
+        signal: TradeSignal,
+        candles: list[OHLCV],
+    ) -> DecisionPipeline:
+        from src.core.risk_engine import RiskEngine
+
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=candles
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = signal
+        return DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0),
+            storage=storage,  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _buy_signal() -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="momentum",
+            stop_loss=95.0,
+        )
+
+    async def test_approved_decision_persisted_with_id(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV], tmp_db_path: str
+    ) -> None:
+        from src.core.storage import Storage
+
+        store = Storage(tmp_db_path)
+        await store.initialize()
+        try:
+            pipeline = self._pipeline(risk_settings, store, self._buy_signal(), sample_candles)
+            result = await pipeline.run(symbol="BTC/USDT")
+
+            assert result.executed
+            assert result.decision_id is not None
+            decisions = await store.get_recent_decisions("BTC/USDT")
+            assert [d.id for d in decisions] == [result.decision_id]
+            assert decisions[0].action == "buy"
+            assert decisions[0].risk_verdict == "approved"
+            # The cycle's market snapshot rides along with the decision.
+            assert len(await store.get_recent_snapshots("BTC/USDT")) == 1
+        finally:
+            await store.close()
+
+    async def test_rejected_decision_is_persisted_too(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV], tmp_db_path: str
+    ) -> None:
+        from src.core.storage import Storage
+
+        store = Storage(tmp_db_path)
+        await store.initialize()
+        try:
+            # No stop-loss → the gate rejects; the decision must still be on record.
+            signal = TradeSignal(
+                symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="no risk plan"
+            )
+            pipeline = self._pipeline(risk_settings, store, signal, sample_candles)
+            result = await pipeline.run(symbol="BTC/USDT")
+
+            assert not result.executed
+            assert result.decision_id is not None
+            decisions = await store.get_recent_decisions("BTC/USDT")
+            assert decisions[0].risk_verdict == "rejected"
+        finally:
+            await store.close()
+
+    async def test_fallback_hold_persisted_but_excluded_from_context(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV], tmp_db_path: str
+    ) -> None:
+        import sqlite3
+
+        from src.core.storage import Storage
+
+        store = Storage(tmp_db_path)
+        await store.initialize()
+        try:
+            fallback = TradeSignal(
+                symbol="BTC/USDT",
+                action=Action.HOLD,
+                confidence=0.0,
+                reasoning="LLM unavailable — safe fallback HOLD",
+                is_fallback=True,
+            )
+            pipeline = self._pipeline(risk_settings, store, fallback, sample_candles)
+            result = await pipeline.run(symbol="BTC/USDT")
+
+            assert result.decision_id is not None
+            # Stored for audit...
+            conn = sqlite3.connect(tmp_db_path)
+            try:
+                stored = conn.execute("SELECT action, is_fallback FROM llm_decisions").fetchall()
+            finally:
+                conn.close()
+            assert stored == [("hold", 1)]
+            # ...but never re-fed into the next cycle's prompt context.
+            assert await pipeline.get_recent_decisions("BTC/USDT") == []
+        finally:
+            await store.close()
+
+    async def test_no_storage_still_runs_without_decision_id(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV]
+    ) -> None:
+        pipeline = self._pipeline(risk_settings, None, self._buy_signal(), sample_candles)
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert result.executed
+        assert result.decision_id is None

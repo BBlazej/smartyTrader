@@ -244,6 +244,74 @@ class TestRealCcxtShapes:
         assert await executor.get_positions() == []  # repeat cycles stay safe
 
 
+class TestRealizedPnlAttribution:
+    """The keyed path tracks its own fills in a local FIFO ledger, so closing
+    sells report realized PnL attributed back to the entry decision (§7.8).
+    Venue commission is absent from create_order payloads, so it is gross."""
+
+    @pytest.mark.asyncio
+    async def test_closing_sell_realizes_pnl_and_attributes_entry(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "id": "D-BUY",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 100.0,
+        }
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0, decision_id=9
+        )
+
+        mock_client.create_order.return_value = {
+            "id": "D-SELL",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 120.0,
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=120.0)
+
+        assert result.realized_pnl == pytest.approx(20.0)
+        assert len(result.closed_entries) == 1
+        assert result.closed_entries[0].entry_decision_id == 9
+        assert result.closed_entries[0].pnl == pytest.approx(20.0)
+
+    @pytest.mark.asyncio
+    async def test_untracked_holdings_report_no_outcome(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        # A sell of lots we never filled locally (e.g. opened before a restart)
+        # must not fabricate a break-even outcome.
+        mock_client.create_order.return_value = {
+            "id": "D-SELL",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 120.0,
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=120.0)
+
+        assert result.status == "filled"
+        assert result.realized_pnl is None
+        assert result.closed_entries == []
+
+    @pytest.mark.asyncio
+    async def test_pending_orders_are_not_tracked(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        # An unfilled buy must not create a lot a later sell could "close".
+        mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+
+        mock_client.create_order.return_value = {
+            "id": "D-SELL",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 120.0,
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=120.0)
+        assert result.realized_pnl is None
+
+
 class TestClose:
     """close() must release the keyed exchange's aiohttp session.
 

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
 import httpx
+import structlog
 
 from .config import LLMSettings
 from .models import TradeSignal
 
-logger = logging.getLogger(__name__)
+# structlog like the rest of the codebase — safety-relevant LLM calls must land
+# in the configured renderers, not bypass them via stdlib logging (§7.19 nit).
+logger = structlog.get_logger()
 
 
 # JSON schema for the TradeSignal. Sent as the ``response_format`` so the LLM
@@ -99,26 +101,39 @@ class LLMClient:
                 data = resp.json()
                 raw_content = data["choices"][0]["message"]["content"]
 
+                # Audit trail (§3.3 / §7.8): the *full* prompt + response behind
+                # every live decision, not just the parsed action.
+                logger.info(
+                    "llm_exchange",
+                    model=self.settings.model,
+                    attempt=attempt,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response=raw_content,
+                )
+
                 signal = _parse_signal(raw_content)
-                logger.info("LLM returned signal: %s (attempt %d)", signal.action.value, attempt)
+                logger.debug("llm signal parsed", action=signal.action.value, attempt=attempt)
                 return signal
 
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.warning(
-                    "LLM call failed on attempt %d/%d: %s",
-                    attempt,
-                    self.settings.max_retries,
-                    exc,
+                    "llm_attempt_failed",
+                    attempt=attempt,
+                    max_retries=self.settings.max_retries,
+                    error=str(exc),
                 )
 
-        # All retries exhausted — return safe HOLD fallback
-        logger.error("All LLM retries exhausted. Last error: %s", last_error)
+        # All retries exhausted — return safe HOLD fallback. Marked so it is
+        # persisted for audit but never re-fed into later prompts (§7.8).
+        logger.error("llm_retries_exhausted", last_error=str(last_error))
         return TradeSignal(
             symbol="UNKNOWN",
             action="hold",
             confidence=0.0,
             reasoning=f"LLM unavailable after {self.settings.max_retries} retries: {last_error}",
+            is_fallback=True,
         )
 
 
@@ -137,4 +152,6 @@ def _parse_signal(raw: str) -> TradeSignal:
         text = text[start:end].strip()
 
     data = json.loads(text)
+    # The fallback marker is ours alone — never let model output forge it.
+    data.pop("is_fallback", None)
     return TradeSignal(**data)

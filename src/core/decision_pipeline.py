@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Protocol
 
 import structlog
@@ -57,6 +58,7 @@ class PipelineResult:
         order_result: OrderResult | None = None,
         snapshot: MarketSnapshot | None = None,
         error: str | None = None,
+        decision_id: int | None = None,
     ) -> None:
         self.symbol = symbol
         self.signal = signal
@@ -64,6 +66,9 @@ class PipelineResult:
         self.order_result = order_result
         self.snapshot = snapshot
         self.error = error
+        # Row id of this cycle's persisted decision (None when no storage or no
+        # signal). Orders and outcome backfills link through it (§7.8).
+        self.decision_id = decision_id
 
     @property
     def executed(self) -> bool:
@@ -196,6 +201,12 @@ class DecisionPipeline:
             signal, portfolio, planned_notional=planned_notional
         )
 
+        # Persist the decision (+ market snapshot) right after the gate so every
+        # outcome path — rejected, HOLD, or executed — records it, and an order
+        # placed next can link back to its decision row (§7.8: entry attribution
+        # needs the id *before* the fill happens).
+        decision_id = await self._persist_decision(signal, risk_result, snapshot)
+
         if risk_result.verdict == RiskVerdict.REJECTED:
             step_logger.warning(
                 "risk rejected",
@@ -203,14 +214,22 @@ class DecisionPipeline:
                 action=signal.action.value,
             )
             return PipelineResult(
-                symbol=symbol, signal=signal, risk_result=risk_result, snapshot=snapshot
+                symbol=symbol,
+                signal=signal,
+                risk_result=risk_result,
+                snapshot=snapshot,
+                decision_id=decision_id,
             )
 
         # Step 6 — Execute (only for BUY/SELL)
         if signal.action == Action.HOLD:
             step_logger.info("holding", confidence=signal.confidence)
             return PipelineResult(
-                symbol=symbol, signal=signal, risk_result=risk_result, snapshot=snapshot
+                symbol=symbol,
+                signal=signal,
+                risk_result=risk_result,
+                snapshot=snapshot,
+                decision_id=decision_id,
             )
 
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.EXECUTE)
@@ -224,6 +243,7 @@ class DecisionPipeline:
                 side=order_side,
                 quantity=quantity,
                 price=current_price,
+                decision_id=decision_id,
             )
 
             # Record the realized outcome for consecutive-loss tracking. A
@@ -247,6 +267,7 @@ class DecisionPipeline:
                 risk_result=risk_result,
                 order_result=order_result,
                 snapshot=snapshot,
+                decision_id=decision_id,
             )
         except Exception as exc:  # noqa: BLE001
             step_logger.error("execution failed", error=str(exc))
@@ -256,7 +277,64 @@ class DecisionPipeline:
                 risk_result=risk_result,
                 snapshot=snapshot,
                 error=f"Execution failed: {exc}",
+                decision_id=decision_id,
             )
+
+    async def _persist_decision(
+        self,
+        signal: TradeSignal,
+        risk_result: RiskResult | None,
+        snapshot: MarketSnapshot | None,
+    ) -> int | None:
+        """Persist this cycle's decision (+ market snapshot); returns the row id.
+
+        Fallback (LLM-unavailable) rows are marked ``is_fallback`` — they stay in
+        the DB for audit but are excluded from prompt context (§7.8). Fail-soft:
+        persistence errors never break a trading cycle.
+        """
+        if self._storage is None:
+            return None
+        verdict = risk_result.verdict.value if risk_result else "unknown"
+        reason = risk_result.reason if risk_result else None
+        try:
+            decision_id = await self._storage.save_llm_decision(
+                symbol=signal.symbol,
+                action=signal.action.value,
+                confidence=signal.confidence,
+                reasoning=signal.reasoning,
+                stop_loss=signal.stop_loss,
+                take_profit=signal.take_profit,
+                risk_verdict=verdict,
+                risk_reason=reason,
+                is_fallback=signal.is_fallback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to persist decision", symbol=signal.symbol, error=str(exc))
+            return None
+
+        if snapshot is not None:
+            try:
+                candles_json = json.dumps([c.model_dump(mode="json") for c in snapshot.candles])
+                indicators_json = json.dumps(snapshot.indicators)
+                await self._storage.save_market_snapshot(
+                    symbol=snapshot.symbol,
+                    timeframe=snapshot.timeframe,
+                    candles_json=candles_json,
+                    indicators_json=indicators_json,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to persist market snapshot", symbol=signal.symbol, error=str(exc)
+                )
+
+        logger.info(
+            "decision stored",
+            symbol=signal.symbol,
+            decision_id=decision_id,
+            action=signal.action.value,
+            risk_verdict=verdict,
+        )
+        return decision_id
 
     async def _get_portfolio_state(self) -> PortfolioState:
         """Build current portfolio state from executor positions."""

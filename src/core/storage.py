@@ -54,6 +54,9 @@ class LLMDecisionRow(Base):
     realized_pnl: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # Net PnL once the position closed (None = still open)
+    # True for LLM-unavailable HOLD fallbacks — persisted for audit, excluded
+    # from prompt context (§7.8).
+    is_fallback: Mapped[bool] = mapped_column(default=False)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -145,6 +148,13 @@ class Storage:
         if "realized_pnl" not in existing:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE llm_decisions ADD COLUMN realized_pnl FLOAT NULL"))
+        if "is_fallback" not in existing:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE llm_decisions ADD COLUMN is_fallback INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
 
     async def close(self) -> None:
         await self._engine.dispose()
@@ -203,6 +213,7 @@ class Storage:
         risk_verdict: str,
         risk_reason: str | None,
         realized_pnl: float | None = None,
+        is_fallback: bool = False,
     ) -> int:
         async with await self._session() as session:
             row = LLMDecisionRow(
@@ -215,6 +226,7 @@ class Storage:
                 risk_verdict=risk_verdict,
                 risk_reason=risk_reason,
                 realized_pnl=realized_pnl,
+                is_fallback=is_fallback,
             )
             session.add(row)
             await session.commit()
@@ -242,6 +254,29 @@ class Storage:
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to record realized pnl", decision_id=decision_id, error=str(exc))
 
+    async def add_realized_pnl(self, decision_id: int, delta: float) -> None:
+        """Accumulate realized PnL onto a (typically the *entry*) decision (§7.8).
+
+        A position closed in several tranches must sum its shares onto the same
+        opening decision; unlike :meth:`set_realized_pnl` this adds to any
+        existing value instead of overwriting. Fail-soft like ``set_realized_pnl``.
+        """
+        from sqlalchemy import func, update
+
+        log = structlog.get_logger()
+        try:
+            async with await self._session() as session:
+                await session.execute(
+                    update(LLMDecisionRow)
+                    .where(LLMDecisionRow.id == decision_id)
+                    .values(realized_pnl=func.coalesce(LLMDecisionRow.realized_pnl, 0.0) + delta)
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "failed to accumulate realized pnl", decision_id=decision_id, error=str(exc)
+            )
+
     async def get_closed_decisions(self, limit: int = 50) -> list[LLMDecisionRow]:
         """Most recent decisions that carry a realized outcome (``realized_pnl`` set).
 
@@ -268,7 +303,14 @@ class Storage:
         position is still open), which is surfaced to the LLM as context.
         """
         async with await self._session() as session:
-            stmt = select(LLMDecisionRow).order_by(LLMDecisionRow.timestamp.desc()).limit(limit)
+            # LLM-unavailable fallback rows are audit-only context — never re-fed
+            # to the model as if it had genuinely decided to HOLD (§7.8).
+            stmt = (
+                select(LLMDecisionRow)
+                .where(LLMDecisionRow.is_fallback.isnot(True))
+                .order_by(LLMDecisionRow.timestamp.desc())
+                .limit(limit)
+            )
             if symbol:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
             result = await session.execute(stmt)

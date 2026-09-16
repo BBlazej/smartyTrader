@@ -52,6 +52,12 @@ class TestParseSignal:
         with pytest.raises(json.JSONDecodeError):
             _parse_signal("not json at all")
 
+    def test_model_cannot_forge_fallback_flag(self) -> None:
+        # is_fallback marks the client's own LLM-unavailable HOLDs; anything the
+        # model puts there is ignored (§7.8 — audit rows must stay trustworthy).
+        raw = '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x", "is_fallback": true}'
+        assert _parse_signal(raw).is_fallback is False
+
 
 class TestAskTradeSignal:
     @pytest.mark.asyncio
@@ -120,6 +126,31 @@ class TestAskTradeSignal:
             assert signal.action.value == "hold"
             assert signal.confidence == 0.0
             assert "LLM unavailable" in signal.reasoning
+            # Marked as a fallback so it is stored for audit but never re-fed
+            # into later prompts as if the model had genuinely decided (§7.8).
+            assert signal.is_fallback is True
+
+    @pytest.mark.asyncio
+    async def test_genuine_signal_is_not_marked_fallback(self, client: LLMClient) -> None:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "test"}'
+                    }
+                }
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client, "post", new=AsyncMock(return_value=mock_response)):
+            signal = await client.ask_trade_signal(
+                system_prompt="You are a trader.",
+                user_prompt="Analyze BTC.",
+            )
+
+        assert signal.is_fallback is False
 
 
 class TestEndpointParsing:

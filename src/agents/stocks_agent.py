@@ -169,7 +169,9 @@ class StocksAgent:
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("failed to update daily value", symbol=symbol, error=str(exc))
 
-        decision_id = await self._persist_decision(symbol, result) if result.signal else None
+        # The pipeline persists the decision itself (right after the risk gate)
+        # so an order can link back to its decision row; we just carry the id.
+        decision_id = result.decision_id
 
         if result.order_result is not None:
             await self._persist_order(result, decision_id)
@@ -182,6 +184,12 @@ class StocksAgent:
                 and result.order_result.realized_pnl is not None
             ):
                 await self._storage.set_realized_pnl(decision_id, result.order_result.realized_pnl)
+
+            # Attribute the closing sell's PnL back to the *entry* decisions that
+            # opened the consumed lots (§7.8 — FIFO tracker's closed_entries).
+            for entry in result.order_result.closed_entries:
+                if entry.entry_decision_id is not None:
+                    await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
 
         await self._persist_portfolio()
         await self._maybe_alert(symbol, result)
@@ -211,37 +219,6 @@ class StocksAgent:
             )
 
     # ── Persistence ───────────────────────────────────────────
-
-    async def _persist_decision(self, symbol: str, result: PipelineResult) -> int:
-        signal = result.signal
-        assert signal is not None
-        verdict = result.risk_result.verdict.value if result.risk_result else "unknown"
-        reason = result.risk_result.reason if result.risk_result else None
-
-        decision_id = await self._storage.save_llm_decision(
-            symbol=symbol,
-            action=signal.action.value,
-            confidence=signal.confidence,
-            reasoning=signal.reasoning,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
-            risk_verdict=verdict,
-            risk_reason=reason,
-        )
-
-        if result.snapshot is not None:
-            candles_json = json.dumps([c.model_dump(mode="json") for c in result.snapshot.candles])
-            indicators_json = json.dumps(result.snapshot.indicators)
-            await self._storage.save_market_snapshot(
-                symbol=symbol,
-                timeframe=result.snapshot.timeframe,
-                candles_json=candles_json,
-                indicators_json=indicators_json,
-            )
-        self._logger.info(
-            "decision stored", symbol=symbol, decision_id=decision_id, action=signal.action.value
-        )
-        return decision_id
 
     async def _persist_order(self, result: PipelineResult, decision_id: int | None = None) -> None:
         order = result.order_result

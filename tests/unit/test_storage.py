@@ -151,6 +151,79 @@ class TestLLMDecisions:
             await storage.set_realized_pnl(1, 10.0)  # must not raise
 
 
+class TestDecisionAttribution:
+    """Fallback marking and entry-decision PnL accumulation (§7.8)."""
+
+    @pytest.mark.asyncio
+    async def test_is_fallback_persisted_and_excluded_from_recent(self, storage: Storage) -> None:
+        real_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="buy",
+            confidence=0.8,
+            reasoning="real decision",
+            stop_loss=1.0,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        fallback_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="hold",
+            confidence=0.0,
+            reasoning="LLM unavailable — safe fallback",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+            is_fallback=True,
+        )
+
+        rows = await storage.get_recent_decisions("BTC/USDT")
+        ids = {row.id for row in rows}
+        assert real_id in ids
+        assert fallback_id not in ids  # audit-only, never re-fed into prompts
+
+    @pytest.mark.asyncio
+    async def test_default_is_not_fallback(self, storage: Storage) -> None:
+        decision_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="hold",
+            confidence=0.7,
+            reasoning="plain hold",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        rows = await storage.get_recent_decisions("BTC/USDT")
+        assert [row.id for row in rows] == [decision_id]
+
+    @pytest.mark.asyncio
+    async def test_add_realized_pnl_accumulates_from_null(self, storage: Storage) -> None:
+        decision_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="buy",
+            confidence=0.8,
+            reasoning="entry",
+            stop_loss=1.0,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        assert (await storage.get_recent_decisions("BTC/USDT"))[0].realized_pnl is None
+
+        await storage.add_realized_pnl(decision_id, 5.0)
+        await storage.add_realized_pnl(decision_id, -2.0)  # a later tranche at a loss
+
+        rows = {r.id: r for r in await storage.get_recent_decisions("BTC/USDT")}
+        assert rows[decision_id].realized_pnl == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_add_realized_pnl_fail_soft(self, storage: Storage) -> None:
+        # A missing row must warn and continue, never raise into the cycle.
+        await storage.add_realized_pnl(99_999, 10.0)
+
+
 class TestOrders:
     @pytest.mark.asyncio
     async def test_save_order(self, storage: Storage) -> None:

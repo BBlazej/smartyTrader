@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from ..core.models import OrderResult, OrderSide, Position
+from .position_tracker import PositionTracker
 
 
 class PaperExecutor:
@@ -31,6 +32,10 @@ class PaperExecutor:
         self.fee_pct = fee_pct
         # symbol → Position
         self._positions: dict[str, Position] = {}
+        # FIFO cost-basis ledger over our own fills. It mirrors _positions but
+        # keeps per-lot basis + the entry decision id, so closing sells report
+        # closed_entries for the "learn from your track record" backfill (§7.8).
+        self._tracker = PositionTracker()
         # order_id → OrderResult (for cancellation lookup)
         self._orders: dict[str, OrderResult] = {}
 
@@ -56,6 +61,7 @@ class PaperExecutor:
         side: OrderSide,
         quantity: float,
         price: float | None = None,
+        decision_id: int | None = None,
     ) -> OrderResult:
         """Place a simulated order. Returns filled result or rejection."""
 
@@ -85,7 +91,9 @@ class PaperExecutor:
         order_id = _gen_order_id()
 
         if side == OrderSide.BUY:
-            result = await self._execute_buy(symbol, quantity, effective_price, order_id, now)
+            result = await self._execute_buy(
+                symbol, quantity, effective_price, order_id, now, decision_id
+            )
         else:
             result = await self._execute_sell(symbol, quantity, effective_price, order_id, now)
 
@@ -99,6 +107,7 @@ class PaperExecutor:
         price: float,
         order_id: str,
         filled_at: datetime,
+        decision_id: int | None = None,
     ) -> OrderResult:
         cost = quantity * price
         fee = cost * self.fee_pct
@@ -130,6 +139,8 @@ class PaperExecutor:
                 avg_entry_price=price,
                 current_price=price,
             )
+
+        self._tracker.on_buy(symbol, quantity, price, fee=fee, decision_id=decision_id)
 
         return OrderResult(
             order_id=order_id,
@@ -166,17 +177,14 @@ class PaperExecutor:
         sell_fee = proceeds * self.fee_pct
         self._cash += proceeds - sell_fee
 
-        # Realize *net* PnL for the closed quantity against the average entry
-        # price, deducting the round-trip commission (buy side approximated with
-        # the average entry, sell side at the fill price). The pipeline uses this
-        # to record a true win/loss (not a fill event) — and it is now what the
-        # LLM is shown, so it reflects real net economics.
-        gross = (price - pos.avg_entry_price) * quantity
-        buy_fee = (quantity * pos.avg_entry_price) * self.fee_pct
-        realized_pnl = gross - buy_fee - sell_fee
+        # Realize *net* PnL via the shared FIFO tracker: each consumed lot
+        # carries its own entry price and paid commission, so the result equals
+        # the old average-cost calculation for single-lot books (§7.8) while also
+        # attributing PnL back to the originating decisions (closed_entries).
+        outcome = self._tracker.on_sell(symbol, quantity, price, fee=sell_fee)
 
         pos.quantity -= quantity
-        if pos.quantity == 0:
+        if pos.quantity <= 1e-12:
             del self._positions[symbol]
 
         return OrderResult(
@@ -187,7 +195,8 @@ class PaperExecutor:
             price=price,
             status="filled",
             filled_at=filled_at,
-            realized_pnl=realized_pnl,
+            realized_pnl=outcome.net_pnl,
+            closed_entries=outcome.closed_entries,
         )
 
     async def get_positions(self) -> list[Position]:
@@ -217,6 +226,12 @@ class PaperExecutor:
         """
         self._cash = cash
         self._positions = {p.symbol: p for p in positions}
+
+        # Rebuild one FIFO lot per loaded position so post-restart sells keep a
+        # correct cost basis (buy-side fees are already in the bankroll history).
+        self._tracker = PositionTracker()
+        for p in positions:
+            self._tracker.on_buy(p.symbol, p.quantity, p.avg_entry_price)
 
     def update_price(self, symbol: str, new_price: float) -> None:
         """Re-mark an open position at the latest market price.

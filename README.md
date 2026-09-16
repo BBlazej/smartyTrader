@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 276 tests, no network needed
+pytest                      # 309 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -75,17 +75,19 @@ src/
 │   ├── llm_client.py         # LM Studio HTTP client (retry + JSON parse + HOLD fallback)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live)
 │   ├── storage.py            # SQLite (SQLAlchemy + aiosqlite) repository
-│   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → execute (+ decision-history loop)
+│   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → persist decision → execute
+│   ├── rehydration.py        # Restores paper book + risk trackers from SQLite at startup
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (Kraken)
 │   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam)
 ├── execution/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
+│   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
 │   ├── kraken_executor.py    # Kraken testnet orders via CCXT
 │   └── xtb_executor.py       # XTB demo orders (xAPI seam)
 ├── agents/
-│   ├── crypto_agent.py       # Crypto cycle: pipeline + risk tracking + persistence
+│   ├── crypto_agent.py       # Crypto cycle: pipeline + risk tracking + order/portfolio persistence
 │   └── stocks_agent.py       # Stocks cycle + market-hours guard
 ├── analysis/
 │   └── __init__.py           # (empty — indicators & prompt currently live in core)
@@ -171,8 +173,13 @@ against real ccxt payloads** (nested balances, fill price/time recording,
 graceful spot `fetch_positions` degradation — live testnet smoke still pending),
 and **restart-safe paper state** (cash/positions rehydrate from the latest
 portfolio snapshot; daily-loss baseline and losing-streak/cooldown rebuild from
-persisted outcomes; `execution.initial_cash` is config-driven).
-**276 tests passing at ~94% coverage.**
+persisted outcomes; `execution.initial_cash` is config-driven), and **honest
+outcome attribution** (one shared FIFO tracker gives every executor's closing
+fills a `realized_pnl` plus per-entry-decision `closed_entries`, so the PnL of a
+closed position lands back on the buy decision that opened it; LLM-unavailable
+fallback HOLDs are stored for audit but never re-fed into prompts, and each live
+decision's full prompt+response is logged).
+**309 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

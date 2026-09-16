@@ -28,6 +28,7 @@ from typing import Any, Protocol
 import structlog
 
 from ..core.models import OrderResult, OrderSide, Position
+from .position_tracker import PositionTracker
 
 logger = structlog.get_logger()
 
@@ -79,6 +80,11 @@ class KrakenExecutor:
         self._order_symbols: dict[str, str] = {}
         # One-time warning guard for the Kraken-spot fetch_positions gap (§7.6).
         self._positions_unsupported_logged = False
+        # Local FIFO ledger of *our* fills. Kraken spot gives no fetch_positions,
+        # so this both enables realized_pnl on closing sells and attributes it to
+        # entry decisions via closed_entries (§7.8). Venue fees are not in the
+        # create_order payload, so tracked PnL is gross of commission.
+        self._tracker = PositionTracker()
 
     @property
     def client(self) -> ExchangeClient:
@@ -111,6 +117,7 @@ class KrakenExecutor:
         side: OrderSide,
         quantity: float,
         price: float | None = None,
+        decision_id: int | None = None,
     ) -> OrderResult:
         order_type = "limit" if price is not None else "market"
         raw = await self._client.create_order(symbol, order_type, side.value, quantity, price=price)
@@ -131,15 +138,37 @@ class KrakenExecutor:
                 _parse_ms_timestamp(raw.get("timestamp")) or datetime.now(UTC)
             )
 
-        return OrderResult(
+        filled_qty = float(raw.get("filled") or raw.get("amount") or quantity)
+        result = OrderResult(
             order_id=order_id,
             symbol=symbol,
             side=side,
-            quantity=float(raw.get("filled") or raw.get("amount") or quantity),
+            quantity=filled_qty,
             price=float(fill_price) if fill_price is not None else None,
             status=status,
             filled_at=filled_at,
         )
+
+        # Feed the local FIFO ledger so closing sells realize PnL back to the
+        # entry decisions (§7.8). Skipped without a usable fill price.
+        if status == "filled" and fill_price is not None:
+            fill = float(fill_price)
+            if side == OrderSide.BUY:
+                self._tracker.on_buy(symbol, filled_qty, fill, decision_id=decision_id)
+            elif self._tracker.quantity(symbol) > 0:
+                outcome = self._tracker.on_sell(symbol, filled_qty, fill)
+                # Gross of venue commission (not reported by create_order); the
+                # paper executor's net-of-fee counterpart tracks its own fees.
+                result.realized_pnl = outcome.gross_pnl
+                result.closed_entries = outcome.closed_entries
+            else:
+                # Nothing tracked (e.g. holdings opened before a restart): better
+                # no outcome than a fabricated break-even one (§7.8).
+                logger.debug(
+                    "closing sell has no locally tracked lots; PnL not reported",
+                    symbol=symbol,
+                )
+        return result
 
     async def get_positions(self) -> list[Position]:
         try:

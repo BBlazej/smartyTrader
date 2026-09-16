@@ -22,6 +22,7 @@ from typing import Any, Protocol
 import structlog
 
 from ..core.models import OrderResult, OrderSide, Position
+from .position_tracker import PositionTracker
 
 logger = structlog.get_logger()
 
@@ -64,6 +65,10 @@ class XTBExecutor:
     def __init__(self, client: XTBClient) -> None:
         self._client = client
         self._closed = False
+        # Local FIFO ledger of our own fills (§7.8): realized_pnl on closing
+        # sells + attribution back to entry decisions via closed_entries.
+        # xAPI's create_order reports no commission, so tracked PnL is gross.
+        self._tracker = PositionTracker()
 
     @property
     def client(self) -> XTBClient:
@@ -95,22 +100,42 @@ class XTBExecutor:
         side: OrderSide,
         quantity: float,
         price: float | None = None,
+        decision_id: int | None = None,
     ) -> OrderResult:
         raw = await self._client.create_order(symbol, side.value, quantity, price=price)
         raw = raw or {}
 
         order_id = str(raw.get("order_id") or raw.get("id") or "")
         status = _STATUS_MAP.get(str(raw.get("status", "pending")), "pending")
+        filled_qty = float(raw.get("quantity", quantity))
 
-        return OrderResult(
+        result = OrderResult(
             order_id=order_id,
             symbol=symbol,
             side=side,
-            quantity=float(raw.get("quantity", quantity)),
+            quantity=filled_qty,
             price=float(price) if price is not None else None,
             status=status,
             filled_at=None,
         )
+
+        # xAPI fills the requested price; track it locally so closing sells
+        # realize PnL back to their entry decisions (§7.8).
+        if status == "filled" and price is not None:
+            if side == OrderSide.BUY:
+                self._tracker.on_buy(symbol, filled_qty, float(price), decision_id=decision_id)
+            elif self._tracker.quantity(symbol) > 0:
+                outcome = self._tracker.on_sell(symbol, filled_qty, float(price))
+                result.realized_pnl = outcome.gross_pnl
+                result.closed_entries = outcome.closed_entries
+            else:
+                # Holdings opened before a restart leave no local lots; report no
+                # outcome rather than a fabricated break-even one (§7.8).
+                logger.debug(
+                    "closing sell has no locally tracked lots; PnL not reported",
+                    symbol=symbol,
+                )
+        return result
 
     async def get_positions(self) -> list[Position]:
         raw_positions = await self._client.get_positions()

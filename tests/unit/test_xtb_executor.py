@@ -130,6 +130,65 @@ class TestGetCash:
         mock_client.get_balance.assert_awaited_once()
 
 
+class TestRealizedPnlAttribution:
+    """Filled priced orders feed the executor's local FIFO ledger so closing
+    sells realize PnL back to their entry decision (§7.8). xAPI reports no
+    commission in create_order, so realized_pnl is gross."""
+
+    @pytest.mark.asyncio
+    async def test_closing_sell_realizes_pnl_and_attributes_entry(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "quantity": 2.0,
+        }
+        await executor.place_order("AAPL", OrderSide.BUY, quantity=2.0, price=100.0, decision_id=7)
+
+        mock_client.create_order.return_value = {
+            "order_id": "2",
+            "status": "filled",
+            "quantity": 2.0,
+        }
+        result = await executor.place_order("AAPL", OrderSide.SELL, quantity=2.0, price=110.0)
+
+        assert result.realized_pnl == pytest.approx(20.0)
+        assert len(result.closed_entries) == 1
+        assert result.closed_entries[0].entry_decision_id == 7
+        assert result.closed_entries[0].pnl == pytest.approx(20.0)
+
+    @pytest.mark.asyncio
+    async def test_untracked_holdings_report_no_outcome(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "quantity": 1.0,
+        }
+        result = await executor.place_order("AAPL", OrderSide.SELL, quantity=1.0, price=50.0)
+
+        assert result.status == "filled"
+        assert result.realized_pnl is None
+        assert result.closed_entries == []
+
+    @pytest.mark.asyncio
+    async def test_market_orders_without_price_are_not_tracked(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        # No fill price in the payload → nothing to base cost basis on.
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "quantity": 1.0,
+        }
+        await executor.place_order("AAPL", OrderSide.BUY, quantity=1.0)
+
+        result = await executor.place_order("AAPL", OrderSide.SELL, quantity=1.0, price=60.0)
+        assert result.realized_pnl is None
+
+
 class TestClose:
     """close() must release the underlying xAPI client (its session, if any)."""
 

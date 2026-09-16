@@ -27,6 +27,10 @@ class TradeSignal(BaseModel):
     stop_loss: float | None = None
     take_profit: float | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # True only for the safe HOLD fallback the LLM client returns when all
+    # retries were exhausted. Fallback rows are persisted for audit but never
+    # re-fed into later prompts (§7.8).
+    is_fallback: bool = False
 
 
 # ── Decision History ──────────────────────────────────────────
@@ -128,6 +132,18 @@ class OrderSide(str, Enum):
     SELL = "sell"
 
 
+class ClosedEntry(BaseModel):
+    """One entry decision's share of a closing sell's realized PnL (§7.8).
+
+    Produced by the shared FIFO :class:`~src.execution.position_tracker.PositionTracker`
+    so the agent can backfill the *originating buy* decisions — not just the
+    sell row — once a position closes.
+    """
+
+    entry_decision_id: int | None = None
+    pnl: float  # net of tracked fees for the consumed lot(s)
+
+
 class OrderResult(BaseModel):
     order_id: str
     symbol: str
@@ -138,6 +154,8 @@ class OrderResult(BaseModel):
     filled_at: datetime | None = None
     reason: str | None = None  # Explanation when rejected
     realized_pnl: float | None = None  # PnL realized by this order (set on a closing sell)
+    # Per-entry-decision attribution of realized_pnl (set on closing fills).
+    closed_entries: list[ClosedEntry] = []
 
 
 # ── Executor Protocol ───────────────────────────────────────
@@ -157,7 +175,12 @@ class Executor(Protocol):
         side: OrderSide,
         quantity: float,
         price: float | None = None,
-    ) -> OrderResult: ...
+        decision_id: int | None = None,
+    ) -> OrderResult:
+        """Place an order. ``decision_id`` links the order (and, via the shared
+        FIFO tracker, its closing fills' ``closed_entries``) to the LLM decision
+        that produced it (§7.8)."""
+        ...
 
     async def get_positions(self) -> list[Position]: ...
 
