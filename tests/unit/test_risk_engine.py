@@ -207,6 +207,90 @@ class TestConsecutiveLossCooldown:
         assert result.verdict == RiskVerdict.APPROVED
 
 
+class TestDrawdown:
+    """The max-drawdown rule is live [§7.5]: equity below ``max_drawdown_pct``
+    of its high-water mark blocks active signals."""
+
+    @staticmethod
+    def _active_signal() -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="Recovery attempt",
+            stop_loss=59000.0,
+        )
+
+    def test_rejects_beyond_max_drawdown(self, engine: RiskEngine) -> None:
+        engine.seed_peak_equity(10_000.0)
+        portfolio = PortfolioState(cash=9_400.0, positions=[])  # -6% from peak
+
+        result = engine.evaluate(self._active_signal(), portfolio)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "drawdown" in (result.reason or "").lower()
+
+    def test_approves_within_max_drawdown(self, engine: RiskEngine) -> None:
+        engine.seed_peak_equity(10_000.0)
+        portfolio = PortfolioState(cash=9_700.0, positions=[])  # -3% from peak
+
+        result = engine.evaluate(self._active_signal(), portfolio)
+        assert result.verdict == RiskVerdict.APPROVED
+
+    def test_first_reading_seeds_peak_lazily(self, engine: RiskEngine) -> None:
+        """No history at all ⇒ the first valuation defines the peak."""
+        portfolio = PortfolioState(cash=10_000.0, positions=[])
+        assert engine.peak_equity is None
+        result = engine.evaluate(self._active_signal(), portfolio)
+        assert result.verdict == RiskVerdict.APPROVED
+        assert engine.peak_equity == pytest.approx(10_000.0)
+
+    def test_seed_never_lowers_the_peak(self, engine: RiskEngine) -> None:
+        engine.seed_peak_equity(10_000.0)
+        engine.seed_peak_equity(5_000.0)
+        assert engine.peak_equity == pytest.approx(10_000.0)
+
+    def test_new_highs_raise_the_peak(self, engine: RiskEngine) -> None:
+        engine.update_daily_value(10_000.0)
+        engine.update_daily_value(11_000.0)
+        assert engine.peak_equity == pytest.approx(11_000.0)
+
+
+class TestPositionSizeGate:
+    """The gate caps the *planned* order notional at max_position_pct [§7.5]."""
+
+    @staticmethod
+    def _active_signal() -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="Full size attempt",
+            stop_loss=59000.0,
+        )
+
+    def test_rejects_oversized_planned_notional(
+        self, engine: RiskEngine, healthy_portfolio: PortfolioState
+    ) -> None:
+        # total_value = 10_000 + 10 × 155 = 11_550 → cap = 1_155
+        result = engine.evaluate(self._active_signal(), healthy_portfolio, planned_notional=2_000.0)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "position" in (result.reason or "").lower()
+
+    def test_approves_notional_at_cap(
+        self, engine: RiskEngine, healthy_portfolio: PortfolioState
+    ) -> None:
+        result = engine.evaluate(self._active_signal(), healthy_portfolio, planned_notional=1_155.0)
+        assert result.verdict == RiskVerdict.APPROVED
+
+    def test_no_plan_still_passes_size_rule(
+        self, engine: RiskEngine, healthy_portfolio: PortfolioState
+    ) -> None:
+        # Callers without pipeline sizing (e.g. tests of other rules) keep the
+        # previous behavior: only the zero-value guard applies.
+        result = engine.evaluate(self._active_signal(), healthy_portfolio)
+        assert result.verdict == RiskVerdict.APPROVED
+
+
 class TestZeroPortfolio:
     def test_rejects_zero_value(self, engine: RiskEngine) -> None:
         portfolio = PortfolioState(cash=0.0, positions=[])

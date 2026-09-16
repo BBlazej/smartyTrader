@@ -319,6 +319,19 @@ class Storage:
             await session.commit()
             return row.id
 
+    async def get_max_portfolio_value(self) -> float | None:
+        """Highest total_value ever recorded in portfolio snapshots (or ``None``).
+
+        Used to seed the risk engine's drawdown high-water mark at startup so
+        the guard persists across process restarts.
+        """
+        from sqlalchemy import func
+
+        async with await self._session() as session:
+            result = await session.execute(select(func.max(PortfolioSnapshotRow.total_value)))
+            value = result.scalar()
+            return float(value) if value is not None else None
+
     async def get_latest_portfolio_snapshot(self) -> PortfolioSnapshotRow | None:
         async with await self._session() as session:
             stmt = select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc()).limit(1)

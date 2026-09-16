@@ -139,6 +139,14 @@ async def run(run_once: bool = False) -> None:
     llm_client = LLMClient(settings.llm)
     risk_engine = RiskEngine(settings.risk)
 
+    # Seed the drawdown high-water mark from persisted portfolio history so a
+    # restart cannot reset the guard (§7.5). Fail-soft: without history the
+    # engine seeds lazily from the first reading.
+    try:
+        risk_engine.seed_peak_equity(await storage.get_max_portfolio_value())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
+
     # Data + execution. Live public data in both modes; safe paper execution by
     # default, Kraken testnet only when an API key is provided.
     provider, executor, mode = _build_data_and_execution(settings)

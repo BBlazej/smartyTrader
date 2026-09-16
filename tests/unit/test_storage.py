@@ -215,6 +215,19 @@ class TestPortfolioSnapshots:
         assert history[0].total_value == pytest.approx(9800.0)
         assert history[-1].total_value == pytest.approx(10000.0)
 
+    @pytest.mark.asyncio
+    async def test_get_max_portfolio_value(self, storage: Storage) -> None:
+        """MAX(total_value) over all snapshots — the drawdown high-water seed [§7.5]."""
+        for value in [10_000.0, 12_500.0, 9_800.0]:
+            await storage.save_portfolio_snapshot(
+                cash=value, positions_json="[]", total_value=value
+            )
+        assert await storage.get_max_portfolio_value() == pytest.approx(12_500.0)
+
+    @pytest.mark.asyncio
+    async def test_get_max_portfolio_value_empty(self, storage: Storage) -> None:
+        assert await storage.get_max_portfolio_value() is None
+
 
 class TestStorageLifecycle:
     @pytest.mark.asyncio

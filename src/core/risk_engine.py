@@ -83,6 +83,11 @@ class RiskEngine:
         self.settings = settings
         self._daily_tracker = DailyLossTracker()
         self._loss_tracker = ConsecutiveLossTracker()
+        # High-water mark for the max-drawdown rule. In-memory only — callers
+        # seed it from persisted portfolio history at startup (see
+        # ``seed_peak_equity``) so a process restart cannot silently reset the
+        # drawdown guard to its most permissive state.
+        self._peak_equity: float | None = None
 
     # ── Public API ────────────────────────────────────────────
 
@@ -90,8 +95,14 @@ class RiskEngine:
         self,
         signal: TradeSignal,
         portfolio: PortfolioState,
+        planned_notional: float | None = None,
     ) -> RiskResult:
         """Check a trade signal against all risk rules.
+
+        ``planned_notional`` is the *proposed* order size in quote currency
+        (quantity × price) as computed by the pipeline; when provided, the
+        position-size rule caps it at ``max_position_pct`` of portfolio value —
+        so a sizing regression is caught *at the gate*, before execution.
 
         Returns ``RiskVerdict.APPROVED`` only if every rule passes.
         """
@@ -102,7 +113,7 @@ class RiskEngine:
         checks = [
             self._check_confidence(signal),
             self._check_max_positions(signal, portfolio),
-            self._check_position_size(signal, portfolio),
+            self._check_position_size(signal, portfolio, planned_notional),
             self._check_daily_loss(portfolio),
             self._check_drawdown(portfolio),
             self._check_cooldown(),
@@ -126,9 +137,31 @@ class RiskEngine:
             )
 
     def update_daily_value(self, portfolio_value: float) -> None:
-        """Update daily loss tracker with latest portfolio value."""
+        """Update daily loss tracker (and the drawdown high-water mark)."""
         self._daily_tracker.reset_if_new_day(portfolio_value)
         self._daily_tracker.update_latest_value(portfolio_value)
+        self.note_equity(portfolio_value)
+
+    def note_equity(self, portfolio_value: float) -> None:
+        """Raise the high-water mark if this equity value is a new peak."""
+        if portfolio_value > 0 and (
+            self._peak_equity is None or portfolio_value > self._peak_equity
+        ):
+            self._peak_equity = portfolio_value
+
+    def seed_peak_equity(self, portfolio_value: float | None) -> None:
+        """Seed the high-water mark from persisted history at startup.
+
+        The peak lives only in memory otherwise, so a restart would reset the
+        drawdown guard. Callers read ``MAX(total_value)`` from stored portfolio
+        snapshots and pass it here; later live values only ever raise the peak.
+        """
+        if portfolio_value is not None:
+            self.note_equity(portfolio_value)
+
+    @property
+    def peak_equity(self) -> float | None:
+        return self._peak_equity
 
     # ── Individual checks (each returns RiskResult) ───────────
 
@@ -152,13 +185,35 @@ class RiskEngine:
             )
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
-    def _check_position_size(self, signal: TradeSignal, portfolio: PortfolioState) -> RiskResult:
+    def _check_position_size(
+        self,
+        signal: TradeSignal,
+        portfolio: PortfolioState,
+        planned_notional: float | None = None,
+    ) -> RiskResult:
         total_value = portfolio.total_value
         if total_value <= 0:
             return RiskResult(
                 verdict=RiskVerdict.REJECTED,
                 reason="Portfolio value is zero or negative",
             )
+        # Notional cap at the gate: whatever the pipeline proposes to trade
+        # must fit inside max_position_pct of portfolio value. Sizing itself
+        # lives in the pipeline; this check exists so a sizing regression can
+        # never slip past approval (it used to be invisible — the rule only
+        # checked total_value > 0).
+        if planned_notional is not None:
+            cap = self.settings.max_position_pct * total_value
+            # Tiny relative tolerance for float rounding in the sizing math;
+            # real over-sizing exceeds the cap by orders of magnitude.
+            if planned_notional > cap * (1.0 + 1e-6):
+                return RiskResult(
+                    verdict=RiskVerdict.REJECTED,
+                    reason=(
+                        f"Planned position {planned_notional:.2f} exceeds max position size "
+                        f"{cap:.2f} ({self.settings.max_position_pct:.0%} of {total_value:.2f})"
+                    ),
+                )
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_daily_loss(self, portfolio: PortfolioState) -> RiskResult:
@@ -177,9 +232,29 @@ class RiskEngine:
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_drawdown(self, portfolio: PortfolioState) -> RiskResult:
-        # Simplified: compare current value to starting capital.
-        # In production this would track peak value over time.
-        # For now we skip if no baseline is set — the daily loss check covers short-term risk.
+        """Reject while equity is drawdowned past ``max_drawdown_pct`` from its peak.
+
+        The high-water mark follows the portfolio value observed here (and via
+        ``update_daily_value``); it is seeded from persisted portfolio history
+        at startup so the guard survives restarts. On the first ever reading
+        the peak *is* the current value, so no drawdown exists yet.
+        """
+        total_value = portfolio.total_value
+        if total_value <= 0:
+            # The zero-value case is owned by _check_position_size; nothing to
+            # measure here beyond guarding against a divide-by-zero.
+            return RiskResult(verdict=RiskVerdict.APPROVED)
+        self.note_equity(total_value)
+        peak = self._peak_equity or total_value
+        drawdown_pct = (peak - total_value) / peak
+        if drawdown_pct > self.settings.max_drawdown_pct:
+            return RiskResult(
+                verdict=RiskVerdict.REJECTED,
+                reason=(
+                    f"Drawdown {drawdown_pct:.2%} exceeds limit "
+                    f"{self.settings.max_drawdown_pct:.2%} (peak equity {peak:.2f})"
+                ),
+            )
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_cooldown(self) -> RiskResult:

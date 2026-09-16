@@ -90,6 +90,14 @@ async def run(run_once: bool = False) -> None:
     llm_client = LLMClient(settings.llm)
     risk_engine = RiskEngine(settings.risk)
 
+    # Seed the drawdown high-water mark from persisted portfolio history so a
+    # restart cannot reset the guard (§7.5). Fail-soft: without history the
+    # engine seeds lazily from the first reading.
+    try:
+        risk_engine.seed_peak_equity(await storage.get_max_portfolio_value())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
+
     # Data feed: yfinance-backed provider (OHLCV → MarketSnapshot).
     # ``create_xtb_provider`` checks for yfinance eagerly; if it is missing, fail
     # fast with an actionable message rather than surfacing a per-cycle fetch

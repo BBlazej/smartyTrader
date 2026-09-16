@@ -75,7 +75,8 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - Paper executor (`paper_executor.py`) is the default. Never assume live trading.
 - Risk engine runs before every order. Nothing executes without approval.
 - API keys live in `.env` — never commit them, never log them.
-- The risk rules are **hard-coded deterministic guards**, not LLM decisions.
+- **Risk rules are hard-coded deterministic guards**, not LLM decisions.
+- **All seven risk rules are live:** the max-drawdown gate tracks a peak-equity high-water mark (`seed_peak_equity` ← `MAX(portfolio_snapshots.total_value)` at runner startup, so it survives restarts), and `evaluate(signal, portfolio, planned_notional=...)` caps the *proposed* order notional at `max_position_pct × total_value` — sizing is computed before the gate and reused unchanged at execution.
 - **Paper positions are marked to market every cycle:** `DecisionPipeline._mark_positions` feeds each snapshot's last close into the executor's optional `update_price(symbol, close)` hook (`PaperExecutor`) *before* the risk check, so unrealized PnL, portfolio snapshots and the daily-loss rule reflect actual market moves. Real-venue executors report live prices and skip the hook.
 - **Paper mode runs on live public data:** `scripts/run_crypto_agent.py` always fetches real Kraken OHLCV via CCXT (public endpoints need no API key, no sandbox mode), so even paper mode stores real snapshots/decisions. Execution is what stays simulated — no `KRAKEN_API_KEY` → `PaperExecutor`; key set → `KrakenExecutor` on a separate sandboxed, keyed client.
 - **Market-hours guard is timezone-aware:** the stocks guard compares the *local* wall clock to the `market_hours` window, localized via the config-driven `stocks_agent.market_timezone` (default `Europe/Warsaw`) so a UTC host stays correct. The zone is a setting, never hardcoded.

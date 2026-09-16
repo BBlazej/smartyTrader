@@ -639,3 +639,119 @@ class TestPositionMarking:
 
         assert result.error is None
         assert result.signal is not None
+
+
+class TestSizingAtTheGate:
+    """Regression tests for [R-H2 / §7.5]: the order size must be computed
+    *before* the risk check so the gate can reject an oversized plan, and sell
+    sizing must never exceed the units actually held."""
+
+    @staticmethod
+    def _candles(*closes: float) -> list[OHLCV]:
+        return [OHLCV(open=c, high=c + 1.0, low=c - 1.0, close=c, volume=1000.0) for c in closes]
+
+    @pytest.mark.asyncio
+    async def test_evaluate_receives_planned_notional(self, risk_settings: RiskSettings) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(99.0, 100.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.85,
+            reasoning="bullish",
+            stop_loss=95.0,
+        )
+        mock_risk = MagicMock()
+        mock_risk.settings = risk_settings
+        mock_risk.evaluate.return_value = RiskResult(verdict=RiskVerdict.APPROVED)
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=mock_risk,
+            executor=executor,
+        )
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        # 10% of 10_000 at price 100 → 10 units → notional 1_000.
+        kwargs = mock_risk.evaluate.call_args.kwargs
+        assert kwargs["planned_notional"] == pytest.approx(1_000.0)
+        # The plan the gate saw is exactly what gets executed — no re-sizing.
+        placed_qty = (await executor.get_positions())[0].quantity
+        assert placed_qty == pytest.approx(10.0)
+        assert result.executed is True
+
+    @pytest.mark.asyncio
+    async def test_oversized_plan_rejected_end_to_end(self, risk_settings: RiskSettings) -> None:
+        # A real risk engine with a deliberately regressed sizer: the gate must
+        # catch it (this used to be invisible — nothing validated the size).
+        from src.core.risk_engine import RiskEngine
+
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(99.0, 100.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.85,
+            reasoning="bullish",
+            stop_loss=95.0,
+        )
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+        # Sizing regression: 10× the intended notional (5_000 units at price 100).
+        pipeline._calculate_quantity = MagicMock(return_value=5_000.0)  # type: ignore[method-assign]
+
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert result.risk_result is not None
+        assert result.risk_result.verdict == RiskVerdict.REJECTED
+        assert "position" in (result.risk_result.reason or "").lower()
+        assert result.order_result is None
+        assert await executor.get_positions() == []
+
+    @pytest.mark.asyncio
+    async def test_sell_is_clamped_to_units_held(self, risk_settings: RiskSettings) -> None:
+        from src.core.risk_engine import RiskEngine
+
+        # Only 1 unit held, but the notional-based sizing would sell ~10.
+        executor = PaperExecutor(initial_cash=9_900.0, slippage_pct=0.0)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+
+        mock_provider = AsyncMock()
+        mock_provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=self._candles(99.0, 100.0)
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.SELL,
+            confidence=0.85,
+            reasoning="exit",
+            stop_loss=110.0,
+        )
+
+        pipeline = DecisionPipeline(
+            provider=mock_provider,
+            llm_client=mock_llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert result.order_result is not None
+        assert result.order_result.status == "filled"
+        assert result.order_result.quantity == pytest.approx(1.0)
+        assert await executor.get_positions() == []

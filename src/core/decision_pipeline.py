@@ -180,10 +180,21 @@ class DecisionPipeline:
         )
         signal.symbol = symbol  # Ensure symbol is set
 
-        # Step 5 — Risk check
+        # Step 5 — Risk check.
+        # The proposed order size is computed *before* the gate so the risk
+        # engine can reject an oversized plan (planned_notional), and reuses it
+        # unchanged at execution — what the gate approved is what gets sent.
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.RISK_CHECK)
         portfolio = await self._get_portfolio_state()
-        risk_result = self.risk_engine.evaluate(signal, portfolio)
+        current_price = snapshot.candles[-1].close if snapshot.candles else None
+        planned_quantity: float | None = None
+        planned_notional: float | None = None
+        if signal.action in (Action.BUY, Action.SELL) and current_price:
+            planned_quantity = self._calculate_quantity(signal, portfolio, current_price)
+            planned_notional = planned_quantity * current_price
+        risk_result = self.risk_engine.evaluate(
+            signal, portfolio, planned_notional=planned_notional
+        )
 
         if risk_result.verdict == RiskVerdict.REJECTED:
             step_logger.warning(
@@ -205,8 +216,9 @@ class DecisionPipeline:
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.EXECUTE)
         try:
             order_side = OrderSide.BUY if signal.action == Action.BUY else OrderSide.SELL
-            current_price = snapshot.candles[-1].close if snapshot.candles else None
-            quantity = self._calculate_quantity(signal, portfolio, current_price=current_price)
+            quantity = planned_quantity
+            if quantity is None:  # no usable price → let the executor reject the market order
+                quantity = self._calculate_quantity(signal, portfolio, current_price=None)
             order_result = await self.executor.place_order(
                 symbol=symbol,
                 side=order_side,
@@ -297,6 +309,15 @@ class DecisionPipeline:
         if signal.action == Action.BUY:
             max_qty_by_cash = portfolio.cash / price
             quantity = min(quantity, max_qty_by_cash)
+
+        # ...and never sell more than is actually held. The notional cap above
+        # scales with *total* value (marked to market), so a sell slice can
+        # otherwise exceed the position and produce a guaranteed-rejected order
+        # loop (§7.1 side effect / §7.19 sizing nit).
+        if signal.action == Action.SELL:
+            held = sum(p.quantity for p in portfolio.positions if p.symbol == signal.symbol)
+            if held > 0:
+                quantity = min(quantity, held)
 
         return round(quantity, 8)
 
