@@ -208,6 +208,16 @@ class PaperExecutor:
         order.status = "cancelled"
         return True
 
+    def load_portfolio_state(self, cash: float, positions: list[Position]) -> None:
+        """Replace the book wholesale from persisted state (restart rehydration [§7.7]).
+
+        Called once at startup by the runner — before any cycle has traded on this
+        executor — so decisions/orders persisted in earlier runs reference trades
+        that still exist, and the risk trackers can be seeded from real values.
+        """
+        self._cash = cash
+        self._positions = {p.symbol: p for p in positions}
+
     def update_price(self, symbol: str, new_price: float) -> None:
         """Re-mark an open position at the latest market price.
 

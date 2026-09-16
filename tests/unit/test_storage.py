@@ -229,6 +229,58 @@ class TestPortfolioSnapshots:
         assert await storage.get_max_portfolio_value() is None
 
 
+class TestRehydrationQueries:
+    """Storage seams used by startup rehydration (§7.7)."""
+
+    @pytest.mark.asyncio
+    async def test_get_closed_decisions_filters_and_orders(self, storage: Storage) -> None:
+        open_id = await storage.save_llm_decision(
+            symbol="BTC/USDT",
+            action="buy",
+            confidence=0.9,
+            reasoning="open trade",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        closed_ids = []
+        for pnl in (-5.0, 3.0):
+            decision_id = await storage.save_llm_decision(
+                symbol="BTC/USDT",
+                action="sell",
+                confidence=0.9,
+                reasoning="closed trade",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+            )
+            await storage.set_realized_pnl(decision_id, pnl)
+            closed_ids.append(decision_id)
+
+        rows = await storage.get_closed_decisions(limit=10)
+        assert [r.id for r in rows] == list(reversed(closed_ids))  # newest first
+        assert open_id not in [r.id for r in rows]
+
+    @pytest.mark.asyncio
+    async def test_get_first_portfolio_snapshot_of_day(self, storage: Storage) -> None:
+        await storage.save_portfolio_snapshot(
+            cash=9_000.0, positions_json="[]", total_value=9_000.0
+        )
+        await storage.save_portfolio_snapshot(
+            cash=8_700.0, positions_json="[]", total_value=8_700.0
+        )
+
+        first = await storage.get_first_portfolio_snapshot_of_day()
+        assert first is not None
+        assert first.total_value == pytest.approx(9_000.0)  # earliest of today
+
+    @pytest.mark.asyncio
+    async def test_get_first_portfolio_snapshot_of_day_empty(self, storage: Storage) -> None:
+        assert await storage.get_first_portfolio_snapshot_of_day() is None
+
+
 class TestStorageLifecycle:
     @pytest.mark.asyncio
     async def test_initialize_enables_wal(self, tmp_db_path: str) -> None:

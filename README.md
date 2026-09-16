@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 266 tests, no network needed
+pytest                      # 276 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -114,7 +114,7 @@ thresholds. Key sections:
 | `crypto_agent` | enabled, exchange, testnet flag, interval, pairs, `decision_history_limit` |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours`, `market_timezone` (zone the window is in), symbols, `decision_history_limit` |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence |
-| `execution` | paper-executor fee % and slippage % (so paper PnL is realistic) |
+| `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes) |
 | `monitoring` | log level, alert dedup window |
 
@@ -168,8 +168,11 @@ equity high-water mark persisted via SQLite, seeded at startup) with the
 **order-size cap enforced at the gate** (oversized plans are rejected before
 execution; sells clamp to units held), and the **keyed Kraken path hardened
 against real ccxt payloads** (nested balances, fill price/time recording,
-graceful spot `fetch_positions` degradation — live testnet smoke still pending).
-**266 tests passing at ~94% coverage.**
+graceful spot `fetch_positions` degradation — live testnet smoke still pending),
+and **restart-safe paper state** (cash/positions rehydrate from the latest
+portfolio snapshot; daily-loss baseline and losing-streak/cooldown rebuild from
+persisted outcomes; `execution.initial_cash` is config-driven).
+**276 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds, `scripts/backtest.py`,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)

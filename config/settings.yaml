@@ -40,6 +40,8 @@ risk:
 execution:
   paper_fee_pct: 0.0026
   paper_slippage_pct: 0.001
+  initial_cash: 100000.0   # seeds a fresh paper portfolio; after the first cycle
+                           # the persisted snapshot (and restart rehydration) wins
 
 storage:
   database_path: "data/trading_agent.db"

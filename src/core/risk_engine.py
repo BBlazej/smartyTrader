@@ -28,6 +28,15 @@ class DailyLossTracker:
             self._current_date = today
             self._start_of_day_value = portfolio_value
 
+    def restore_today(self, start_of_day_value: float) -> None:
+        """Restore today's baseline after a restart (§7.7).
+
+        Without this the -daily-loss rule silently re-baselines to *current*
+        value on every restart, forgetting losses already incurred today.
+        """
+        self._current_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        self._start_of_day_value = start_of_day_value
+
     @property
     def daily_pnl_pct(self) -> float | None:
         if self._start_of_day_value is None or self._start_of_day_value == 0:
@@ -70,6 +79,11 @@ class ConsecutiveLossTracker:
     def record_win(self) -> None:
         self._consecutive_losses = 0
         self._cooldown_until = None
+
+    def restore(self, consecutive_losses: int, cooldown_until: datetime | None = None) -> None:
+        """Restore the loss streak (and any still-running cooldown) at startup (§7.7)."""
+        self._consecutive_losses = consecutive_losses
+        self._cooldown_until = cooldown_until
 
 
 class RiskEngine:
@@ -148,6 +162,16 @@ class RiskEngine:
             self._peak_equity is None or portfolio_value > self._peak_equity
         ):
             self._peak_equity = portfolio_value
+
+    def restore_daily_baseline(self, portfolio_value: float) -> None:
+        """Rehydrate today's daily-loss baseline from persisted history (§7.7)."""
+        self._daily_tracker.restore_today(portfolio_value)
+
+    def restore_loss_streak(
+        self, consecutive_losses: int, cooldown_until: datetime | None = None
+    ) -> None:
+        """Rehydrate the consecutive-loss streak / cooldown from closed outcomes (§7.7)."""
+        self._loss_tracker.restore(consecutive_losses, cooldown_until)
 
     def seed_peak_equity(self, portfolio_value: float | None) -> None:
         """Seed the high-water mark from persisted history at startup.

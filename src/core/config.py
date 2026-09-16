@@ -116,9 +116,14 @@ class ExecutionSettings:
         self,
         paper_fee_pct: float = 0.0,
         paper_slippage_pct: float = 0.001,  # per-side slippage (0.1%)
+        initial_cash: float = 100_000.0,
     ) -> None:
         self.paper_fee_pct = paper_fee_pct
         self.paper_slippage_pct = paper_slippage_pct
+        # Starting bankroll for a *fresh* paper portfolio (§7.7: was hardcoded
+        # in PaperExecutor). After the first cycle the persisted portfolio
+        # snapshot wins — this only seeds an empty one.
+        self.initial_cash = initial_cash
 
 
 class StorageSettings:

@@ -29,7 +29,9 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             decision_history_limit=10,
         ),
         risk=SimpleNamespace(),
-        execution=SimpleNamespace(paper_fee_pct=0.0, paper_slippage_pct=0.0),
+        execution=SimpleNamespace(
+            paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
+        ),
         storage=SimpleNamespace(database_path=":memory:"),
         monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
     )

@@ -31,6 +31,7 @@ from src.agents.crypto_agent import CryptoAgent
 from src.core.config import Settings
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.llm_client import LLMClient
+from src.core.rehydration import rehydrate_from_storage
 from src.core.risk_engine import RiskEngine
 from src.core.scheduler import create_async_scheduler
 from src.core.storage import Storage
@@ -110,6 +111,7 @@ def _build_data_and_execution(settings: Settings) -> tuple[Any, Any, str]:
         return provider, executor, "kraken-testnet"
 
     executor = PaperExecutor(
+        initial_cash=settings.execution.initial_cash,
         slippage_pct=settings.execution.paper_slippage_pct,
         fee_pct=settings.execution.paper_fee_pct,
     )
@@ -158,6 +160,10 @@ async def run(run_once: bool = False) -> None:
         )
     else:
         log.info("using live public data + Kraken testnet executor")
+
+    # Rebuild the paper book and risk trackers from persisted state so a
+    # restart never silently resets cash, positions or the loss guards (§7.7).
+    await rehydrate_from_storage(risk_engine, executor, storage)
 
     pipeline = DecisionPipeline(
         provider=provider,

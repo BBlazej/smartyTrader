@@ -66,11 +66,16 @@ def _settings(
     testnet: bool = True,
     fee_pct: float = 0.0026,
     slippage_pct: float = 0.001,
+    initial_cash: float = 100_000.0,
 ) -> SimpleNamespace:
     """A minimal settings stub with just the attributes the helper reads."""
     return SimpleNamespace(
         crypto_agent=SimpleNamespace(exchange=exchange, testnet=testnet),
-        execution=SimpleNamespace(paper_fee_pct=fee_pct, paper_slippage_pct=slippage_pct),
+        execution=SimpleNamespace(
+            paper_fee_pct=fee_pct,
+            paper_slippage_pct=slippage_pct,
+            initial_cash=initial_cash,
+        ),
     )
 
 
@@ -140,7 +145,7 @@ class TestBuildDataAndExecution:
     def test_paper_executor_gets_configured_costs(self) -> None:
         from src.execution.paper_executor import PaperExecutor
 
-        settings = _settings(fee_pct=0.005, slippage_pct=0.002)
+        settings = _settings(fee_pct=0.005, slippage_pct=0.002, initial_cash=25_000.0)
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider"),
             patch("scripts.run_crypto_agent.create_kraken_executor"),
@@ -150,6 +155,8 @@ class TestBuildDataAndExecution:
         assert isinstance(executor, PaperExecutor)
         assert executor.fee_pct == 0.005
         assert executor.slippage_pct == 0.002
+        # initial_cash is config-driven (§7.7), not hardcoded in the executor.
+        assert executor.cash == 25_000.0
 
     def test_exchange_defaults_to_kraken_when_unset(self) -> None:
         settings = _settings(exchange=None)  # type: ignore[arg-type]
@@ -189,7 +196,9 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             decision_history_limit=10,
         ),
         risk=SimpleNamespace(),
-        execution=SimpleNamespace(paper_fee_pct=0.0, paper_slippage_pct=0.0),
+        execution=SimpleNamespace(
+            paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
+        ),
         storage=SimpleNamespace(database_path=":memory:"),
         monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
     )

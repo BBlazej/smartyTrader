@@ -242,6 +242,21 @@ class Storage:
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to record realized pnl", decision_id=decision_id, error=str(exc))
 
+    async def get_closed_decisions(self, limit: int = 50) -> list[LLMDecisionRow]:
+        """Most recent decisions that carry a realized outcome (``realized_pnl`` set).
+
+        Used at startup to rehydrate the consecutive-loss/cooldown trackers (§7.7).
+        """
+        async with await self._session() as session:
+            stmt = (
+                select(LLMDecisionRow)
+                .where(LLMDecisionRow.realized_pnl.isnot(None))
+                .order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     async def get_recent_decisions(
         self,
         symbol: str | None = None,
@@ -318,6 +333,25 @@ class Storage:
             session.add(row)
             await session.commit()
             return row.id
+
+    async def get_first_portfolio_snapshot_of_day(self) -> PortfolioSnapshotRow | None:
+        """Earliest portfolio snapshot of the current UTC day (or ``None``).
+
+        Its ``total_value`` rehydrates today's daily-loss baseline after a
+        restart (§7.7). Timestamps are stored as naive UTC.
+        """
+        from datetime import time as dtime
+
+        day_start = datetime.combine(datetime.now(UTC).date(), dtime.min)
+        async with await self._session() as session:
+            stmt = (
+                select(PortfolioSnapshotRow)
+                .where(PortfolioSnapshotRow.timestamp >= day_start)
+                .order_by(PortfolioSnapshotRow.timestamp.asc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalars().first()
 
     async def get_max_portfolio_value(self) -> float | None:
         """Highest total_value ever recorded in portfolio snapshots (or ``None``).
