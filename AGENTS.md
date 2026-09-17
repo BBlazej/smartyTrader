@@ -95,5 +95,5 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 
 - after every change, update `AGENTS.md`, `README.md` and `PLAN.md` with the latest state
 - architecture changes (modules, data flow, schema, control plane, design decisions) → update `ARCHITECTURE.md`
-- when a PLAN §7 item completes → move its write-up to `HISTORY.md` under its original §7.N number and leave a stub in `PLAN.md` (§7.N identifiers are never renumbered)
+- when a PLAN §7 item completes → move its write-up to `HISTORY.md` under its original §7.N number and **remove it from PLAN §7** — PLAN §7 lists only open work (§7.N identifiers are never renumbered or reused; HISTORY is the record)
 - new bugs/gaps discovered while developing → log them in `nightly_finds.md` (numbered findings)

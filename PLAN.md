@@ -16,7 +16,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | `nightly_finds.md` | bugs/gaps discovered during development (numbered findings) |
 | `review.MD` / `review2.md` | external full-codebase reviews (`[R-xx]` tags reference these) |
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.23) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber them**. Completed items were moved to [HISTORY.md](HISTORY.md) under their original numbers; stubs below keep the sequence intact.
+**Numbering rule:** §7.N identifiers (§7.1–§7.23) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
 **Current state (2026-09-17):** 414 tests passing at ~94% coverage. §7.1–§7.14 and §7.20–§7.23 are complete (see HISTORY.md). Open: §7.15 P3–P5 (dashboard pages, config UI, Docker), §7.16 XTB OAuth2, §7.17–§7.19 housekeeping.
 
@@ -68,43 +68,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 ## 7. Gaps & Next Steps
 
-Updated after the full-codebase reviews of **2026-09-15** and **2026-09-17** — findings are tagged **[R-xx]** referencing `review.MD` and `review2.md` at the repo root (H = high, M = medium, L = low severity there). Bugs/gaps found during development are logged separately in `nightly_finds.md`. Ordering: **A. low-hanging fruit first**, then by severity (**B. High → C. Medium → D. Low/housekeeping**); items marked ⏳ are planned/not yet implemented.
+Updated after the full-codebase reviews of **2026-09-15** and **2026-09-17** — findings are tagged **[R-xx]** referencing `review.MD` and `review2.md` at the repo root (H = high, M = medium, L = low severity there). Bugs/gaps found during development are logged separately in `nightly_finds.md`. Items marked ⏳ are planned/not yet implemented. The original sections **A. Low-hanging fruit** and **B. High severity** completed fully in 2026-09; what remains keeps the original severity grouping (**C. Medium → D. Low/housekeeping**) plus carried follow-ups.
 
-> Sections A, B and the first half of C (§7.1–§7.14) plus the old "E. Done (for the record)" block (§7.20–§7.23) were **completed in 2026-09** and moved to [HISTORY.md](HISTORY.md) on 2026-09-17 — full write-ups with test counts live there, under the same §7.N numbers.
+> **This section lists only open work.** Items §7.1–§7.14 and §7.20–§7.23 were completed in 2026-09; their full write-ups (with test counts) live in [HISTORY.md](HISTORY.md) under the same §7.N numbers — no stubs are kept here.
 
-### Completed — see [HISTORY.md](HISTORY.md)
-
-A. Low-hanging fruit:
-
-1. ~~Refresh paper-position prices every cycle~~ — ✅ **[R-H1]** → HISTORY §7.1
-2. ~~Fix `enabled: false` semantics~~ — ✅ **[R-H3]** → HISTORY §7.2
-3. ~~Dependency & test-claims cleanup~~ — ✅ **[R-M4]** → HISTORY §7.3
-4. ~~Docs/reality mismatches~~ — ✅ **[R-L]** → HISTORY §7.4
-
-B. High severity:
-
-5. ~~Close the two no-op risk rules (drawdown; position size at the gate)~~ — ✅ **[R-H2]** → HISTORY §7.5
-6. ~~Real-CCXT integration pass for the keyed Kraken path~~ — ✅ code pass **[R-H4]** → HISTORY §7.6 *(live testnet smoke still open — see "Follow-ups" below)*
-7. ~~Persist / rehydrate paper portfolio + risk state across restarts~~ — ✅ **[R-M1]** → HISTORY §7.7
-
-C. Medium severity:
-
-8. ~~Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows~~ — ✅ **[R-M2/M3]** → HISTORY §7.8
-9. ~~Deterministic stop-loss / take-profit enforcement~~ — ✅ **[R-M5]** → HISTORY §7.9
-10. ~~Weekend/holiday awareness in the stocks market-hours guard~~ — ✅ **[R-M6]** → HISTORY §7.10
-11. ~~Stocks data depth silently disables indicators~~ — ✅ **[R-M7]** → HISTORY §7.11
-12. ~~Storage retention / pruning~~ — ✅ **[R-M8]** → HISTORY §7.12
-13. ~~Deduplicate agents + runners~~ — ✅ **[R-M9]** → HISTORY §7.13
-14. ~~Backtesting (`scripts/backtest.py`)~~ — ✅ Week 6 → HISTORY §7.14
-
-For the record (former section E):
-
-20. ~~Close the "learn from its own track record" loop~~ — ✅ → HISTORY §7.20
-21. ~~Get the crypto agent running on real data~~ — ✅ Week 4 → HISTORY §7.21
-22. ~~Add fee modeling to `PaperExecutor`~~ — ✅ → HISTORY §7.22
-23. ~~External review fixes (earlier round)~~ — ✅ → HISTORY §7.23
-
-**Follow-ups carried from completed items**
+### Follow-ups carried from completed items
 
 - **§7.6 live smoke:** a keyed run against the Kraken testnet from a network-enabled environment is still pending (the dev sandbox blocks outbound HTTPS — `nightly_finds.md` #1); per-cycle reconciliation of orders left `open` remains unpinned.
 - **§7.9 venue-side stops:** SL/TP enforcement is local to the agent; venue-side OCO stop orders remain future work.
