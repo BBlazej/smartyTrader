@@ -1,0 +1,660 @@
+# Autonomous Trading Agent — Architecture
+
+This document describes **how the system is built**: module layout, data flow, storage schema, the control plane, risk engine, and the design decisions behind them. Diagrams are Mermaid; verbatim contracts are marked as such.
+
+**Document map**
+
+- [README.md](README.md) — user-facing overview & quickstart (canonical file-level project layout)
+- **ARCHITECTURE.md** (this file) — architecture: components, data flow, schema, control plane, design decisions
+- [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
+- [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
+- `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
+- `nightly_finds.md` — bugs/gaps discovered during development (numbered findings)
+- `review.MD` / `review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
+
+## Overview
+
+Two independent paper-trading agents sharing a common core:
+
+| | Crypto Agent | Stocks Agent |
+|---|---|---|
+| **Exchange** | Kraken (testnet) | XTB (demo account) |
+| **Data** | CCXT (OHLCV); news/sentiment — *planned* | xAPI + yfinance (OHLCV); economic calendar — *planned* |
+| **LLM** | LM Studio → Qwen 3.8 27B (`qwen/qwen3.8-27b`) | Same shared LLM client |
+
+Both agents use the same decision pipeline, risk engine, and storage layer — only the data sources and execution adapters differ.
+
+## System context
+
+```mermaid
+flowchart TB
+    LMStudio["LM Studio (local LLM, OpenAI-compatible)"]
+    Kraken["Kraken (public OHLCV / testnet)"]
+    StocksSrc["yfinance / xAPI (stocks data)"]
+
+    subgraph agents["src/agents — market shells"]
+        CA["CryptoAgent (24/7)"]
+        SA["StocksAgent (+ market-hours guard)"]
+    end
+
+    subgraph core["src/core — shared infrastructure"]
+        RUNNER["runner.py — lifecycle factory: enabled-gate, wiring, --once/scheduled loops"]
+        PIPE["decision_pipeline.py — indicators, prompt, risk gate, persistence"]
+        RISK["risk_engine.py — 7 deterministic rules"]
+        LLMCLI["llm_client.py — retry + JSON parse + HOLD fallback"]
+        STORE["storage.py — SQLite repository (WAL)"]
+        CTRLAPI["control_api.py — FastAPI control plane (§7.15)"]
+        CTRLCFG["control_config.py — safe-override whitelist"]
+        BT["backtester.py — decision replay (§7.14)"]
+        REHY["rehydration.py + retention.py — startup state & pruning"]
+    end
+
+    subgraph data["src/data — providers"]
+        CCXTP["ccxt_provider.py"]
+        XTBP["xtb_provider.py"]
+    end
+
+    subgraph execution["src/execution"]
+        PAPER["paper_executor.py (default)"]
+        KEX["kraken_executor.py"]
+        XEX["xtb_executor.py"]
+        PT["position_tracker.py — shared FIFO realized-PnL ledger"]
+    end
+
+    DB[("SQLite WAL — data/trading_agent.db")]
+
+    CA --> CCXTP
+    SA --> XTBP
+    CCXTP --> Kraken
+    XTBP --> StocksSrc
+    CA --> PIPE
+    SA --> PIPE
+    PIPE --> LLMCLI
+    LLMCLI --> LMStudio
+    PIPE --> RISK
+    PIPE --> PAPER
+    PIPE --> KEX
+    PIPE --> XEX
+    PAPER --> PT
+    KEX --> PT
+    XEX --> PT
+    KEX --> Kraken
+    PIPE --> STORE
+    STORE --> DB
+    BT --> STORE
+    CTRLAPI --> STORE
+    CTRLCFG --> CTRLAPI
+    REHY --> STORE
+```
+
+- **Layering**: `agents/` are thin market-specific subclasses of `BaseTradingAgent`; all shared lifecycle lives in `core/runner.py::run_agent` + `agents/base_agent.py` (§7.13). Market quirks hook via `_skip_cycle_reason()`.
+- **Protocol seams**: providers and executors are swappable via `Protocol` interfaces (`Executor` is defined in `core/models.py`). Paper is the default executor on both markets.
+- The backtester and control API read/write the *same* SQLite DB — no separate state anywhere.
+
+## Module layout (current)
+
+```
+src/
+├── core/
+│   ├── models.py             # Pydantic models + Executor Protocol (single source of truth for contracts)
+│   ├── config.py             # YAML + env settings loader (Settings validates config/settings.yaml)
+│   ├── llm_client.py         # LM Studio HTTP client (retry, JSON parse, HOLD fallback, llm_exchange audit log)
+│   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
+│   ├── storage.py            # SQLite via SQLAlchemy + aiosqlite (WAL); tables + repository queries
+│   ├── decision_pipeline.py  # fetch → mark positions → exit-level check → indicators → prompt → LLM → risk gate → execute → persist
+│   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
+│   ├── rehydration.py        # startup pass: paper book, daily-loss baseline, streak/cooldown from persisted rows (§7.7)
+│   ├── retention.py          # fail-soft storage pruning wrapper (startup + scheduled) (§7.12)
+│   ├── runner.py             # shared runner lifecycle: enabled-gate, wiring, control API startup, --once/scheduled loops (§7.13)
+│   ├── backtester.py         # DecisionReplayBacktester — same risk/fee model over stored decisions, zero LLM calls (§7.14)
+│   ├── control_api.py        # agent-side FastAPI control API (pause/resume/close-all/config/status) (§7.15 P2)
+│   ├── control_config.py     # SafeConfigOverrides whitelist; parse_and_apply onto live objects (§7.15 P2)
+│   └── scheduler.py          # APScheduler wrapper
+├── data/
+│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (fetch_snapshot + paginated fetch_history)
+│   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam) + fetch_history
+├── execution/
+│   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
+│   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
+│   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled)
+│   └── xtb_executor.py       # XTB demo orders (xAPI seam; OAuth2 ⏳ not implemented)
+├── agents/
+│   ├── base_agent.py         # BaseTradingAgent: cycle loop, control-row handling, post-process, snapshots, alerts (§7.13)
+│   ├── crypto_agent.py       # thin subclass
+│   └── stocks_agent.py       # thin subclass + weekend/holiday/timezone-aware market-hours guard (§7.10)
+├── analysis/                 # reserved — indicators & prompt still live in core/decision_pipeline.py (§7.17 open)
+└── monitoring/
+    ├── logger.py             # structlog setup
+    └── alerts.py             # AlertManager + sinks (logging sink; dedup window)
+
+scripts/
+├── run_crypto_agent.py       # crypto-specific factories + shared runner
+├── run_stocks_agent.py       # stocks-specific factories + shared runner
+├── prune_storage.py          # out-of-band retention pruning (no agents, no trades) (§7.12)
+└── backtest.py               # decision-replay CLI (--start/--end/--days/--symbols/--provider/--timeframe/--report) (§7.14)
+
+docs/API_NOTES.md             # Kraken + XTB API quirks
+config/settings.yaml          # all tunables (see §Configuration below)
+```
+
+## Decision pipeline — one cycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SCH as Scheduler / --once
+    participant AG as BaseTradingAgent
+    participant CTL as agent_control row
+    participant PL as DecisionPipeline
+    participant PR as Data provider
+    participant EX as Executor (paper/venue)
+    participant LLM as LLM client
+    participant RE as RiskEngine
+    participant ST as Storage
+
+    SCH->>AG: run_cycle()
+    AG->>CTL: read control row (fail-soft, strict checks)
+    Note over AG: apply safe config overrides if present
+    alt close_all_requested is True
+        AG->>PL: close_all_positions() — even while paused
+        Note over PL: no LLM call, no risk gate — exits only reduce exposure
+    end
+    alt state == paused
+        AG-->>SCH: skip cycle (logged)
+    end
+    AG->>PL: run(symbol) per pair/symbol
+    PL->>PR: fetch snapshot (OHLCV candles)
+    PL->>EX: update_price(symbol, last close) — marking hook (paper only)
+    Note over PL: exit-level check: breach → auto-close full quantity (no LLM, no gate), cycle ends with auto_exit=True
+    PL->>PL: compute indicators (RSI, MACD, Bollinger, ATR — hand-rolled, simple averages)
+    PL->>LLM: prompt = portfolio state + last-N decisions with realized PnL + market data
+    LLM-->>PL: TradeSignal JSON (exhausted-retries HOLD flagged is_fallback, never forgeable)
+    PL->>ST: persist decision immediately after risk gate (decision_id exists before any fill)
+    PL->>RE: evaluate(signal, portfolio, planned_notional = quantity × price)
+    alt approved
+        PL->>EX: place_order(quantity, stop_loss/take_profit levels, decision_id)
+        EX-->>PL: OrderResult (+ realized_pnl / closed_entries on closing fills via PositionTracker)
+        PL->>ST: persist order row (linked to decision_id)
+        AG->>ST: backfill realized PnL onto the originating entry decision (FIFO attribution)
+    else rejected
+        PL->>ST: decision persisted with verdict + reason; nothing sent to venue
+    end
+    AG->>CTL: heartbeat — stamp last_cycle_at / last_error
+```
+
+Notes:
+
+- **Marking before gating** (§7.1): paper positions are re-marked at the snapshot's last close *before* the risk check, so unrealized PnL, portfolio snapshots and the daily-loss rule track the market. Real-venue executors report live prices and skip the hook.
+- **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. Sells clamp to units held.
+- **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
+- Indicators and prompt building currently live inline in `core/decision_pipeline.py`; the split into `analysis/` is open housekeeping (PLAN §7.17).
+
+## Key models (`src/core/models.py`)
+
+| Model | Role |
+|---|---|
+| `TradeSignal` | LLM output: action, confidence, reasoning, stop_loss, take_profit; `is_fallback` stripped from model output — never forgeable |
+| `DecisionRecord` | prior decision + realized PnL outcome, fed back into the prompt ("learn from its own track record") |
+| `RiskResult` | deterministic verdict: approved / rejected + reason |
+| `Position` / `PortfolioState` | portfolio tracking; positions carry entry signal's stop/take levels |
+| `MarketSnapshot` | OHLCV candles + computed indicators per symbol |
+| `OrderResult` | order outcome; closing fills carry `realized_pnl` + `closed_entries` (per-entry-decision PnL) |
+| `Executor` | Protocol — the seam between pipeline and venue |
+
+## Executor protocol
+
+All executors implement the same `Executor` Protocol (defined in `src/core/models.py`); `place_order` additionally accepts `decision_id` (§7.8) and `stop_loss`/`take_profit` levels (§7.9), and optional hooks (`update_price`, `load_portfolio_state`) are duck-typed:
+
+All executors implement the same `Executor` Protocol (defined in `src/core/models.py`):
+
+```python
+class Executor(Protocol):
+    async def place_order(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        price: float | None = None,
+    ) -> OrderResult: ...
+    async def get_positions(self) -> list[Position]: ...
+    async def cancel_order(self, order_id: str) -> bool: ...
+    async def get_cash(self) -> float: ...
+```
+
+- `kraken_executor.py` — Kraken testnet REST API. Maps signals to Kraken order types (market/limit/stop).
+- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format.
+- `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state. **Default for all testing.**
+
+- `kraken_executor.py` — Kraken testnet via ccxt; real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
+- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format. OAuth2 flow ⏳ not implemented (PLAN §7.16).
+- `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
+
+## Risk engine (`core/risk_engine.py`)
+
+Hard-coded, non-negotiable gates (built Week 2 ✅). `RiskEngine.evaluate()` runs all of these on every signal, in order:
+
+Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEngine.evaluate()` runs all of these on every signal, in order:
+
+| Rule | Default | Configurable | Implementation |
+|---|---|---|---|
+| Min confidence | `0.6` to trade | Yes | `_check_confidence` |
+| Max open positions | 5 per agent | Yes | `_check_max_positions` |
+| Max position size | 10% of portfolio per symbol | Yes | `_check_position_size` |
+| Daily loss limit | -2% of starting balance | Yes | `_check_daily_loss` |
+| Max drawdown | -5% below the **peak-equity** high-water mark (seeded from persisted portfolio snapshots) | Yes | `_check_drawdown` ✅ (§7.5) |
+| Consecutive-losses cooldown | 3 losses → 60-min pause | Yes | `_check_cooldown` |
+| Stop-loss required | Entries (BUY) must include a stop-loss; closes are exempt since §7.9 | No | `_check_stop_loss` |
+
+> The earlier "-5% drawdown → halt for 24h" phrasing is not how the code behaves: there is no time-based halt. The 24-hour-scale protection is the **consecutive-losses cooldown** (3 losses → 60 min, configurable via `consecutive_losses_cooldown_minutes`).
+
+Additional engine facts:
+
+- The drawdown high-water mark is seeded at startup from `Storage.get_max_portfolio_value()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5).
+- Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7).
+- Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
+
+## Control plane (§7.15 P1/P2 — implemented)
+
+The DB is the control source of truth: one `agent_control` row per agent. The agent-side FastAPI control API writes latches; the agent obeys them at the top of every cycle.
+
+```mermaid
+flowchart TD
+    START["run_cycle tick"] --> READ["read agent_control row (fail-soft)"]
+    READ --> OVR{"config_override_json present?"}
+    APPLY["control_config.parse_and_apply — SafeConfigOverrides whitelist only"]
+    OVR -- no --> LATCH
+    APPLY --> LATCH{"close_all_requested is True?"}
+    CLOSEALL["DecisionPipeline.close_all_positions — no LLM, no risk gate, executes even while paused"]
+    CLOSEALL --> CLEAR["clear latch"]
+    LATCH -- no --> PAUSE
+    CLEAR --> PAUSE{"state == paused?"}
+    PAUSE -- yes --> SKIP["skip cycle (logged)"]
+    PAUSE -- no --> CYCLE["normal cycle: fetch → ... → execute"]
+    CYCLE --> HB["heartbeat: stamp last_cycle_at / last_error"]
+```
+
+All checks are strict (`is True` / equality) and the control-row read is fail-soft — **a broken control plane never halts trading nor fabricates actions.**
+
+```mermaid
+stateDiagram-v2
+    [*] --> running
+    running --> paused: POST /api/agents/(agent)/pause
+    paused --> running: POST /api/agents/(agent)/resume
+    running --> running: close-all latch → positions closed, latch cleared
+    paused --> paused: close-all latch still executes while paused
+```
+
+### Control API (implemented)
+
+`core/control_api.py::create_control_app(storage, agent_name, settings, get_positions)` — started in-process by `core/runner.py` only when `control_api.enabled` (default **false**); loopback-bound; ports crypto 8101 / stocks 8102.
+
+| Method & path | Effect |
+|---|---|
+| `GET /healthz` | liveness |
+| `GET /api/agents` / `GET /api/agents/{agent}` | state, positions, portfolio, recent decisions, errors |
+| `GET /api/agents/{agent}/decisions?limit=N` | recent decisions + outcomes (fallback rows included — audit view) |
+| `GET /api/agents/{agent}/portfolio?limit=N` | current + historical portfolio value |
+| `POST /api/agents/{agent}/pause` / `resume` | write `state` in `agent_control` (never orders) |
+| `POST /api/agents/{agent}/close-all` | set `close_all_requested` latch — executed on next cycle tick, even while paused |
+| `GET /api/config` | safe config view: YAML defaults + stored overrides (whitelisted fields only) |
+| `PUT /api/config` | body must validate as `SafeConfigOverrides` (`extra="forbid"`); unknown/credential keys rejected wholesale with 400 |
+
+**Safety invariants:** credentials are *structurally absent* from every endpoint — responses are field-built from safe models; the LLM endpoint/model, storage path and any `.env` secret can neither appear in a response nor be written. `SafeConfigOverrides` (`core/control_config.py`) covers: `interval_minutes` (applies at restart), `pairs`, `symbols`, `market_hours`, `decision_history_limit`, `risk.*`, paper-executor fee/slippage under `execution.*`. It is deliberately *not* applied to live objects mid-flight beyond that whitelist; risk thresholds mutate the shared `RiskSettings`, paper fee/slippage land on the executor.
+
+## Storage schema & retention
+
+- **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
+- Existing tables (no schema change): `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`.
+- **New table — `agent_control`** (control plane, dashboard read/write):
+
+  | Column | Purpose |
+  |---|---|
+  | `agent` | `crypto` / `stocks` — one control row per agent |
+  | `state` | `running` / `paused` (pause/resume) |
+  | `close_all_requested` | boolean latch — agent closes all open positions then clears it |
+  | `status` / `last_cycle_at` / `last_error` | live health for the dashboard |
+  | `config_override_json` | **safe** config overrides (see #6); empty = use `settings.yaml` |
+
+  The agent checks `agent_control` at the top of every cycle (cheap SQLite read) → respects pause + close-all. This keeps the DB the single source of truth even though the dashboard *triggers* actions via the control API.
+
+```mermaid
+erDiagram
+    llm_decisions ||--o{ orders : "orders.decision_id links executed orders to the decision that placed them"
+    market_snapshots {
+        int id PK
+        string symbol
+        string timeframe
+        text candles_json "JSON array of OHLCV dicts"
+        text indicators_json
+        datetime fetched_at
+    }
+    llm_decisions {
+        int id PK
+        string symbol
+        string action "buy / sell / hold"
+        float confidence
+        text reasoning
+        float stop_loss
+        float take_profit
+        string risk_verdict "approved / rejected"
+        text risk_reason
+        float realized_pnl "net-of-fee; backfilled FIFO onto the entry decision"
+        bool is_fallback "LLM-unavailable HOLD — audit only, never re-fed into prompts"
+        datetime timestamp
+    }
+    orders {
+        int id PK
+        string order_id UK
+        string symbol
+        string side
+        float quantity
+        float price
+        string status
+        int decision_id FK
+        datetime filled_at
+        datetime created_at "storage-time bound for pruning unfilled rows (§7.12 migration)"
+    }
+    portfolio_snapshots {
+        int id PK
+        float cash
+        text positions_json "carries stop/take levels → survive restarts"
+        float total_value "MAX over history seeds the drawdown high-water mark"
+        float unrealized_pnl
+        datetime timestamp
+    }
+    agent_control {
+        string agent PK "crypto / stocks — one row per agent"
+        string state "running / paused"
+        bool close_all_requested "latch: cleared after the agent acts on it"
+        datetime last_cycle_at "heartbeat"
+        text last_error
+        text config_override_json "safe overrides only; empty = settings.yaml"
+        datetime updated_at
+    }
+```
+
+Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark. Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
+
+Rehydration (§7.7): at startup, `core/rehydration.py` restores the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing closed-decision outcomes). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+
+## Data pipeline, storage & dashboard (Week-6 design)
+
+This section holds the **design decisions** locked in Week 6 — the data pipeline / DB / control architecture that backtesting (§7.14, delivered), the dashboard (PLAN §7.15 P3–P5, open), and the live agent all share. It is the source of truth for *how data flows*.
+
+### Design decisions (locked)
+
+| # | Decision | Chosen |
+|---|---|---|
+| 1 | Backtest type | **(a) Decision replay** — re-simulate *stored* `llm_decisions` against the price path that followed. Deterministic, **zero LLM calls**. (LLM replay = non-deterministic + expensive on the local 27B model; deferred.) |
+| 2 | Backtest price history | **Fresh historical candles** from the source (Kraken via CCXT / yfinance) for arbitrary date ranges — the agent does not run 24/7, so stored `market_snapshots` alone is too sparse. Stored snapshots are kept as a secondary/audit source. |
+| 3 | Dashboard control scope | **Pause/resume** + **close all open positions** + **safe config management** (see #6). No manual order placement, no live risk-param override, no kill in v1. |
+| 4 | Agent ↔ dashboard control channel | **Agent exposes a small HTTP control API (FastAPI); the dashboard calls it** — real-time control (e.g. "close all" is immediate, not gated on the 5-min cycle). |
+| 5 | Dashboard stack | **FastAPI + Jinja2/HTMX** (server-rendered, HTMX for updates + control), lightweight chart lib (uPlot) via CDN for time-series. No Node/npm build step → one slim Docker image. |
+| 6 | Config management | Dashboard edits **safe data only** — intervals, pairs/symbols, `risk.*`, `execution.*`, `monitoring.*`, `decision_history_limit`. **Never** `llm.*` credentials/endpoints, never API keys, never `.env`. |
+| 7 | Database | **One SQLite (WAL mode) on a shared Docker volume.** Agent = primary writer; dashboard = reader + control writer; backtester = reader. Keeps the existing SQLAlchemy + aiosqlite stack. |
+| 8 | Pipeline shape | **Single unified pipeline** (one code path: provider → indicators → store) feeding all three consumers (agent, dashboard, backtester). |
+
+### Data flow — one path, three consumers
+
+```mermaid
+flowchart TD
+    MD["MARKET DATA (OHLCV): CCXT → Kraken · xAPI / yfinance → stocks"]
+    UP["UNIFIED PIPELINE: fetch candles → compute indicators → normalize → persist (one code path — src/core/decision_pipeline.py + providers)"]
+    AGENT["AGENT (live): prompt → LLM → risk → execute"]
+    BT["BACKTESTER (replay): stored decisions vs historical candles"]
+    DASH["DASHBOARD (monitor + control + config): FastAPI + HTMX — planned, PLAN §7.15 P3–P5"]
+    DB[("SHARED SQLite WAL — data/trading_agent.db: market_snapshots · llm_decisions · orders · portfolio_snapshots · agent_control")]
+
+    MD --> UP
+    UP --> AGENT
+    UP --> BT
+    AGENT -- "writes" --> DB
+    BT -- "reads" --> DB
+    DASH -- "reads + control writes" --> DB
+```
+
+> The **live agent** and the **backtester** both read the *same* indicator logic and (for backtest) the same decision rows — so what you backtest is exactly what the pipeline produces. The backtester does **not** re-run the LLM; it re-simulates the recorded decisions.
+
+### Control API contract (original design)
+
+The agent process serves a small internal API (in-process with the loop, or a thin sidecar):
+
+| Method & path | Effect |
+|---|---|
+| `GET /api/agents` | state, `last_cycle_at`, open positions, recent decisions, `last_error` (per agent) |
+| `GET /api/agents/{agent}/decisions?limit=N` | recent decisions + outcomes (net PnL) |
+| `GET /api/agents/{agent}/portfolio` | current + historical portfolio value |
+| `POST /api/agents/{agent}/pause` | set `state=paused` |
+| `POST /api/agents/{agent}/resume` | set `state=running` |
+| `POST /api/agents/{agent}/close-all` | set `close_all_requested` latch (immediate on next loop tick) |
+| `GET /api/config` | **safe** config (credentials/keys redacted) |
+| `PUT /api/config` | validate against Pydantic `Settings`, persist safe overrides to `agent_control`, reload agent |
+
+> **Safety:** `PUT /api/config` only accepts the safe whitelist (#6); unknown/credential keys are rejected. The LLM endpoint, model, and any `.env` secret are **never** read, written, or returned.
+
+> As implemented in P2, this contract gained `GET /healthz`, a per-agent status route (`GET /api/agents/{agent}`), and the whitelist enforcement described in §Control plane above. The safety note stands unchanged.
+
+### Dashboard (planned — PLAN §7.15 P3/P4)
+
+- **Monitor:** portfolio value over time (uPlot), open positions, recent decisions + win-rate / confidence distribution, agent state + last cycle + errors. Live via HTMX polling (or SSE).
+- **Control:** Pause / Resume, Close all — HTMX `POST` to the control API.
+- **Config:** server-rendered form over the safe config surface only; changes validated server-side (Pydantic) and persisted to `agent_control`; no credential/secret fields exist in the form.
+
+### Container / volume topology (planned — PLAN §7.15 P5)
+
+```
+docker-compose
+├── agent-crypto     # scripts/run_crypto_agent.py  (control API in-process)
+├── agent-stocks     # scripts/run_stocks_agent.py
+├── backtester       # scripts/backtest.py          (batch, on-demand)
+├── dashboard        # FastAPI + HTMX               (port 8080 → browser)
+└── volume: agent-data → data/          # the shared SQLite + WAL files
+    volume: agent-config → config/      # settings.yaml + safe overrides
+```
+
+- **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
+- `agent-config` volume holds `settings.yaml` + safe overrides; the dashboard and agent both mount it.
+- No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
+
+## Backtesting (§7.14 — implemented)
+
+Design (Week 6):
+
+`scripts/backtest.py` — deterministic, no LLM:
+
+1. **Ingest** fresh historical candles for the window (per #2) via the *same* providers — or read stored snapshots when they cover the window.
+2. **Load** the recorded `llm_decisions` (+ `orders`, realized PnL) in time order.
+3. **Re-simulate** each decision against the price path that followed, through the **same** risk engine + fee/slippage model as live, so the verdicts and PnL are comparable to paper results.
+4. **Report:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
+
+> **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate, later experiment — non-deterministic and costly on the local 27B model.
+
+Implementation status:
+
+**Decision replay**: `DecisionReplayBacktester` (`src/core/backtester.py`) re-simulates the *stored* `llm_decisions` against **fresh historical candles** (Kraken via CCXT paginated `fetch_history` / yfinance range fetch) through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Exit levels and position sizing are shared functions (`exit_level_breach` / `calculate_quantity`) so replay cannot drift from live. Stored `market_snapshots` remain a secondary/audit source.
+
+Metrics (CLI summary + `--report` JSON):
+- Total return vs. per-symbol buy-and-hold benchmark (+ equal-weight blend)
+- Win rate, average win/loss
+- Max drawdown, annualized Sharpe (coarse for stock gaps — documented)
+- Auto-exit / risk-rejected / hold counts, per-symbol breakdown, equity curve
+
+> LLM *replay* (feeding history to the model for fresh signals) is a separate, later experiment — non-deterministic and costly on the local 27B model. See the "Data pipeline, storage & dashboard (Week-6 design)" section above.
+
+## Monitoring
+
+- Structured JSON logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py`
+- Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
+- LLM audit trail ✅ — full `llm_exchange` structlog event (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
+- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + Docker packaging ⏳ open → PLAN §7.15 P3–P5
+
+## LM Studio Integration Details
+
+**Endpoint:** `http://127.0.0.1:1234/v1/chat/completions` (OpenAI-compatible)
+
+**Model:** Qwen 3.8 27B (`qwen/qwen3.8-27b`)
+
+**Key considerations:**
+- Use JSON mode / structured output if the model supports it, otherwise validate and retry on parse failure
+- Keep prompts under context window — trim old data aggressively
+- Set reasonable timeout (15-30s) with fallback to HOLD signal on LLM failure
+- Log full prompt + response for auditability
+
+## API Notes
+
+### Kraken Testnet
+- Base URL: `https://demo.kraken.com` (or use CCXT's testnet flag)
+- Auth: API key + secret via HMAC-SHA256 signatures
+- Rate limits: Check current docs — implement exponential backoff
+- Order types: market, limit, stop-loss, take-profit supported
+
+### XTB Demo
+- xAPI requires registration and approval for API access (demo is easier)
+- Python SDK available: `xtb-api` or REST via `httpx`
+- Auth: OAuth2 flow — store tokens securely
+- Trading hours: Warsaw Stock Exchange schedule
+- Instruments: Stocks, CFDs, indices
+
+## Configuration (`config/settings.yaml`)
+
+Everything is config-driven — thresholds, endpoints, schedules, retention windows. The authoritative file is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it (current contents):
+
+```yaml
+llm:
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  model: "qwen/qwen3.8-27b"
+  timeout_seconds: 30
+  max_retries: 3
+  use_json_schema: false   # enable once the local model accepts response_format
+
+crypto_agent:
+  enabled: true
+  exchange: kraken
+  testnet: true
+  interval_minutes: 5
+  pairs:
+    - BTC/USDT
+    - ETH/USDT
+  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+
+stocks_agent:
+  enabled: false
+  broker: xtb
+  demo: true
+  interval_minutes: 15
+  market_hours: "09:00-16:30"   # local wall-clock window for the exchange
+  market_timezone: "Europe/Warsaw"   # zone the window is in (so a UTC host stays correct)
+  # Exchange closure dates (§7.10, ISO YYYY-MM-DD). Weekends are always closed;
+  # fill in holidays/one-off shutdowns here (validated at startup — bad entries
+  # abort with an actionable error rather than silently disabling the guard).
+  market_holidays: []
+  #   - "2026-12-24"
+  #   - "2026-12-26"
+  symbols:
+    - AAPL
+    - MSFT
+  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+
+risk:
+  max_position_pct: 0.10
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.05
+  consecutive_losses_cooldown_minutes: 60
+  max_open_positions: 5
+  min_confidence: 0.6
+  # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's
+  # mark price breaches the levels carried from its entry signal, the pipeline
+  # closes it on the next cycle without asking the LLM or the risk gate.
+  enforce_exit_levels: true
+
+# Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
+# fees/slippage. 0.26%/side matches a typical crypto taker fee; 0.1%/side slippage.
+execution:
+  paper_fee_pct: 0.0026
+  paper_slippage_pct: 0.001
+  initial_cash: 100000.0   # seeds a fresh paper portfolio; after the first cycle
+                           # the persisted snapshot (and restart rehydration) wins
+
+storage:
+  database_path: "data/trading_agent.db"
+  # Retention (§7.12). Market snapshots are re-creatable cache (~100-candle JSON
+  # per symbol-cycle — the space hog), so they prune by default. Decisions/orders
+  # are the trade record (audit + fine-tuning data): kept forever unless you set
+  # history_retention_days > 0. portfolio_snapshots are NEVER pruned — the
+  # drawdown high-water seed reads MAX over their full history.
+  snapshot_retention_days: 30
+  history_retention_days: 0
+  prune_interval_minutes: 1440   # how often runners prune while alive (startup always)
+
+monitoring:
+  log_level: INFO
+  alert_dedup_window_seconds: 300
+
+# Agent-side control API (§7.15). Off by default: nothing listens unless you enable
+# it. The dashboard shares the Docker network (or this host); binds to loopback by
+# default, and credentials are structurally absent from every endpoint.
+control_api:
+  enabled: false
+  host: "127.0.0.1"
+  crypto_port: 8101
+  stocks_port: 8102
+```
+
+> `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
+
+Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`, `LM_STUDIO_USE_JSON_SCHEMA`, `XTB_API_KEY`.
+
+## Dependencies (current)
+
+```toml
+dependencies = [
+    "ccxt>=4.0",
+    "httpx>=0.27",
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.20",
+    "apscheduler>=3.10",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "structlog>=24.0",
+    # §7.15 control plane: agent-side control API + dashboard (server-rendered).
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+stocks = [
+    "yfinance>=0.2",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+]
+```
+
+> Earlier drafts listed `pandas-ta` (indicators are hand-rolled) and `python-dotenv` (custom loader); both were removed in §7.3. `fastapi`/`uvicorn`/`jinja2` joined as runtime deps with the control plane (§7.15). HTMX + uPlot are CDN assets — no Node/npm build step anywhere.
+
+## Testing Strategy
+
+### Unit Tests (fast, no network)
+- Every pure function and class method
+- Mock all external dependencies (LLM client, exchange APIs, database)
+- Target: >90% coverage on `core/` modules
+
+### Integration Tests (mocked network)
+- Full decision pipeline with mocked data provider + paper executor
+- Agent lifecycle: start → cycle → shutdown
+- Risk engine integration with realistic portfolio states
+
+### Property-Based Tests
+- Risk engine invariants: "approved signal always satisfies all rules"
+- Storage consistency: "every executed order has a matching decision record"
+
+### Test Data
+- Realistic OHLCV fixtures from historical data
+- Edge cases: gap-ups, zero volume, extreme volatility periods
+
+Current numbers: **414 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

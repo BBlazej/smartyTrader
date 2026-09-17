@@ -200,4 +200,15 @@ Not yet built: news/sentiment + economic-calendar feeds,
 the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review
 (low-hanging fruit first, then High → Low severity); its detailed findings
-live in `review.MD` at the repo root.
+live in `review.MD` at the repo root, with follow-up undocumented TODO items tracked in `review2.md`.
+
+## Documentation map
+
+| File | Contents |
+|---|---|
+| `README.md` (this file) | overview & quickstart |
+| `ARCHITECTURE.md` | architecture: components, data flow, storage schema, control plane, design decisions (Mermaid diagrams) |
+| `HISTORY.md` | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
+| `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
+| `AGENTS.md` | agent-facing facts & rules for coding agents |
+| `nightly_finds.md` | bugs/gaps discovered during development |
