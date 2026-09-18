@@ -379,7 +379,7 @@ Rehydration (§7.7): at startup, `core/rehydration.py` restores the paper book (
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
-This section holds the **design decisions** locked in Week 6 — the data pipeline / DB / control architecture that backtesting (§7.14, delivered), the dashboard (§7.15 P1–P4 delivered, P5 Docker packaging open), and the live agent all share. It is the source of truth for *how data flows*.
+This section holds the **design decisions** locked in Week 6 — the data pipeline / DB / control architecture that backtesting (§7.14, delivered), the dashboard (§7.15 — fully delivered through Docker packaging), and the live agent all share. It is the source of truth for *how data flows*.
 
 ### Design decisions (locked)
 
@@ -402,7 +402,7 @@ flowchart TD
     UP["UNIFIED PIPELINE: fetch candles → compute indicators → normalize → persist (one code path — src/core/decision_pipeline.py + providers)"]
     AGENT["AGENT (live): prompt → LLM → risk → execute"]
     BT["BACKTESTER (replay): stored decisions vs historical candles"]
-    DASH["DASHBOARD (monitor + control + config): FastAPI + HTMX — planned, PLAN §7.15 P3–P5"]
+    DASH["DASHBOARD (monitor + control + config): FastAPI + HTMX — src/dashboard/"]
     DB[("SHARED SQLite WAL — data/trading_agent.db: market_snapshots · llm_decisions · orders · portfolio_snapshots · agent_control")]
 
     MD --> UP
@@ -442,20 +442,23 @@ Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scrip
 - **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
 - **Config:** server-rendered form (`GET/POST /config/{agent}`) over the safe config surface only; the urlencoded body is parsed into the nested payload and validated server-side through `validate_overrides_payload` → `SafeConfigOverrides` (`extra="forbid"` — any unknown/credential-shaped key rejects wholesale, and the form re-renders with the rejection); accepted values persist to `agent_control.config_override_json`. No credential/secret fields exist in the form.
 
-### Container / volume topology (planned — PLAN §7.15 P5)
+### Container / volume topology (§7.15 P5 — implemented)
+
+One slim image (`Dockerfile`: python:3.11-slim, non-root `appuser`; installs the package itself + `[stocks]` — dashboard templates ship as package-data via explicit setuptools discovery) serves all four services of `docker-compose.yml`:
 
 ```
-docker-compose
-├── agent-crypto     # scripts/run_crypto_agent.py  (control API in-process)
+docker compose up -d --build            # agents + dashboard; backtester: docker compose run --rm backtester --days 30
+├── agent-crypto     # scripts/run_crypto_agent.py   (control API in-process if enabled)
 ├── agent-stocks     # scripts/run_stocks_agent.py
-├── backtester       # scripts/backtest.py          (batch, on-demand)
-├── dashboard        # FastAPI + HTMX               (port 8080 → browser)
-└── volume: agent-data → data/          # the shared SQLite + WAL files
-    volume: agent-config → config/      # settings.yaml + safe overrides
+├── dashboard        # scripts/run_dashboard.py      (bound to loopback on the host: 127.0.0.1:8080; /healthz healthcheck)
+└── backtester       # scripts/backtest.py           (`tools` profile — never started by `up`, restart: "no")
+    volume: agent-data → /app/data      # named volume: the shared SQLite + WAL files
+    bind:   ./config  → /app/config:ro  # read-only (see deviation note below)
 ```
 
 - **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
-- `agent-config` volume holds `settings.yaml` + safe overrides; the dashboard and agent both mount it.
+- **Deviation from the locked design:** `config/` is a **read-only bind mount**, not an `agent-config` named volume — nothing ever writes config files (safe overrides live in `agent_control` DB rows), so host edits stay authoritative on container restart instead of going stale inside a pre-seeded volume.
+- Secrets enter only via compose environment substitution (`${KRAKEN_API_KEY:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
 - No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
 
 ## Backtesting (§7.14 — implemented)
@@ -488,7 +491,7 @@ Metrics (CLI summary + `--report` JSON):
 - Structured JSON logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py`
 - Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
 - LLM audit trail ✅ — full `llm_exchange` structlog event (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
-- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker packaging ⏳ open → PLAN §7.15 P5
+- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker/compose packaging ✅ (`Dockerfile` + `docker-compose.yml` — §7.15 P5)
 
 ## LM Studio Integration Details
 

@@ -1,0 +1,80 @@
+# Trading-agent system — PLAN §7.15 P5. Topology & design decisions: ARCHITECTURE.md
+# ("Container / volume topology").
+#
+#   docker compose up -d --build                      # agents + dashboard
+#   docker compose run --rm backtester --days 30      # on-demand replay (tools profile)
+#   curl http://127.0.0.1:8080                        # the dashboard (loopback only)
+#
+# Shared state: one `agent-data` named volume holds the SQLite DB (WAL: agents write,
+# dashboard + backtester read/write control latches). `config/` is bind-mounted
+# READ-ONLY — nothing writes config files (safe overrides live in the DB's
+# agent_control rows), so a ro mount is both safe and means host edits take effect
+# on container restart. Secrets enter only via environment substitution below —
+# .env is excluded from images by .dockerignore and never baked in.
+
+x-agent-env: &agent-env
+  # LM Studio runs on the host; host-gateway makes it reachable from containers.
+  LM_STUDIO_ENDPOINT: "${LM_STUDIO_ENDPOINT:-http://host.docker.internal:1234/v1/chat/completions}"
+  # Credentials pass through only if set (shell env or a sibling .env); empty →
+  # paper executor. The dashboard never sees any of this.
+  KRAKEN_API_KEY: "${KRAKEN_API_KEY:-}"
+  KRAKEN_API_SECRET: "${KRAKEN_API_SECRET:-}"
+
+x-shared-volumes: &agent-volumes
+  - agent-data:/app/data
+  - ./config:/app/config:ro
+
+services:
+  agent-crypto:
+    build: .
+    command: ["python", "-m", "scripts.run_crypto_agent"]
+    restart: unless-stopped
+    environment: *agent-env
+    volumes: *agent-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  agent-stocks:
+    build: .
+    command: ["python", "-m", "scripts.run_stocks_agent"]
+    restart: unless-stopped
+    environment:
+      <<: *agent-env
+      XTB_API_KEY: "${XTB_API_KEY:-}"
+    volumes: *agent-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  dashboard:
+    build: .
+    # Bind to all interfaces INSIDE the container (the config default is loopback);
+    # the host-side port mapping below stays loopback-only, so nothing outside this
+    # machine can reach it. Keep the mapped port in sync with dashboard.port.
+    command: ["python", "-m", "scripts.run_dashboard", "--host", "0.0.0.0"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes: *agent-volumes
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backtester:
+    build: .
+    # On-demand batch tool: never started by `up` — use
+    # `docker compose run --rm backtester --days 30`.
+    profiles: ["tools"]
+    restart: "no"
+    command: ["python", "-m", "scripts.backtest", "--days", "30"]
+    volumes: *agent-volumes
+
+volumes:
+  agent-data:

@@ -42,3 +42,12 @@ line-length = 100
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+# Deterministic discovery for non-editable installs (the Docker image ships the
+# package itself): `src*` is the application package, `scripts*` the entry points.
+[tool.setuptools.packages.find]
+include = ["src*", "scripts*"]
+
+# The dashboard's Jinja2 templates live inside the package and must ship with it.
+[tool.setuptools.package-data]
+"src.dashboard" = ["templates/*.html"]

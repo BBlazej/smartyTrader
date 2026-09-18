@@ -50,6 +50,10 @@ python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
 python -m scripts.backtest --days 30        # replay stored decisions vs fresh candles (§7.14)
 python -m scripts.run_dashboard             # web dashboard at http://127.0.0.1:8080 (§7.15 P3/P4)
+
+# or run the whole system in containers (§7.15 P5):
+docker compose up -d --build                # agents + dashboard (loopback 127.0.0.1:8080)
+docker compose run --rm backtester --days 30  # on-demand replay (tools profile)
 ```
 
 A disabled agent (`crypto_agent.enabled: false` / `stocks_agent.enabled: false`)
@@ -99,17 +103,24 @@ src/
 │   └── stocks_agent.py       # Thin subclass + market-hours guard (weekend/holiday/wrap)
 ├── analysis/
 │   └── __init__.py           # (empty — indicators & prompt currently live in core)
-└── monitoring/
-    ├── logger.py             # structlog setup
-    └── alerts.py             # AlertManager + sinks (Noop)
+├── monitoring/
+│   ├── logger.py             # structlog setup
+│   └── alerts.py             # AlertManager + sinks (Noop)
+└── dashboard/                # Web UI (§7.15 P3/P4): FastAPI + Jinja2/HTMX, reads the WAL DB
+    ├── app.py                # Pages + HTMX control endpoints (latch writes; SafeConfigOverrides form)
+    ├── views.py              # Pure view-models: win-rate/confidence stats, uPlot shaping, positions
+    └── templates/            # base / overview / decisions / positions / config / _health
 
 scripts/
 ├── run_crypto_agent.py       # Entry point — crypto-specific factories + shared runner
 ├── run_stocks_agent.py       # Entry point — stocks-specific factories + shared runner
+├── run_dashboard.py          # Web dashboard server (monitor + control + safe config) (§7.15)
 ├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
 └── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
+Dockerfile                    # Slim image (python:3.11, non-root) for all services (§7.15 P5)
+docker-compose.yml            # agent-crypto/-stocks + dashboard + on-demand backtester (§7.15 P5)
 tests/
 ├── unit/                     # Fast, no network
 └── integration/              # Full pipeline, mocked provider, real SQLite
@@ -130,6 +141,7 @@ thresholds. Key sections:
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
 | `monitoring` | log level, alert dedup window |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
+| `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
 
 ### Environment variables
 
@@ -198,11 +210,12 @@ engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest
 and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
 with win-rate/confidence stats, agent health; HTMX pause/resume/close-all controls and a
 safe-config editor — all writing the same `agent_control` latches; `scripts/run_dashboard.py`,
-§7.15 P3/P4).
+§7.15 P3/P4), now packaged for containers (`docker compose up -d --build` — agents, dashboard
+and an on-demand backtester on one shared SQLite volume; §7.15 P5).
 **436 tests passing at ~93% coverage.**
 
-Not yet built: news/sentiment + economic-calendar feeds,
-the XTB demo OAuth2 flow, and Docker packaging for the agents + dashboard (§7.15 P5). See `PLAN.md` §7 (Gaps & Next Steps)
+Not yet built: news/sentiment + economic-calendar feeds
+and the XTB demo OAuth2 flow. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review
 (low-hanging fruit first, then High → Low severity); its detailed findings
 live in `review.MD` at the repo root, with follow-up undocumented TODO items tracked in `review2.md`.

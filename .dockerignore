@@ -1,0 +1,24 @@
+# Secrets must NEVER enter the image (injected via compose environment instead).
+.env
+
+# Runtime state: the SQLite DB + WAL live on the shared agent-data volume only.
+data/
+
+# Python / tooling artifacts.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+
+# Not needed at runtime (image installs the package itself).
+tests/
+docs/
+*.md
+
+.git/
+.gitignore
