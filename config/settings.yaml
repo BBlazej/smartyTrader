@@ -76,3 +76,13 @@ control_api:
   host: "127.0.0.1"
   crypto_port: 8101
   stocks_port: 8102
+
+# Standalone web dashboard (§7.15 P3–P4): FastAPI + Jinja2/HTMX. Run it separately
+# (`python -m scripts.run_dashboard`); it reads the shared SQLite DB (WAL) and writes
+# control latches directly, so it works with or without the agent-side control API.
+# Loopback by default; credentials are structurally absent from every page.
+dashboard:
+  host: "127.0.0.1"
+  port: 8080
+  refresh_seconds: 5           # HTMX polling interval for live fragments
+  agents: ["crypto", "stocks"] # which control rows to show/control

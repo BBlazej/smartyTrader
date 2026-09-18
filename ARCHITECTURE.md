@@ -379,7 +379,7 @@ Rehydration (§7.7): at startup, `core/rehydration.py` restores the paper book (
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
-This section holds the **design decisions** locked in Week 6 — the data pipeline / DB / control architecture that backtesting (§7.14, delivered), the dashboard (PLAN §7.15 P3–P5, open), and the live agent all share. It is the source of truth for *how data flows*.
+This section holds the **design decisions** locked in Week 6 — the data pipeline / DB / control architecture that backtesting (§7.14, delivered), the dashboard (§7.15 P1–P4 delivered, P5 Docker packaging open), and the live agent all share. It is the source of truth for *how data flows*.
 
 ### Design decisions (locked)
 
@@ -434,11 +434,13 @@ The agent process serves a small internal API (in-process with the loop, or a th
 
 > As implemented in P2, this contract gained `GET /healthz`, a per-agent status route (`GET /api/agents/{agent}`), and the whitelist enforcement described in §Control plane above. The safety note stands unchanged.
 
-### Dashboard (planned — PLAN §7.15 P3/P4)
+### Dashboard (§7.15 P3/P4 — implemented)
 
-- **Monitor:** portfolio value over time (uPlot), open positions, recent decisions + win-rate / confidence distribution, agent state + last cycle + errors. Live via HTMX polling (or SSE).
-- **Control:** Pause / Resume, Close all — HTMX `POST` to the control API.
-- **Config:** server-rendered form over the safe config surface only; changes validated server-side (Pydantic) and persisted to `agent_control`; no credential/secret fields exist in the form.
+Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scripts/run_dashboard.py` on `dashboard.host:port`, default loopback `127.0.0.1:8080`). Reads the shared SQLite DB (WAL) through `Storage` as a **reader** — no HTTP coupling to the agent process, so it works whether or not `control_api.enabled`.
+
+- **Monitor:** overview page (portfolio cards + uPlot portfolio-value chart refreshed from `/api/portfolio.json`, recent decisions), positions page, decisions page with win-rate / avg-confidence / confidence-histogram stats (`views.py::decision_stats`), health cards (state, last cycle, errors, override/close-all latches) refreshed via HTMX polling of `/partials/health` every `dashboard.refresh_seconds`.
+- **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
+- **Config:** server-rendered form (`GET/POST /config/{agent}`) over the safe config surface only; the urlencoded body is parsed into the nested payload and validated server-side through `validate_overrides_payload` → `SafeConfigOverrides` (`extra="forbid"` — any unknown/credential-shaped key rejects wholesale, and the form re-renders with the rejection); accepted values persist to `agent_control.config_override_json`. No credential/secret fields exist in the form.
 
 ### Container / volume topology (planned — PLAN §7.15 P5)
 
@@ -486,7 +488,7 @@ Metrics (CLI summary + `--report` JSON):
 - Structured JSON logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py`
 - Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
 - LLM audit trail ✅ — full `llm_exchange` structlog event (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
-- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + Docker packaging ⏳ open → PLAN §7.15 P3–P5
+- Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker packaging ⏳ open → PLAN §7.15 P5
 
 ## LM Studio Integration Details
 
@@ -598,6 +600,16 @@ control_api:
   host: "127.0.0.1"
   crypto_port: 8101
   stocks_port: 8102
+
+# Standalone web dashboard (§7.15 P3–P4): FastAPI + Jinja2/HTMX. Run it separately
+# (`python -m scripts.run_dashboard`); it reads the shared SQLite DB (WAL) and writes
+# control latches directly, so it works with or without the agent-side control API.
+# Loopback by default; credentials are structurally absent from every page.
+dashboard:
+  host: "127.0.0.1"
+  port: 8080
+  refresh_seconds: 5           # HTMX polling interval for live fragments
+  agents: ["crypto", "stocks"] # which control rows to show/control
 ```
 
 > `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
@@ -657,4 +669,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **414 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **436 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

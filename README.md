@@ -44,11 +44,12 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 414 tests, no network needed
+pytest                      # 436 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
 python -m scripts.backtest --days 30        # replay stored decisions vs fresh candles (§7.14)
+python -m scripts.run_dashboard             # web dashboard at http://127.0.0.1:8080 (§7.15 P3/P4)
 ```
 
 A disabled agent (`crypto_agent.enabled: false` / `stocks_agent.enabled: false`)
@@ -193,11 +194,15 @@ take-profit exits** (levels ride on the position through restarts; a breach is
 closed on the next cycle without asking the LLM or the risk gate — toggle with
 `risk.enforce_exit_levels`), and **decision-replay backtesting** (re-simulates the
 agent's own stored decisions against fresh historical candles through the same risk
-engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`).
-**414 tests passing at ~94% coverage.**
+engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`),
+and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
+with win-rate/confidence stats, agent health; HTMX pause/resume/close-all controls and a
+safe-config editor — all writing the same `agent_control` latches; `scripts/run_dashboard.py`,
+§7.15 P3/P4).
+**436 tests passing at ~93% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds,
-the XTB demo OAuth2 flow, and a dashboard. See `PLAN.md` §7 (Gaps & Next Steps)
+the XTB demo OAuth2 flow, and Docker packaging for the agents + dashboard (§7.15 P5). See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review
 (low-hanging fruit first, then High → Low severity); its detailed findings
 live in `review.MD` at the repo root, with follow-up undocumented TODO items tracked in `review2.md`.

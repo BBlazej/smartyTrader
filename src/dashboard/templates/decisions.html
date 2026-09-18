@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Decisions · Trading Agents{% endblock %}
+{% block content %}
+  <h1>Decisions</h1>
+
+  {% set s = stats %}
+  <div class="cards">
+    <div class="card"><div class="muted">Win rate (closed)</div>
+      <div class="stat">{{ s.win_rate | pct }}</div>
+      <div class="muted">{{ s.wins }}W / {{ s.losses }}L of {{ s.closed }} closed</div></div>
+    <div class="card"><div class="muted">Realized PnL (closed)</div>
+      <div class="stat {{ 'pos' if s.realized_total > 0 else ('neg' if s.realized_total < 0) }}">
+        {{ s.realized_total | money }}</div></div>
+    <div class="card"><div class="muted">Avg confidence (buy/sell)</div>
+      <div class="stat">{{ s.avg_confidence | pct }}</div></div>
+    <div class="card"><div class="muted">Decisions</div>
+      <div class="stat">{{ s.total }}</div>
+      <div class="muted">{{ s.buys }} buy · {{ s.sells }} sell · {{ s.holds }} hold{% if s.fallback %} · {{ s.fallback }} fallback{% endif %}</div></div>
+  </div>
+
+  <h2>Confidence distribution (buy/sell)</h2>
+  <div class="card">
+    {% set maxc = s.confidence_buckets | map(attribute='count') | max %}
+    <table>
+      <tbody>
+        {% for b in s.confidence_buckets %}
+          <tr>
+            <td style="width:8rem;" class="muted">{{ b.label }}</td>
+            <td>
+              {%- set w = (100 * b.count / maxc) if maxc else 0 -%}
+              <span style="display:inline-block; height:.9rem; width:{{ w }}%; min-width:{% if b.count %}2px{% else %}0{% endif %};
+                    background:#7aa2f7; border-radius:3px;"></span>
+              &nbsp;<span class="muted">{{ b.count }}</span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>All decisions (newest first)</h2>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Time</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th>
+        <th>Realized PnL</th><th>Reasoning</th>
+      </tr></thead>
+      <tbody>
+        {% for d in decisions %}
+          <tr>
+            <td class="muted" style="white-space:nowrap;">{{ d.timestamp | short }}</td>
+            <td>{{ d.symbol }}{% if d.is_fallback %} <span class="badge b-off">fallback</span>{% endif %}</td>
+            <td>{{ d.action }}</td>
+            <td>{{ '%.2f' | format(d.confidence) }}</td>
+            <td><span class="badge b-{{ d.risk_verdict }}">{{ d.risk_verdict }}</span></td>
+            <td class="{% if (d.realized_pnl or 0) > 0 %}pos{% elif (d.realized_pnl or 0) < 0 %}neg{% endif %}">
+              {{ d.realized_pnl | money if d.realized_pnl is not none else '—' }}</td>
+            <td class="muted" style="max-width:32rem;">{{ d.reasoning }}
+              {% if d.risk_reason %}<div class="muted">↳ risk: {{ d.risk_reason }}</div>{% endif %}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="muted">No decisions recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

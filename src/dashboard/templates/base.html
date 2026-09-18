@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Trading Agents{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@3.5.6/dist/uPlot.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js" defer></script>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #14161a; color: #e6e8eb; line-height: 1.5;
+    }
+    a { color: #7aa2f7; text-decoration: none; }
+    header { display: flex; align-items: center; gap: 1.5rem; padding: .9rem 1.4rem;
+      background: #1b1e24; border-bottom: 1px solid #2a2e37; flex-wrap: wrap; }
+    header .brand { font-weight: 700; letter-spacing: .3px; }
+    nav { display: flex; gap: 1rem; }
+    nav a { padding: .35rem .6rem; border-radius: 6px; color: #a9b1d6; }
+    nav a.active, nav a:hover { background: #2a2e37; color: #fff; }
+    main { padding: 1.4rem; max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    h2 { font-size: 1.05rem; margin: 1.4rem 0 .6rem; color: #a9b1d6; }
+    .grid { display: grid; gap: 1rem; }
+    .cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card { background: #1b1e24; border: 1px solid #2a2e37; border-radius: 10px; padding: 1rem 1.1rem; }
+    .stat { font-size: 1.6rem; font-weight: 700; }
+    .muted { color: #8b93a7; font-size: .82rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid #2a2e37; }
+    th { color: #8b93a7; font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: #1f232b; }
+    .pos { color: #9ece6a; } .neg { color: #f7768e; }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .74rem; font-weight: 600; }
+    .b-running { background: #1e3a2a; color: #9ece6a; }
+    .b-paused { background: #3a2e1e; color: #e0af68; }
+    .b-approved { background: #1e3a2a; color: #9ece6a; }
+    .b-rejected { background: #3a1e24; color: #f7768e; }
+    .b-off { background: #2a2e37; color: #8b93a7; }
+    .b-warn { background: #3a2e1e; color: #e0af68; }
+    .btn { display: inline-block; border: 1px solid #2a2e37; background: #232730; color: #c0caf5;
+      padding: .35rem .7rem; border-radius: 7px; cursor: pointer; font-size: .84rem; }
+    .btn:hover { background: #2f3441; }
+    .btn.danger { border-color: #4a2630; color: #f7768e; }
+    .actions { display: flex; gap: .5rem; margin-top: .7rem; flex-wrap: wrap; }
+    .flash { background: #1e3a2a; color: #9ece6a; padding: .6rem .9rem; border-radius: 8px; margin-bottom: 1rem; }
+    .flash.err { background: #3a1e24; color: #f7768e; }
+    label { display: block; font-size: .8rem; color: #8b93a7; margin: .5rem 0 .2rem; }
+    input[type=text], input[type=number] { width: 100%; padding: .4rem .5rem; border-radius: 6px;
+      border: 1px solid #2a2e37; background: #14161a; color: #e6e8eb; }
+    fieldset { border: 1px solid #2a2e37; border-radius: 8px; padding: .8rem 1rem; margin: 0 0 1rem; }
+    legend { color: #a9b1d6; font-size: .85rem; padding: 0 .4rem; }
+    .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+    #chart { width: 100%; height: 300px; }
+    .wrap { overflow-x: auto; }
+    .pill-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .4rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">📈 Trading Agents</span>
+    <nav>
+      <a href="/" class="{{ 'active' if active == 'overview' }}">Overview</a>
+      <a href="/decisions" class="{{ 'active' if active == 'decisions' }}">Decisions</a>
+      <a href="/positions" class="{{ 'active' if active == 'positions' }}">Positions</a>
+      <a href="/config/crypto" class="{{ 'active' if active == 'config' }}">Config</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

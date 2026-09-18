@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Config · {{ agent }}{% endblock %}
+{% block content %}
+  <h1>Safe config — {{ agent }}</h1>
+
+  <p class="muted">
+    Only whitelisted fields are editable here (intervals, pairs/symbols, market hours,
+    decision-history depth, <code>risk.*</code>, paper <code>execution.*</code>).
+    LLM endpoints, credentials and secrets are structurally absent and cannot be read or
+    written. Changes apply on the agent's next cycle
+    (<code>interval_minutes</code> applies after restart).
+  </p>
+
+  <div class="pill-row">
+    {% for a in agents %}
+      <a class="btn {{ 'active' if a == agent }}" href="/config/{{ a }}">{{ a }}</a>
+    {% endfor %}
+  </div>
+
+  {% if saved %}<div class="flash" style="margin-top:1rem;">Saved. Applies on the next cycle.</div>{% endif %}
+  {% if error %}<div class="flash err" style="margin-top:1rem;">⚠ {{ error }}</div>{% endif %}
+
+  {% set ov = config.overrides or {} %}
+  {% if ov %}
+    <p class="muted" style="margin-top:1rem;">Active overrides:
+      <code>{{ ov | tojson }}</code>
+      — clear the field(s) and save to revert a value to its YAML default.</p>
+  {% endif %}
+
+  <form method="post" action="/config/{{ agent }}" style="max-width:760px;">
+    <fieldset>
+      <legend>Agent</legend>
+      <div class="cols2">
+        <div>
+          <label for="interval_minutes">Interval (minutes)</label>
+          <input type="number" id="interval_minutes" name="interval_minutes" min="1" max="1440"
+                 value="{{ agent_config.interval_minutes }}">
+        </div>
+        <div>
+          <label for="decision_history_limit">Decision history limit (prompt context)</label>
+          <input type="number" id="decision_history_limit" name="decision_history_limit" min="0" max="100"
+                 value="{{ agent_config.decision_history_limit }}">
+        </div>
+        <div>
+          <label for="pairs">Pairs (comma-separated)</label>
+          <input type="text" id="pairs" name="pairs" value="{{ agent_config.pairs | join(', ') }}">
+        </div>
+        <div>
+          <label for="symbols">Symbols (comma-separated)</label>
+          <input type="text" id="symbols" name="symbols" value="{{ agent_config.symbols | join(', ') }}">
+        </div>
+        <div>
+          <label for="market_hours">Market hours (e.g. 09:00-16:30)</label>
+          <input type="text" id="market_hours" name="market_hours"
+                 value="{{ agent_config.market_hours or '' }}">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Risk</legend>
+      <div class="cols2">
+        <div>
+          <label for="risk.max_position_pct">Max position % (0–1)</label>
+          <input type="number" step="0.01" id="risk.max_position_pct" name="risk.max_position_pct" value="{{ config.risk.max_position_pct }}">
+        </div>
+        <div>
+          <label for="risk.daily_loss_limit_pct">Daily loss limit % (0–1)</label>
+          <input type="number" step="0.01" id="risk.daily_loss_limit_pct" name="risk.daily_loss_limit_pct" value="{{ config.risk.daily_loss_limit_pct }}">
+        </div>
+        <div>
+          <label for="risk.max_drawdown_pct">Max drawdown % (0–1)</label>
+          <input type="number" step="0.01" id="risk.max_drawdown_pct" name="risk.max_drawdown_pct" value="{{ config.risk.max_drawdown_pct }}">
+        </div>
+        <div>
+          <label for="risk.min_confidence">Min confidence (0–1)</label>
+          <input type="number" step="0.01" id="risk.min_confidence" name="risk.min_confidence" value="{{ config.risk.min_confidence }}">
+        </div>
+        <div>
+          <label for="risk.consecutive_losses_cooldown_minutes">Consecutive-loss cooldown (min)</label>
+          <input type="number" step="1" id="risk.consecutive_losses_cooldown_minutes" name="risk.consecutive_losses_cooldown_minutes" value="{{ config.risk.consecutive_losses_cooldown_minutes }}">
+        </div>
+        <div>
+          <label for="risk.max_open_positions">Max open positions</label>
+          <input type="number" step="1" id="risk.max_open_positions" name="risk.max_open_positions" value="{{ config.risk.max_open_positions }}">
+        </div>
+        <div>
+          <label for="risk.enforce_exit_levels">Enforce exit levels (SL/TP)</label>
+          <select id="risk.enforce_exit_levels" name="risk.enforce_exit_levels"
+                  style="width:100%; padding:.4rem .5rem; border-radius:6px; border:1px solid #2a2e37; background:#14161a; color:#e6e8eb;">
+            <option value="true" {{ 'selected' if config.risk.enforce_exit_levels }}>Enabled</option>
+            <option value="false" {{ 'selected' if not config.risk.enforce_exit_levels }}>Disabled</option>
+          </select>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Paper execution costs</legend>
+      <div class="cols2">
+        <div>
+          <label for="execution.paper_fee_pct">Paper fee % (per side)</label>
+          <input type="number" step="0.0001" id="execution.paper_fee_pct" name="execution.paper_fee_pct" value="{{ config.execution.paper_fee_pct }}">
+        </div>
+        <div>
+          <label for="execution.paper_slippage_pct">Paper slippage % (per side)</label>
+          <input type="number" step="0.0001" id="execution.paper_slippage_pct" name="execution.paper_slippage_pct" value="{{ config.execution.paper_slippage_pct }}">
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button class="btn" type="submit">Save overrides</button>
+    </div>
+  </form>
+{% endblock %}

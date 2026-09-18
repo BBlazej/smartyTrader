@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Positions · Trading Agents{% endblock %}
+{% block content %}
+  <h1>Open positions</h1>
+
+  <div class="cards">
+    <div class="card"><div class="muted">Total value</div>
+      <div class="stat">{{ (latest.total_value if latest else None) | money }}</div></div>
+    <div class="card"><div class="muted">Cash</div>
+      <div class="stat">{{ (latest.cash if latest else None) | money }}</div></div>
+    <div class="card"><div class="muted">Unrealized PnL</div>
+      {% set up = latest.unrealized_pnl if latest else None %}
+      <div class="stat {{ 'pos' if (up or 0) > 0 else ('neg' if (up or 0) < 0) }}">{{ up | money }}</div></div>
+  </div>
+
+  <p class="muted">Positions are read from the latest portfolio snapshot
+    {% if latest %}(as of {{ latest.timestamp | short }}){% endif %}.</p>
+
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Symbol</th><th>Qty</th><th>Avg entry</th><th>Mark</th>
+        <th>PnL</th><th>PnL %</th><th>Stop</th><th>Take-profit</th>
+      </tr></thead>
+      <tbody>
+        {% for p in positions %}
+          <tr>
+            <td>{{ p.symbol }}</td>
+            <td>{{ '%.8g' | format(p.quantity) }}</td>
+            <td>{{ p.avg_entry_price | money }}</td>
+            <td>{{ p.current_price | money }}</td>
+            <td class="{% if p.pnl > 0 %}pos{% elif p.pnl < 0 %}neg{% endif %}">{{ p.pnl | money }}</td>
+            <td class="{% if p.pnl_pct > 0 %}pos{% elif p.pnl_pct < 0 %}neg{% endif %}">{{ p.pnl_pct | pct }}</td>
+            <td>{{ p.stop_loss | money if p.stop_loss is not none else '—' }}</td>
+            <td>{{ p.take_profit | money if p.take_profit is not none else '—' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8" class="muted">No open positions.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

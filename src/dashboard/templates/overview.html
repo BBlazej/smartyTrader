@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Overview · Trading Agents{% endblock %}
+{% block content %}
+  <h1>Overview</h1>
+
+  {% include "_health.html" %}
+
+  <h2>Portfolio</h2>
+  <div class="cards">
+    <div class="card"><div class="muted">Total value</div>
+      <div class="stat">{{ (latest.total_value if latest else None) | money }}</div></div>
+    <div class="card"><div class="muted">Cash</div>
+      <div class="stat">{{ (latest.cash if latest else None) | money }}</div></div>
+    <div class="card"><div class="muted">Unrealized PnL</div>
+      {% set up = latest.unrealized_pnl if latest else None %}
+      <div class="stat {{ 'pos' if (up or 0) > 0 else ('neg' if (up or 0) < 0) }}">{{ up | money }}</div></div>
+    <div class="card"><div class="muted">Open positions</div>
+      <div class="stat">{{ positions | length }}</div></div>
+  </div>
+
+  <h2>Portfolio value over time</h2>
+  <div class="card">
+    <div id="chart"></div>
+    <noscript><span class="muted">Chart requires JavaScript.</span></noscript>
+  </div>
+
+  <h2>Recent decisions</h2>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th><th>Realized PnL</th></tr></thead>
+      <tbody>
+        {% for d in recent_decisions %}
+          <tr>
+            <td class="muted">{{ d.timestamp | short }}</td>
+            <td>{{ d.symbol }}{% if d.is_fallback %} <span class="badge b-off">fallback</span>{% endif %}</td>
+            <td>{{ d.action }}</td>
+            <td>{{ '%.2f' | format(d.confidence) }}</td>
+            <td><span class="badge b-{{ d.risk_verdict }}">{{ d.risk_verdict }}</span></td>
+            <td class="{% if (d.realized_pnl or 0) > 0 %}pos{% elif (d.realized_pnl or 0) < 0 %}neg{% endif %}">
+              {{ d.realized_pnl | money if d.realized_pnl is not none else '—' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">No decisions recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script id="chart-data" type="application/json">{{ chart | tojson }}</script>
+<script>
+  (function () {
+    var el = document.getElementById('chart');
+    if (!el || typeof uPlot === 'undefined') return;
+    function parse() {
+      try { return JSON.parse(document.getElementById('chart-data').textContent); }
+      catch (e) { return { x: [], total_value: [], cash: [] }; }
+    }
+    var data = parse();
+    var opts = {
+      width: el.clientWidth || 800,
+      height: 300,
+      pxAlign: true,
+      axes: [{}],
+      series: [
+        { label: 'Time' },
+        { label: 'Total value', stroke: '#7aa2f7' },
+        { label: 'Cash', stroke: '#565f89' },
+      ],
+    };
+    var u = new uPlot(opts, [data.x, data.total_value, data.cash], el);
+
+    function refresh() {
+      fetch('/api/portfolio.json')
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (d && d.x) u.setData([d.x, d.total_value, d.cash]); })
+        .catch(function () {});
+    }
+    setInterval(refresh, {{ refresh_seconds }} * 1000);
+
+    window.addEventListener('resize', function () { u.setSize({ width: el.clientWidth, height: 300 }); });
+  })();
+</script>
+{% endblock %}

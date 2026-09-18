@@ -1,0 +1,30 @@
+<div id="health" class="cards" hx-get="/partials/health" hx-trigger="every {{ refresh_seconds }}s" hx-swap="outerHTML">
+  {% for a in health_rows %}
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>{{ a.name }}</strong>
+        <span class="badge b-{{ a.state }}">{{ a.state }}</span>
+      </div>
+      <div class="pill-row">
+        {% if not a.enabled %}<span class="badge b-off" title="&lt;agent&gt;.enabled is false — nothing runs">disabled</span>{% endif %}
+        {% if a.close_all_requested %}<span class="badge b-warn">close-all pending</span>{% endif %}
+        {% if a.has_overrides %}<span class="badge b-warn" title="safe config overrides stored">overrides active</span>{% endif %}
+      </div>
+      <div class="muted" style="margin-top:.6rem;">
+        last cycle: {{ a.last_cycle_at | rel }}{% if a.last_cycle_at %}<br>{{ a.last_cycle_at | short }}{% endif %}
+      </div>
+      {% if a.last_error %}
+        <div class="muted neg" style="margin-top:.4rem; word-break:break-word;">⚠ {{ a.last_error }}</div>
+      {% endif %}
+      <div class="actions">
+        {% if a.state == 'running' %}
+          <button class="btn" hx-post="/control/{{ a.name }}/pause" hx-target="#health" hx-swap="outerHTML">Pause</button>
+        {% else %}
+          <button class="btn" hx-post="/control/{{ a.name }}/resume" hx-target="#health" hx-swap="outerHTML">Resume</button>
+        {% endif %}
+        <button class="btn danger" hx-post="/control/{{ a.name }}/close-all" hx-target="#health" hx-swap="outerHTML"
+                hx-confirm="Close ALL open positions for {{ a.name }}? These execute even while paused.">Close all</button>
+      </div>
+    </div>
+  {% endfor %}
+</div>

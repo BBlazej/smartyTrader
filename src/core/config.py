@@ -29,6 +29,7 @@ class Settings:
         self.storage = StorageSettings(**raw["storage"])
         self.monitoring = MonitoringSettings(**raw["monitoring"])
         self.control_api = ControlApiSettings(**raw.get("control_api", {}))
+        self.dashboard = DashboardSettings(**raw.get("dashboard", {}))
 
 
 class LLMSettings:
@@ -185,3 +186,31 @@ class ControlApiSettings:
         self.host = host
         self.crypto_port = crypto_port
         self.stocks_port = stocks_port
+
+
+class DashboardSettings:
+    """Standalone web dashboard (§7.15 P3–P4): FastAPI + Jinja2/HTMX.
+
+    Launched on its own (``scripts/run_dashboard.py``) and reads the shared SQLite
+    DB as a reader (WAL mode lets it read while the agents write). Control actions
+    write the ``agent_control`` latches directly — the same writes the agent-side
+    control API makes — so they work whether or not ``control_api.enabled``.
+
+    Binds to loopback by default; credentials are structurally absent from every
+    page. The dashboard only ever shows/edits the safe config surface
+    (:class:`~src.core.control_config.SafeConfigOverrides`).
+    """
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        refresh_seconds: int = 5,
+        agents: list[str] | None = None,
+    ) -> None:
+        self.host = host
+        self.port = port
+        # HTMX polling interval for the live fragments (health cards, chart).
+        self.refresh_seconds = max(1, refresh_seconds)
+        # Which control rows to show/control. Defaults to both built-in agents.
+        self.agents = agents if agents else ["crypto", "stocks"]
