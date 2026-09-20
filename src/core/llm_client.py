@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -42,8 +43,12 @@ class LLMClient:
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
+        # Resolve the chat-completions URL once instead of slicing the configured
+        # endpoint per request: the old ``rsplit("/v1")`` + re-append dance worked
+        # only for the shipped config shape (§7.19).
+        self._chat_url = _resolve_chat_url(settings.endpoint)
         self._client = httpx.AsyncClient(
-            base_url=settings.endpoint.rsplit("/v1", 1)[0],
+            base_url=_derive_base_url(settings.endpoint),
             timeout=settings.timeout_seconds,
         )
 
@@ -82,8 +87,8 @@ class LLMClient:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    "temperature": 0.2,
-                    "max_tokens": 1024,
+                    "temperature": self.settings.temperature,
+                    "max_tokens": self.settings.max_tokens,
                 }
 
                 if effective_schema:
@@ -92,10 +97,7 @@ class LLMClient:
                         "json_schema": effective_schema,
                     }
 
-                resp = await self._client.post(
-                    "/v1/chat/completions",
-                    json=payload,
-                )
+                resp = await self._client.post(self._chat_url, json=payload)
                 resp.raise_for_status()
 
                 data = resp.json()
@@ -124,6 +126,11 @@ class LLMClient:
                     max_retries=self.settings.max_retries,
                     error=str(exc),
                 )
+                # Exponential backoff between attempts — hammering a struggling
+                # local server on every retry helped nothing (§7.19).
+                if attempt < self.settings.max_retries and self.settings.retry_backoff_base_seconds:
+                    delay = self.settings.retry_backoff_base_seconds * (2 ** (attempt - 1))
+                    await asyncio.sleep(delay)
 
         # All retries exhausted — return safe HOLD fallback. Marked so it is
         # persisted for audit but never re-fed into later prompts (§7.8).
@@ -135,6 +142,29 @@ class LLMClient:
             reasoning=f"LLM unavailable after {self.settings.max_retries} retries: {last_error}",
             is_fallback=True,
         )
+
+
+def _resolve_chat_url(endpoint: str) -> str:
+    """Normalize any of the shipped endpoint shapes to the full chat URL.
+
+    Accepts ``.../v1/chat/completions``, ``.../v1`` or a bare ``host[:port]`` —
+    all resolve to the OpenAI-compatible chat-completions path without string
+    surgery on ``"/v1"`` (§7.19).
+    """
+    endpoint = endpoint.rstrip("/")
+    if endpoint.endswith("/chat/completions"):
+        return endpoint
+    if endpoint.endswith("/v1"):
+        return f"{endpoint}/chat/completions"
+    return f"{endpoint}/v1/chat/completions"
+
+
+def _derive_base_url(endpoint: str) -> str:
+    """Origin (+ optional path prefix) used for httpx connection pooling."""
+    endpoint = endpoint.rstrip("/")
+    if endpoint.endswith("/chat/completions"):
+        return endpoint[: -len("/chat/completions")] + "/"
+    return endpoint + "/"
 
 
 def _parse_signal(raw: str) -> TradeSignal:

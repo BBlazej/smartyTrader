@@ -77,6 +77,8 @@ def _sma(values: list[float], period: int) -> float | None:
 
 
 def _compute_rsi(closes: list[float], period: int = 14) -> float | None:
+    """RSI over the last ``period`` deltas using a **simple average** (not Wilder
+    smoothing) — expect different readings from TradingView/pandas-ta (§7.19)."""
     if len(closes) < period + 1:
         return None
 
@@ -162,6 +164,8 @@ def _compute_atr(
     closes: list[float],
     period: int = 14,
 ) -> float | None:
+    """ATR as the **simple average** true range over ``period`` candles (not Wilder
+    smoothed) — expect different readings from TradingView/pandas-ta (§7.19)."""
     if len(closes) < period + 1:
         return None
 

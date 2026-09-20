@@ -226,7 +226,7 @@ class BaseTradingAgent:
         """Update risk tracking and persist the decision / order / portfolio."""
         # Keep the daily-loss baseline fresh so the -2% rule stays meaningful.
         try:
-            portfolio = await self._pipeline._get_portfolio_state()
+            portfolio = await self._pipeline.get_portfolio_state()
             self._risk_engine.update_daily_value(portfolio.total_value)
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("failed to update daily value", symbol=symbol, error=str(exc))
@@ -311,7 +311,7 @@ class BaseTradingAgent:
 
     async def _persist_portfolio(self) -> None:
         try:
-            portfolio = await self._pipeline._get_portfolio_state()
+            portfolio = await self._pipeline.get_portfolio_state()
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("failed to read portfolio for persistence", error=str(exc))
             return

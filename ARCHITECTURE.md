@@ -248,7 +248,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 | Consecutive-losses cooldown | 3 losses → 60-min pause | Yes | `_check_cooldown` |
 | Stop-loss required | Entries (BUY) must include a stop-loss; closes are exempt since §7.9 | No | `_check_stop_loss` |
 
-> The earlier "-5% drawdown → halt for 24h" phrasing is not how the code behaves: there is no time-based halt. The 24-hour-scale protection is the **consecutive-losses cooldown** (3 losses → 60 min, configurable via `consecutive_losses_cooldown_minutes`).
+> The earlier "-5% drawdown → halt for 24h" phrasing is not how the code behaves: there is no time-based halt. The 24-hour-scale protection is the **consecutive-losses cooldown** (3 losses → 60 min; both the streak and the pause are configurable via `consecutive_losses_threshold` / `consecutive_losses_cooldown_minutes`, §7.19).
 
 Additional engine facts:
 
@@ -568,6 +568,7 @@ risk:
   daily_loss_limit_pct: 0.02
   max_drawdown_pct: 0.05
   consecutive_losses_cooldown_minutes: 60
+  consecutive_losses_threshold: 3   # streak that arms the cooldown (§7.19)
   max_open_positions: 5
   min_confidence: 0.6
   # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's
@@ -690,4 +691,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **456 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **465 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

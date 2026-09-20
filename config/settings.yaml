@@ -4,6 +4,9 @@ llm:
   timeout_seconds: 30
   max_retries: 3
   use_json_schema: false   # enable once the local model accepts response_format
+  temperature: 0.2         # sampling temperature sent with every request (§7.19)
+  max_tokens: 1024         # completion cap per request (§7.19)
+  retry_backoff_base_seconds: 1.0   # exponential backoff between retries; 0 = off
 
 crypto_agent:
   enabled: true
@@ -38,6 +41,7 @@ risk:
   daily_loss_limit_pct: 0.02
   max_drawdown_pct: 0.05
   consecutive_losses_cooldown_minutes: 60
+  consecutive_losses_threshold: 3   # streak that arms the cooldown (§7.19)
   max_open_positions: 5
   min_confidence: 0.6
   # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Final
+
+import structlog
 
 from .config import RiskSettings
 from .models import Action, PortfolioState, RiskResult, RiskVerdict, TradeSignal
 
-logger = logging.getLogger(__name__)
+# structlog like the rest of the codebase — safety-critical rejections must land
+# in the configured renderers, not bypass them via stdlib logging (§7.19).
+logger = structlog.get_logger()
+
+#: Fallback consecutive-loss streak that triggers the cooldown when no threshold
+#: is configured (the shipped default lives in ``RiskSettings``).
+DEFAULT_CONSECUTIVE_LOSS_THRESHOLD: Final = 3
 
 
 class DailyLossTracker:
@@ -17,6 +25,7 @@ class DailyLossTracker:
     def __init__(self) -> None:
         self._start_of_day_value: float | None = None
         self._current_date: str = ""
+        self._latest_value: float | None = None
 
     @property
     def start_of_day_value(self) -> float | None:
@@ -39,14 +48,18 @@ class DailyLossTracker:
 
     @property
     def daily_pnl_pct(self) -> float | None:
-        if self._start_of_day_value is None or self._start_of_day_value == 0:
+        if (
+            self._start_of_day_value is None
+            or self._start_of_day_value == 0
+            or self._latest_value is None
+        ):
             return None
-        return (self.daily_portfolio_value - self._start_of_day_value) / self._start_of_day_value
+        return (self._latest_value - self._start_of_day_value) / self._start_of_day_value
 
     @property
     def daily_portfolio_value(self) -> float | None:
-        # This gets set externally; we just store the latest value
-        return getattr(self, "_latest_value", None)
+        """Latest portfolio value fed in via :meth:`update_latest_value` (None before any)."""
+        return self._latest_value
 
     def update_latest_value(self, value: float) -> None:
         self._latest_value = value
@@ -69,11 +82,16 @@ class ConsecutiveLossTracker:
             return False
         return datetime.now(UTC) < self._cooldown_until
 
-    def record_loss(self, cooldown_minutes: int) -> None:
-        from datetime import timedelta
+    @property
+    def cooldown_until(self) -> datetime | None:
+        """When the current cooldown expires (None when no cooldown was set)."""
+        return self._cooldown_until
 
+    def record_loss(
+        self, cooldown_minutes: int, threshold: int = DEFAULT_CONSECUTIVE_LOSS_THRESHOLD
+    ) -> None:
         self._consecutive_losses += 1
-        if self._consecutive_losses >= 3:
+        if self._consecutive_losses >= threshold:
             self._cooldown_until = datetime.now(UTC) + timedelta(minutes=cooldown_minutes)
 
     def record_win(self) -> None:
@@ -136,7 +154,7 @@ class RiskEngine:
 
         for result in checks:
             if result.verdict == RiskVerdict.REJECTED:
-                logger.warning("Risk rejected %s: %s", signal.symbol, result.reason)
+                logger.warning("risk_rejected", symbol=signal.symbol, reason=result.reason)
                 return result
 
         return RiskResult(verdict=RiskVerdict.APPROVED)
@@ -147,7 +165,8 @@ class RiskEngine:
             self._loss_tracker.record_win()
         else:
             self._loss_tracker.record_loss(
-                cooldown_minutes=self.settings.consecutive_losses_cooldown_minutes
+                cooldown_minutes=self.settings.consecutive_losses_cooldown_minutes,
+                threshold=self.settings.consecutive_losses_threshold,
             )
 
     def update_daily_value(self, portfolio_value: float) -> None:
@@ -282,8 +301,8 @@ class RiskEngine:
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_cooldown(self) -> RiskResult:
-        if self._loss_tracker.in_cooldown:
-            remaining = self._loss_tracker._cooldown_until  # type: ignore[union-attr]
+        remaining = self._loss_tracker.cooldown_until
+        if remaining is not None and self._loss_tracker.in_cooldown:
             return RiskResult(
                 verdict=RiskVerdict.REJECTED,
                 reason=f"In cooldown until {remaining.isoformat()}",

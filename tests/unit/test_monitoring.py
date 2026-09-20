@@ -152,7 +152,7 @@ def _risk_engine() -> RiskEngine:
 
 def _agent(sink: RecordingSink) -> tuple[CryptoAgent, MagicMock]:
     pipeline = MagicMock()
-    pipeline._get_portfolio_state = AsyncMock(
+    pipeline.get_portfolio_state = AsyncMock(
         return_value=PortfolioState(cash=10_000.0, positions=[])
     )
     # A mock storage sidesteps the real SQLite lifecycle in these alerting tests.

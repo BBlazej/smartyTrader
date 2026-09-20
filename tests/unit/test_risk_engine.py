@@ -338,6 +338,12 @@ class TestDailyLossTracker:
 
         assert tracker.daily_pnl_pct == pytest.approx(-0.02)
 
+    def test_daily_value_is_none_before_first_update(self) -> None:
+        # Declared attribute, honest ``float | None`` — no getattr hack (§7.19).
+        tracker = DailyLossTracker()
+        assert tracker.daily_portfolio_value is None
+        assert tracker.daily_pnl_pct is None
+
 
 class TestConsecutiveLossTracker:
     def test_tracks_losses(self) -> None:
@@ -364,3 +370,33 @@ class TestConsecutiveLossTracker:
         tracker.record_win()
         assert tracker.consecutive_losses == 0
         assert not tracker.in_cooldown
+
+    def test_cooldown_until_public_accessor(self) -> None:
+        # The rejection reason reads this instead of poking _cooldown_until
+        # with a type: ignore (§7.19).
+        tracker = ConsecutiveLossTracker()
+        assert tracker.cooldown_until is None
+        for _ in range(3):
+            tracker.record_loss(cooldown_minutes=60)
+        assert tracker.cooldown_until is not None
+        assert tracker.in_cooldown
+
+    def test_threshold_is_configurable(self, risk_settings: RiskSettings) -> None:
+        risk_settings.consecutive_losses_threshold = 2
+        engine = RiskEngine(risk_settings)
+        portfolio = PortfolioState(cash=10_000.0, positions=[])
+        signal = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="go",
+            stop_loss=59_000.0,
+        )
+
+        engine.record_outcome(was_profitable=False)
+        assert engine.evaluate(signal, portfolio).verdict == RiskVerdict.APPROVED
+
+        engine.record_outcome(was_profitable=False)  # streak of 2 == configured threshold
+        result = engine.evaluate(signal, portfolio)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "cooldown" in result.reason.lower()

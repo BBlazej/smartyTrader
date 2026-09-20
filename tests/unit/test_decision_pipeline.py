@@ -542,7 +542,7 @@ class TestPositionMarking:
         assert positions[0].current_price == pytest.approx(96.0)
 
         # The plan's acceptance check: unrealized PnL is no longer frozen at 0.
-        portfolio = await pipeline._get_portfolio_state()
+        portfolio = await pipeline.get_portfolio_state()
         assert portfolio.unrealized_pnl != 0.0
         assert portfolio.unrealized_pnl == pytest.approx(-40.0)  # 10 × (96 − 100)
         assert portfolio.total_value == pytest.approx(9_960.0)

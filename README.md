@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 456 tests, no network needed
+pytest                      # 465 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -138,10 +138,10 @@ thresholds. Key sections:
 
 | Section | What it controls |
 |---|---|
-| `llm` | LM Studio endpoint, model, timeout, retries, JSON-schema opt-in |
+| `llm` | LM Studio endpoint, model, timeout, retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` |
 | `crypto_agent` | enabled, exchange, testnet flag, interval, pairs, `decision_history_limit` |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit` |
-| `risk` | max position %, daily loss limit, max drawdown, cooldown, max positions, min confidence, `enforce_exit_levels` (deterministic SL/TP closes) |
+| `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
 | `monitoring` | log level, alert dedup window |
@@ -222,7 +222,7 @@ and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real 
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**456 tests passing at ~93% coverage.**
+**465 tests passing at ~93% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review

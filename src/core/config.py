@@ -41,12 +41,21 @@ class LLMSettings:
         timeout_seconds: int = 30,
         max_retries: int = 3,
         use_json_schema: bool = False,
+        # Sampling knobs were hardcoded in the client ("config-driven" rule, §7.19).
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        # Base delay for the exponential backoff between retry attempts; 0 disables
+        # sleeping (used by tests).
+        retry_backoff_base_seconds: float = 1.0,
     ) -> None:
         env_endpoint = os.getenv("LM_STUDIO_ENDPOINT")
         self.endpoint = env_endpoint or endpoint
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.retry_backoff_base_seconds = retry_backoff_base_seconds
         # Opt-in: request a strict JSON response schema. Enable once you've
         # confirmed the local model supports ``response_format`` — some setups
         # reject it, which would otherwise force the safe HOLD fallback every cycle.
@@ -100,6 +109,8 @@ class RiskSettings:
         daily_loss_limit_pct: float = 0.02,
         max_drawdown_pct: float = 0.05,
         consecutive_losses_cooldown_minutes: int = 60,
+        # Streak that arms the cooldown; was hardcoded to 3 in the tracker (§7.19).
+        consecutive_losses_threshold: int = 3,
         max_open_positions: int = 5,
         min_confidence: float = 0.6,
         # Deterministic stop-loss / take-profit enforcement (§7.9): when enabled,
@@ -111,6 +122,7 @@ class RiskSettings:
         self.daily_loss_limit_pct = daily_loss_limit_pct
         self.max_drawdown_pct = max_drawdown_pct
         self.consecutive_losses_cooldown_minutes = consecutive_losses_cooldown_minutes
+        self.consecutive_losses_threshold = consecutive_losses_threshold
         self.max_open_positions = max_open_positions
         self.min_confidence = min_confidence
         self.enforce_exit_levels = enforce_exit_levels

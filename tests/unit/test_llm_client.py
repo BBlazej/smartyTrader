@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.core.config import LLMSettings
-from src.core.llm_client import LLMClient, _parse_signal
+from src.core.llm_client import LLMClient, _parse_signal, _resolve_chat_url
 
 
 @pytest.fixture()
@@ -18,6 +18,8 @@ def llm_settings() -> LLMSettings:
         model="qwen3.6-27b-mtp",
         timeout_seconds=5,
         max_retries=2,
+        # Keep retry tests instant; the backoff itself is asserted separately.
+        retry_backoff_base_seconds=0.0,
     )
 
 
@@ -159,6 +161,56 @@ class TestEndpointParsing:
 
         # The base URL should be the endpoint without /v1/chat/completions
         assert "localhost" in str(client._client.base_url)
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            # Every shipped shape resolves to the full chat-completions URL —
+            # no "/v1" string surgery (§7.19).
+            (
+                "http://localhost:1234/v1/chat/completions",
+                "http://localhost:1234/v1/chat/completions",
+            ),
+            ("http://localhost:1234/v1/", "http://localhost:1234/v1/chat/completions"),
+            ("http://localhost:1234", "http://localhost:1234/v1/chat/completions"),
+            ("http://host:8080/custom/v1", "http://host:8080/custom/v1/chat/completions"),
+        ],
+    )
+    def test_chat_url_resolution(self, endpoint: str, expected: str) -> None:
+        settings = LLMSettings(endpoint=endpoint, model="m")
+        assert _resolve_chat_url(settings.endpoint) == expected
+
+    def test_client_posts_resolved_absolute_url(self, llm_settings: LLMSettings) -> None:
+        client = LLMClient(llm_settings)
+        assert client._chat_url == "http://localhost:1234/v1/chat/completions"
+
+
+class TestRetryBackoff:
+    @pytest.mark.asyncio
+    async def test_exponential_sleep_between_attempts(self) -> None:
+        settings = LLMSettings(
+            endpoint="http://localhost:1234/v1/chat/completions",
+            model="m",
+            max_retries=3,
+            retry_backoff_base_seconds=0.5,
+        )
+        client = LLMClient(settings)
+        try:
+            sleeps: list[float] = []
+
+            async def record_sleep(delay: float) -> None:
+                sleeps.append(delay)
+
+            with (
+                patch.object(client._client, "post", new=AsyncMock(side_effect=Exception("boom"))),
+                patch("src.core.llm_client.asyncio.sleep", new=record_sleep),
+            ):
+                signal = await client.ask_trade_signal("s", "u")
+
+            assert signal.is_fallback is True
+            assert sleeps == [0.5, 1.0]  # base * 2^(attempt-1); none after the last attempt
+        finally:
+            await client.close()
 
 
 class TestClose:

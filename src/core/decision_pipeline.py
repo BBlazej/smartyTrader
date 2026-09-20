@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 from typing import Protocol
 
 import structlog
@@ -42,7 +43,9 @@ class MarketDataProvider(Protocol):
 # ── Pipeline Result ───────────────────────────────────────────
 
 
-class PipelineStep(str):
+class PipelineStep(StrEnum):
+    """Pipeline stage names stamped onto structured log lines (a real Enum, §7.19)."""
+
     FETCH_DATA = "fetch_data"
     ENFORCE_EXIT_LEVELS = "enforce_exit_levels"
     COMPUTE_INDICATORS = "compute_indicators"
@@ -249,7 +252,7 @@ class DecisionPipeline:
         # engine can reject an oversized plan (planned_notional), and reuses it
         # unchanged at execution — what the gate approved is what gets sent.
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.RISK_CHECK)
-        portfolio = await self._get_portfolio_state()
+        portfolio = await self.get_portfolio_state()
         current_price = snapshot.candles[-1].close if snapshot.candles else None
         planned_quantity: float | None = None
         planned_notional: float | None = None
@@ -479,8 +482,13 @@ class DecisionPipeline:
         )
         return decision_id
 
-    async def _get_portfolio_state(self) -> PortfolioState:
-        """Build current portfolio state from executor positions."""
+    async def get_portfolio_state(self) -> PortfolioState:
+        """Build current portfolio state from executor positions.
+
+        Public: agents (daily-value updates, portfolio persistence) and tests use
+        it; it used to be ``_get_portfolio_state``, an encapsulation leak pinned
+        into the test contract (§7.19).
+        """
         positions = await self.executor.get_positions()
         cash = await self.executor.get_cash()
         return PortfolioState(cash=cash, positions=positions)
