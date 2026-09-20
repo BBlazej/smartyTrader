@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 436 tests, no network needed
+pytest                      # 456 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -69,7 +69,10 @@ signals. The **first cycle runs immediately at startup**, then repeats every
 in `.env` (the runner loads it for you — no `python-dotenv` needed), orders are
 filled by the fee/slippage-aware `PaperExecutor`; with those set, orders go to
 the Kraken testnet via a separate sandboxed, keyed client. The stocks runner
-always uses the `PaperExecutor` until the XTB demo OAuth2 flow lands.
+executes on the `PaperExecutor` by default; real **XTB demo** execution is opt-in
+(§7.16): set `xtb_execution.enabled: true` **and** `XTB_ACCOUNT_ID` +
+`XTB_ACCOUNT_PASSWORD` (the xAPI verification code from xStation) and orders go
+over the WebSocket client to `wss://ws.xapi.pro/demo` — anything missing stays paper.
 
 ## Project layout
 
@@ -96,7 +99,8 @@ src/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
 │   ├── kraken_executor.py    # Kraken testnet orders via CCXT
-│   └── xtb_executor.py       # XTB demo orders (xAPI seam)
+│   ├── xtb_executor.py       # XTB demo orders via the injected xAPI client seam
+│   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth
 ├── agents/
 │   ├── base_agent.py         # Shared cycle loop, post-process, persistence, alerts (§7.13)
 │   ├── crypto_agent.py       # Thin subclass (24/7, no hours guard)
@@ -142,6 +146,7 @@ thresholds. Key sections:
 | `monitoring` | log level, alert dedup window |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
+| `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`; requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
 
 ### Environment variables
 
@@ -150,7 +155,8 @@ thresholds. Key sections:
 | `LM_STUDIO_ENDPOINT` | Override the LLM endpoint |
 | `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Enable Kraken testnet execution (else paper); public data works in both modes with no key |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
-| `XTB_API_KEY` | Reserved for XTB demo (still paper until the OAuth2 flow lands) |
+| `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
+| `XTB_API_KEY` | *Deprecated* — the old placeholder for §7.16; no longer read by any code |
 
 ## Running & testing
 
@@ -210,12 +216,14 @@ engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest
 and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
 with win-rate/confidence stats, agent health; HTMX pause/resume/close-all controls and a
 safe-config editor — all writing the same `agent_control` latches; `scripts/run_dashboard.py`,
-§7.15 P3/P4), now packaged for containers (`docker compose up -d --build` — agents, dashboard
-and an on-demand backtester on one shared SQLite volume; §7.15 P5).
-**436 tests passing at ~93% coverage.**
+§7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
+and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real XTB demo
+execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
+xStation verification code, instant orders + fill-status polling, live position marks;
+opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
+**456 tests passing at ~93% coverage.**
 
-Not yet built: news/sentiment + economic-calendar feeds
-and the XTB demo OAuth2 flow. See `PLAN.md` §7 (Gaps & Next Steps)
+Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the 2026-09-15 full-codebase review
 (low-hanging fruit first, then High → Low severity); its detailed findings
 live in `review.MD` at the repo root, with follow-up undocumented TODO items tracked in `review2.md`.

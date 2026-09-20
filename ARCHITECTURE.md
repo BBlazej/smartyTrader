@@ -117,7 +117,8 @@ src/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
 │   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled)
-│   └── xtb_executor.py       # XTB demo orders (xAPI seam; OAuth2 ⏳ not implemented)
+│   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
+│   └── xtb_client.py         # real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth, instant orders, tick marks
 ├── agents/
 │   ├── base_agent.py         # BaseTradingAgent: cycle loop, control-row handling, post-process, snapshots, alerts (§7.13)
 │   ├── crypto_agent.py       # thin subclass
@@ -222,11 +223,11 @@ class Executor(Protocol):
 ```
 
 - `kraken_executor.py` — Kraken testnet REST API. Maps signals to Kraken order types (market/limit/stop).
-- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format.
+- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format (client seam injected).
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state. **Default for all testing.**
 
 - `kraken_executor.py` — Kraken testnet via ccxt; real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
-- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format. OAuth2 flow ⏳ not implemented (PLAN §7.16).
+- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16): WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
 ## Risk engine (`core/risk_engine.py`)
@@ -514,9 +515,9 @@ Metrics (CLI summary + `--report` JSON):
 - Order types: market, limit, stop-loss, take-profit supported
 
 ### XTB Demo
-- xAPI requires registration and approval for API access (demo is easier)
-- Python SDK available: `xtb-api` or REST via `httpx`
-- Auth: OAuth2 flow — store tokens securely
+- xAPI requires registration + an xAPI verification code generated in xStation (demo is easier)
+- Protocol reality (verified §7.16): the old `ws.xtb.com`/`xapi.xtb.com` hosts were **retired 2025-03-14**; trading runs on `wss://ws.xapi.pro/{demo,real}` as ordered JSON transactions
+- Auth: classic WS `login` command (account id + verification code, valid ~30 days, revocable) — **no OAuth2 token endpoint exists**
 - Trading hours: Warsaw Stock Exchange schedule
 - Instruments: Stocks, CFDs, indices
 
@@ -613,11 +614,23 @@ dashboard:
   port: 8080
   refresh_seconds: 5           # HTMX polling interval for live fragments
   agents: ["crypto", "stocks"] # which control rows to show/control
+
+# XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
+# When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password
+# is the xAPI verification code from xStation settings, NOT your login password),
+# the stocks runner executes against the XTB *demo* account over
+# wss://ws.xapi.pro/demo. Deliberately outside the dashboard's safe-config
+# whitelist: turning on real execution must never be a web-form click.
+xtb_execution:
+  enabled: false
+  host: "wss://ws.xapi.pro"
+  account_type: "demo"          # demo | real — validated at startup; keep demo
+  request_timeout_seconds: 10
 ```
 
 > `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
 
-Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`, `LM_STUDIO_USE_JSON_SCHEMA`, `XTB_API_KEY`.
+Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
 
 ## Dependencies (current)
 
@@ -635,6 +648,9 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "jinja2>=3.1",
+    # §7.16 XTB demo execution: xAPI WebSocket client (imported lazily; unit
+    # tests never touch it).
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
@@ -672,4 +688,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **436 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **456 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

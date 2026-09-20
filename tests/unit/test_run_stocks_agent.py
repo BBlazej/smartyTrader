@@ -42,6 +42,13 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             prune_interval_minutes=0,
         ),
         monitoring=SimpleNamespace(log_level="INFO", alert_dedup_window_seconds=300),
+        # §7.16: paper stays the executor in lifecycle tests unless a test opts in.
+        xtb_execution=SimpleNamespace(
+            enabled=False,
+            host="wss://ws.xapi.pro",
+            account_type="demo",
+            request_timeout_seconds=10.0,
+        ),
     )
 
 
@@ -175,6 +182,70 @@ class TestYFinanceFailFast:
             pytest.raises(SystemExit, match="yfinance"),
         ):
             await run(run_once=True)
+
+
+class TestExecutorSelection:
+    """§7.16: XTB demo execution is opt-in — config AND env credentials, else paper."""
+
+    async def _run_with(self, env: dict[str, str], *, xtb_enabled: bool):
+        settings = _run_settings(enabled=True)
+        settings.xtb_execution.enabled = xtb_enabled
+        provider, executor, storage = _mock_env()
+        xtb_executor_inst = MagicMock()
+        xtb_executor_inst.close = AsyncMock()
+
+        patches = [
+            patch("scripts.run_stocks_agent.Settings", return_value=settings),
+            patch("scripts.run_stocks_agent.setup_logging"),
+            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.LLMClient", return_value=MagicMock()),
+            patch("src.core.runner.RiskEngine"),
+            patch("scripts.run_stocks_agent.create_xtb_provider", return_value=provider),
+            patch("src.core.runner.DecisionPipeline"),
+            patch("scripts.run_stocks_agent.StocksAgent", return_value=_FakeAgent()),
+        ]
+        client_patch = patch("scripts.run_stocks_agent.XApiClient")
+        executor_patch = patch(
+            "scripts.run_stocks_agent.XTBExecutor", return_value=xtb_executor_inst
+        )
+        paper_patch = patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor)
+
+        with patch.dict(os.environ, env, clear=True):
+            started = [p.start() for p in patches + [client_patch, executor_patch, paper_patch]]
+            try:
+                await run(run_once=True)
+            finally:
+                for p in patches + [client_patch, executor_patch, paper_patch]:
+                    p.stop()
+        # start() returns each mock: ..., XApiClient, XTBExecutor, PaperExecutor.
+        return started[-3], started[-1], started[-2]
+
+    async def test_enabled_with_credentials_wires_xtb_executor(self) -> None:
+        xtb_client, paper, xtb_executor = await self._run_with(
+            {
+                "XTB_ACCOUNT_ID": "42",
+                "XTB_ACCOUNT_PASSWORD": "v3r1fy",
+            },
+            xtb_enabled=True,
+        )
+        xtb_client.assert_called_once()
+        assert xtb_client.call_args.kwargs["account_type"] == "demo"
+        xtb_executor.assert_called_once_with(xtb_client.return_value)
+        paper.assert_not_called()
+
+    async def test_enabled_without_credentials_stays_on_paper(self) -> None:
+        xtb_client, paper, xtb_executor = await self._run_with({}, xtb_enabled=True)
+        xtb_client.assert_not_called()
+        xtb_executor.assert_not_called()
+        paper.assert_called_once()
+
+    async def test_disabled_never_constructs_xtb_even_with_credentials(self) -> None:
+        xtb_client, paper, _ = await self._run_with(
+            {"XTB_ACCOUNT_ID": "42", "XTB_ACCOUNT_PASSWORD": "v3r1fy"},
+            xtb_enabled=False,
+        )
+        xtb_client.assert_not_called()
+        paper.assert_called_once()
 
 
 class TestStartupPruning:

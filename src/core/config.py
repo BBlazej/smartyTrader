@@ -30,6 +30,7 @@ class Settings:
         self.monitoring = MonitoringSettings(**raw["monitoring"])
         self.control_api = ControlApiSettings(**raw.get("control_api", {}))
         self.dashboard = DashboardSettings(**raw.get("dashboard", {}))
+        self.xtb_execution = XTBExecutionSettings(**raw.get("xtb_execution", {}))
 
 
 class LLMSettings:
@@ -186,6 +187,33 @@ class ControlApiSettings:
         self.host = host
         self.crypto_port = crypto_port
         self.stocks_port = stocks_port
+
+
+class XTBExecutionSettings:
+    """XTB demo execution via xAPI (§7.16): off unless explicitly enabled.
+
+    When enabled (and ``XTB_ACCOUNT_ID`` + ``XTB_ACCOUNT_PASSWORD`` are set in the
+    environment), the stocks runner wires :class:`XTBExecutor` over the real
+    :class:`~src.execution.xtb_client.XApiClient` instead of the paper executor.
+    Default stays paper. ``account_type`` is validated at startup; keep it on
+    ``demo`` — live trading remains out of scope (and this block is deliberately
+    **not** in the dashboard's safe-config whitelist: enabling real execution
+    must never be a web-form click).
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        host: str = "wss://ws.xapi.pro",
+        account_type: str = "demo",
+        request_timeout_seconds: float = 10.0,
+    ) -> None:
+        if account_type not in ("demo", "real"):
+            raise ValueError("xtb_execution.account_type must be 'demo' or 'real'")
+        self.enabled = enabled
+        self.host = host
+        self.account_type = account_type
+        self.request_timeout_seconds = float(request_timeout_seconds)
 
 
 class DashboardSettings:

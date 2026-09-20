@@ -86,3 +86,15 @@ dashboard:
   port: 8080
   refresh_seconds: 5           # HTMX polling interval for live fragments
   agents: ["crypto", "stocks"] # which control rows to show/control
+
+# XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
+# When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password
+# is the xAPI verification code from xStation settings, NOT your login password),
+# the stocks runner executes against the XTB *demo* account over
+# wss://ws.xapi.pro/demo. Deliberately outside the dashboard's safe-config
+# whitelist: turning on real execution must never be a web-form click.
+xtb_execution:
+  enabled: false
+  host: "wss://ws.xapi.pro"
+  account_type: "demo"          # demo | real — validated at startup; keep demo
+  request_timeout_seconds: 10

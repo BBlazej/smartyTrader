@@ -93,3 +93,17 @@ fixed unless explicitly marked.
     yfinance interval, so an hourly-window backtest would have silently fetched
     daily bars. **Status: fixed in §7.14** — interval is passed through and pinned
     by `TestFetchHistoryRange.test_yfinance_source_filters_to_window`.
+
+## Found while implementing §7.16 (XTB demo execution via xAPI)
+
+13. **PLAN §7.16's "OAuth2 flow" premise was outdated, and the API hosts moved**
+    (`xtb_client.py`): XTB retired `ws.xtb.com`/`xapi.xtb.com` on 2025-03-14; xAPI now
+    runs on `wss://ws.xapi.pro/{demo,real}` with its classic `login` command (account id +
+    the xStation-generated xAPI verification code) — there is **no OAuth2 token endpoint**
+    anywhere in the protocol. The canonical docs domain (xapi.pl) is dead and every older
+    wrapper library carries a deprecation notice, so implementers must ground against
+    maintained wrappers rather than the original spec. Related accepted limitations pinned
+    in §7.16 code/docs: xAPI sizes positions in *lots* (≈1 share per lot for XTB equities,
+    symbol specs not validated), `create_order` payloads carry no commission (fills tracked
+    gross — §7.8 precedent), and position marks come from one-shot `getTickPrices`, not the
+    streaming channel. **Status: implemented accordingly (§7.16).**

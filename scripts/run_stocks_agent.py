@@ -3,14 +3,16 @@
 Shared lifecycle (enabled gate, storage/LLM/risk wiring, drawdown seeding, rehydration,
 retention pruning, ``--once`` vs scheduled loop, guaranteed cleanup) lives in
 :func:`src.core.runner.run_agent` (§7.13). This script keeps only the stocks-specific
-wiring: yfinance data + paper execution, with the XTB demo xAPI seam documented below.
+wiring: yfinance data + executor selection (paper default, XTB demo opt-in).
 
-External blocker
-----------------
-XTB's xAPI requires an **approved demo account** and an **OAuth2 flow** (see
-``PLAN.md``). The :class:`XTBExecutor` is the execution seam; until a real xAPI client
-is provided, this runner keeps the paper executor as the default and logs a clear
-notice when XTB credentials are present but no xAPI client is wired yet.
+XTB demo execution (§7.16)
+--------------------------
+The real xAPI client (:class:`src.execution.xtb_client.XApiClient`) is wired when
+``xtb_execution.enabled`` **and** both ``XTB_ACCOUNT_ID`` + ``XTB_ACCOUNT_PASSWORD``
+(the xAPI verification code from xStation, not the login password) are set. Anything
+missing → the paper executor stays and a warning explains why. Opting in is
+config-and-env only: the dashboard's safe-config whitelist deliberately excludes
+this block.
 
 ``stocks_agent.enabled: false`` means **do nothing**: the runner exits before
 constructing any component — no cycles, LLM calls, order placement or DB writes.
@@ -31,11 +33,13 @@ from src.core.config import Settings
 from src.core.runner import build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import PaperExecutor
+from src.execution.xtb_client import XApiClient
+from src.execution.xtb_executor import XTBExecutor
 from src.monitoring import setup_logging
 
 
 def _make_components(settings: Settings) -> tuple[object, object]:
-    """Build the yfinance provider + paper executor (XTB demo is still blocked).
+    """Build the yfinance provider + executor (paper default; XTB demo opt-in).
 
     ``create_xtb_provider`` checks for yfinance eagerly; if it is missing, fail
     fast with an actionable message rather than surfacing a per-cycle fetch
@@ -50,14 +54,33 @@ def _make_components(settings: Settings) -> tuple[object, object]:
             "Install it with: pip install yfinance   (or: pip install -e '.[stocks]')"
         ) from exc
 
-    # Execution: paper by default. XTB demo execution needs an approved demo account
-    # + OAuth2 (PLAN.md blocker); when credentials are present we log the gap and
-    # stay on paper rather than fail.
-    if os.getenv("XTB_API_KEY"):
-        log.warning(
-            "XTB_API_KEY set but no xAPI client wired yet — using paper executor "
-            "until the XTB demo OAuth2 flow lands"
-        )
+    # Execution (§7.16): paper unless xtb_execution.enabled AND both env credentials
+    # are present. Anything missing keeps the safe default and says why — never a
+    # silent half-wired live path.
+    xtb_cfg = settings.xtb_execution
+    if xtb_cfg.enabled:
+        account_id = os.getenv("XTB_ACCOUNT_ID")
+        verification_code = os.getenv("XTB_ACCOUNT_PASSWORD")
+        if not account_id or not verification_code:
+            log.warning(
+                "xtb_execution.enabled but XTB_ACCOUNT_ID/XTB_ACCOUNT_PASSWORD are "
+                "unset — staying on the paper executor"
+            )
+        else:
+            client = XApiClient(
+                account_id,
+                verification_code,
+                host=xtb_cfg.host,
+                account_type=xtb_cfg.account_type,
+                timeout_seconds=xtb_cfg.request_timeout_seconds,
+            )
+            log.info(
+                "using XTB executor via xAPI",
+                account_type=xtb_cfg.account_type,
+                url=client.url,
+            )
+            return provider, XTBExecutor(client)
+
     executor = PaperExecutor(
         initial_cash=settings.execution.initial_cash,
         slippage_pct=settings.execution.paper_slippage_pct,
