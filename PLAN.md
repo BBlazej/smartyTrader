@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.23) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-18):** 456 tests passing at ~93% coverage. §7.1–§7.16 and §7.20–§7.23 are complete — including the dashboard + Docker packaging (§7.15) and real XTB demo execution over xAPI (§7.16; see HISTORY.md). Open: §7.17–§7.19 (housekeeping / optional enrichment).
+**Current state (2026-09-20):** 456 tests passing at ~93% coverage. §7.1–§7.17 and §7.20–§7.23 are complete — including the dashboard + Docker packaging (§7.15), real XTB demo execution over xAPI (§7.16) and the `analysis/` layer extraction (§7.17; see HISTORY.md). Open: §7.18 (optional enrichment) and §7.19 (code nits bundle).
 
 ---
 
@@ -77,12 +77,9 @@ Updated after the full-codebase reviews of **2026-09-15** and **2026-09-17** —
 - **§7.6 live smoke:** a keyed run against the Kraken testnet from a network-enabled environment is still pending (the dev sandbox blocks outbound HTTPS — `nightly_finds.md` #1); per-cycle reconciliation of orders left `open` remains unpinned.
 - **§7.9 venue-side stops:** SL/TP enforcement is local to the agent; venue-side OCO stop orders remain future work.
 
-### C. Medium severity (open)main
+### C. Medium severity (open)
 
 ### D. Low severity / housekeeping
-
-17. **Split `analysis/` out of `core/decision_pipeline.py`** (housekeeping)
-   - Indicators (`compute_indicators`, `_compute_rsi`, `_compute_macd`, `_compute_bollinger_bands`) and the default system prompt currently live in `core/decision_pipeline.py`. Move to `analysis/indicators.py` + `analysis/prompt_builder.py` for the plan's intended layout — safe to do now that the prompt work has landed (§7.20).
 
 18. **Data-enrichment feeds** ⏳ (optional, lower priority)
    - Sentiment provider (crypto) and economic-calendar feed (stocks) are still aspirational. Ship the higher-priority items above first; add these as the prompt benefits from richer context.

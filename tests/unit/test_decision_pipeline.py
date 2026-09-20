@@ -6,12 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.analysis.indicators import compute_indicators
+from src.analysis.prompt_builder import build_user_prompt
 from src.core.config import RiskSettings
-from src.core.decision_pipeline import (
-    DecisionPipeline,
-    build_user_prompt,
-    compute_indicators,
-)
+from src.core.decision_pipeline import DecisionPipeline
 from src.core.models import (
     OHLCV,
     Action,

@@ -123,7 +123,9 @@ src/
 │   ├── base_agent.py         # BaseTradingAgent: cycle loop, control-row handling, post-process, snapshots, alerts (§7.13)
 │   ├── crypto_agent.py       # thin subclass
 │   └── stocks_agent.py       # thin subclass + weekend/holiday/timezone-aware market-hours guard (§7.10)
-├── analysis/                 # reserved — indicators & prompt still live in core/decision_pipeline.py (§7.17 open)
+├── analysis/                 # feature engineering + prompt building (§7.17, extracted from core)
+│   ├── indicators.py         # compute_indicators + RSI/MACD/Bollinger/ATR helpers (pure)
+│   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT
 └── monitoring/
     ├── logger.py             # structlog setup
     └── alerts.py             # AlertManager + sinks (logging sink; dedup window)
@@ -188,7 +190,7 @@ Notes:
 - **Marking before gating** (§7.1): paper positions are re-marked at the snapshot's last close *before* the risk check, so unrealized PnL, portfolio snapshots and the daily-loss rule track the market. Real-venue executors report live prices and skip the hook.
 - **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. Sells clamp to units held.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
-- Indicators and prompt building currently live inline in `core/decision_pipeline.py`; the split into `analysis/` is open housekeeping (PLAN §7.17).
+- Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
 
 ## Key models (`src/core/models.py`)
 

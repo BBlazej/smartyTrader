@@ -105,8 +105,9 @@ src/
 │   ├── base_agent.py         # Shared cycle loop, post-process, persistence, alerts (§7.13)
 │   ├── crypto_agent.py       # Thin subclass (24/7, no hours guard)
 │   └── stocks_agent.py       # Thin subclass + market-hours guard (weekend/holiday/wrap)
-├── analysis/
-│   └── __init__.py           # (empty — indicators & prompt currently live in core)
+├── analysis/                 # Feature engineering + prompt building (§7.17)
+│   ├── indicators.py         # compute_indicators: RSI/MACD/Bollinger/ATR (pure, moved from core)
+│   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT (moved from core)
 ├── monitoring/
 │   ├── logger.py             # structlog setup
 │   └── alerts.py             # AlertManager + sinks (Noop)
@@ -181,7 +182,7 @@ Tests mock all external dependencies — **no real network calls** in the suite.
 ## Status
 
 Phases 1–5 complete: shared core (LLM client, risk engine, storage, scheduler,
-decision pipeline with inline indicators + prompt), crypto provider + executor +
+decision pipeline, with indicators & prompt in the extracted `analysis/` layer), crypto provider + executor +
 agent, **stocks provider + executor + agent**, paper executor with
 fee/slippage modeling, monitoring (structured logging), both
 entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
