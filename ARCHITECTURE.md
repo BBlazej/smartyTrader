@@ -443,6 +443,7 @@ Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scrip
 
 - **Monitor:** overview page (portfolio cards + uPlot portfolio-value chart refreshed from `/api/portfolio.json`, recent decisions), positions page, decisions page with win-rate / avg-confidence / confidence-histogram stats (`views.py::decision_stats`), health cards refreshed via HTMX polling of `/partials/health` every `dashboard.refresh_seconds`. The health badge shows an **effective status** (`views.py::agent_status`), not the raw latch: `disabled` → `paused` (latch) → `offline` when the heartbeat (`last_cycle_at`) is missing or older than 2× the agent's `interval_minutes` (floored at 10 min, +5 min grace) → else `running`. Agents stamp that heartbeat after every cycle *and* on market-hours skips (pause returns before it — its latch renders instead), so liveness never false-alarms in quiet windows.
 - **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
+- **Launch (opt-in, §7.24):** when `dashboard.allow_launch` is true, health cards gain **Start**/**Stop (pid …)** buttons (`POST /launch/{agent}/{action}`). `src/dashboard/launch.py::AgentLauncher` spawns the same entry points you'd run by hand (`python -m scripts.run_<agent>_agent`) as local subprocesses — enabled-gates, risk rules and paper-by-default execution apply unchanged; child output appends to `data/agent_<name>.out.log`, pid goes to `data/<agent>.pid`. Children outlive the dashboard (killing the UI never halts trading); a restarted dashboard re-adopts old children only when the pidfile's pid is alive AND its `/proc` cmdline still matches the runner — foreign/recycled pids are never killed, and Stop only ever targets launched/adopted processes. Start refuses (409) on fresh heartbeats (no double-trading), disabled agents, or already-managed ones; 403 wholesale when supervision is off. Off under docker-compose (services belong to compose there).
 - **Config:** server-rendered form (`GET/POST /config/{agent}`) over the safe config surface only; the urlencoded body is parsed into the nested payload and validated server-side through `validate_overrides_payload` → `SafeConfigOverrides` (`extra="forbid"` — any unknown/credential-shaped key rejects wholesale, and the form re-renders with the rejection); accepted values persist to `agent_control.config_override_json`. No credential/secret fields exist in the form.
 
 ### Container / volume topology (§7.15 P5 — implemented)
@@ -617,6 +618,7 @@ dashboard:
   port: 8080
   refresh_seconds: 5           # HTMX polling interval for live fragments
   agents: ["crypto", "stocks"] # which control rows to show/control
+  allow_launch: true           # §7.24 Start/Stop buttons (default false; keep false under compose)
 
 # XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
 # When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password

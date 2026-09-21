@@ -247,6 +247,7 @@ class DashboardSettings:
         port: int = 8080,
         refresh_seconds: int = 5,
         agents: list[str] | None = None,
+        allow_launch: bool = False,
     ) -> None:
         self.host = host
         self.port = port
@@ -254,3 +255,7 @@ class DashboardSettings:
         self.refresh_seconds = max(1, refresh_seconds)
         # Which control rows to show/control. Defaults to both built-in agents.
         self.agents = agents if agents else ["crypto", "stocks"]
+        # §7.24: opt-in process supervision — Start/Stop buttons that spawn/terminate
+        # local `scripts.run_<agent>_agent` runners. Off by default; pointless (and
+        # confusing) inside docker-compose, where services are managed by compose.
+        self.allow_launch = bool(allow_launch)

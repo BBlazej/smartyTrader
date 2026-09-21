@@ -36,27 +36,28 @@ def agent_status(
     interval_minutes: int = 5,
     now: datetime | None = None,
 ) -> str:
-    """Effective on-screen status of an agent: ``disabled`` / ``paused`` / ``offline`` / ``running``.
+    """Effective on-screen status of an agent: ``disabled`` / ``offline`` / ``paused`` / ``running``.
 
     The ``agent_control.state`` latch records *intent*, not process liveness — a stopped
-    agent keeps its last latch value (``running``) forever, so the badge must not trust
-    it alone. Liveness is derived from the heartbeat instead: if the last completed
-    cycle is older than twice the configured interval (floored at 10 min, plus a 5-min
-    grace for long cycles), the agent is ``offline``.
+    agent keeps its last latch value (``running``, or even ``paused``) forever, so
+    freshness is checked first: no heartbeat, or one older than twice the configured
+    interval (floored at 10 min, plus a 5-min grace), is ``offline`` regardless of the
+    latch. Agents stamp heartbeats on normal, market-hours-skipped *and* paused cycles,
+    so a stale beat unambiguously means the process is gone.
 
     Timestamps are naive UTC, as stored by SQLite (see :func:`portfolio_chart`).
     """
     if not enabled:
         return "disabled"
-    if state == "paused":
-        return "paused"
     if last_cycle_at is None:
-        return "offline"
+        return "offline"  # never ticked — a paused latch needs at least one beat to mean anything
     if now is None:
         now = datetime.now(UTC).replace(tzinfo=None)
     stale_after_seconds = max(2 * interval_minutes, 10) * 60 + 300
     age_seconds = (now - last_cycle_at).total_seconds()
-    return "running" if age_seconds <= stale_after_seconds else "offline"
+    if age_seconds > stale_after_seconds:
+        return "offline"  # beats stop when the process does — even with a paused latch
+    return "paused" if state == "paused" else "running"
 
 
 def parse_positions(snapshot: Any) -> list[Position]:

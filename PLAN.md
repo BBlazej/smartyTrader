@@ -16,9 +16,9 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | `nightly_finds.md` | bugs/gaps discovered during development (numbered findings) |
 | `review.MD` / `review2.md` | external full-codebase reviews (`[R-xx]` tags reference these) |
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.23) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
+**Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-20):** 465 tests passing at ~93% coverage. §7.1–§7.17, §7.19 and §7.20–§7.23 are complete — including the dashboard + Docker packaging (§7.15), real XTB demo execution over xAPI (§7.16), the `analysis/` layer extraction (§7.17) and the code-nits bundle (§7.19; see HISTORY.md). Open: §7.18 (optional enrichment — needs a provider decision).
+**Current state (2026-09-21):** 488 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.23 are complete — including the dashboard + Docker packaging (§7.15), real XTB demo execution over xAPI (§7.16), the `analysis/` layer extraction (§7.17) and the code-nits bundle (§7.19) — plus §7.24 (start/stop agents from the dashboard, opt-in process supervision; see HISTORY.md). Open: §7.18 (optional enrichment — needs a provider decision).
 
 ---
 
@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** and **2026-09-17** — findings are tagged **[R-xx]** referencing `review.MD` and `review2.md` at the repo root (H = high, M = medium, L = low severity there). Bugs/gaps found during development are logged separately in `nightly_finds.md`. Items marked ⏳ are planned/not yet implemented. The original sections **A. Low-hanging fruit** and **B. High severity** completed fully in 2026-09; what remains keeps the original severity grouping (**C. Medium → D. Low/housekeeping**) plus carried follow-ups.
 
-> **This section lists only open work.** Items §7.1–§7.17, §7.19 and §7.20–§7.23 were completed in 2026-09; their full write-ups (with test counts) live in [HISTORY.md](HISTORY.md) under the same §7.N numbers — no stubs are kept here.
+> **This section lists only open work.** Items §7.1–§7.17, §7.19–§7.23 and §7.24 were completed in 2026-09; their full write-ups (with test counts) live in [HISTORY.md](HISTORY.md) under the same §7.N numbers — no stubs are kept here.
 
 ### Follow-ups carried from completed items
 

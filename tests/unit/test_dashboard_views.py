@@ -76,7 +76,20 @@ class TestAgentStatus:
             == "offline"
         )
 
-    def test_paused_latch_wins_over_staleness(self) -> None:
+    def test_paused_latch_with_fresh_heartbeat(self) -> None:
+        assert (
+            agent_status(
+                enabled=True,
+                state="paused",
+                last_cycle_at=self._NOW,
+                now=self._NOW,
+            )
+            == "paused"
+        )
+
+    def test_staleness_beats_paused_latch(self) -> None:
+        # Paused agents keep beating; a stale beat with a paused latch means the
+        # process died while paused — it must read offline, not paused.
         assert (
             agent_status(
                 enabled=True,
@@ -84,7 +97,7 @@ class TestAgentStatus:
                 last_cycle_at=_naive(2026, 9, 1),
                 now=self._NOW,
             )
-            == "paused"
+            == "offline"
         )
 
     def test_disabled_wins_over_everything(self) -> None:

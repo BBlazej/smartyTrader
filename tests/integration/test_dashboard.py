@@ -10,6 +10,7 @@ absent from every page.
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -109,6 +110,73 @@ def _assert_no_secrets(body: str) -> None:
     low = body.lower()
     for token in FORBIDDEN:
         assert token.lower() not in low, f"forbidden token leaked: {token!r}"
+
+
+class TestLaunchDisabled:
+    """Without dashboard.allow_launch (the default) there is no supervision at all."""
+
+    async def test_launch_endpoints_forbidden(self, env) -> None:
+        resp = await env.client.post("/launch/crypto/start")
+        assert resp.status_code == 403
+
+    async def test_no_start_buttons_rendered(self, env) -> None:
+        body = (await env.client.get("/partials/health")).text
+        assert "/launch/" not in body
+
+
+class TestLaunch:
+    """Supervisor wired with an injected launcher (sleep commands, never agents)."""
+
+    @pytest.fixture()
+    async def lenv(self, tmp_path):
+        from src.dashboard.launch import AgentLauncher
+
+        settings = _settings(tmp_path)
+        storage = Storage(str(tmp_path / "dash.db"))
+        await storage.initialize()
+        launcher = AgentLauncher(
+            tmp_path,
+            command_builder=lambda agent: [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+            ],
+        )
+        app = create_dashboard_app(storage=storage, settings=settings, launcher=launcher)
+        client = AsyncClient(transport=ASGITransport(app=app), base_url="http://dash")
+        yield SimpleNamespace(client=client, storage=storage, launcher=launcher)
+        for agent in ("crypto", "stocks"):
+            await launcher.stop(agent)  # never leave a sleep process behind
+        await client.aclose()
+        await storage.close()
+
+    async def test_start_then_stop_round_trip(self, lenv) -> None:
+        resp = await lenv.client.post("/launch/crypto/start")
+        assert resp.status_code == 200
+        assert "/launch/crypto/stop" in resp.text  # card now offers Stop
+        pid = lenv.launcher.managed_pid("crypto")
+        assert pid is not None
+
+        resp = await lenv.client.post("/launch/crypto/stop")
+        assert resp.status_code == 200
+        assert "/launch/crypto/start" in resp.text  # back to offering Start
+        assert lenv.launcher.managed_pid("crypto") is None
+
+    async def test_start_refused_when_fresh_heartbeat(self, lenv) -> None:
+        # An agent already trading (started elsewhere) must not get a twin launched.
+        await lenv.storage.record_cycle_health("crypto")
+        resp = await lenv.client.post("/launch/crypto/start")
+        assert resp.status_code == 409
+        assert "already running" in resp.json()["detail"]
+
+    async def test_start_refused_for_disabled_agent(self, lenv) -> None:
+        # stocks_agent is enabled: false — its runner would exit at the enabled-gate.
+        resp = await lenv.client.post("/launch/stocks/start")
+        assert resp.status_code == 409
+
+    async def test_stop_refused_for_foreign_process(self, lenv) -> None:
+        resp = await lenv.client.post("/launch/crypto/stop")
+        assert resp.status_code == 409
 
 
 class TestMonitorPages:

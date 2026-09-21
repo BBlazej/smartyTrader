@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json as _json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -37,6 +38,7 @@ from ..core.control_config import (
     validate_overrides_payload,
 )
 from ..core.storage import Storage
+from .launch import AgentLauncher
 from .views import agent_status, decision_stats, parse_positions, portfolio_chart
 
 logger = structlog.get_logger()
@@ -131,8 +133,17 @@ def _form_to_payload(form: dict[str, str]) -> dict[str, Any]:
     return payload
 
 
-def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
-    """Build the dashboard app over an initialized ``storage`` + loaded ``settings``."""
+def create_dashboard_app(
+    storage: Storage,
+    settings: Settings,
+    launcher: AgentLauncher | None = None,
+) -> FastAPI:
+    """Build the dashboard app over an initialized ``storage`` + loaded ``settings``.
+
+    ``launcher`` overrides process supervision (§7.24, tests); when omitted and
+    ``dashboard.allow_launch`` is true, a default :class:`AgentLauncher` is built with
+    its pid/log files next to the SQLite database.
+    """
     app = FastAPI(title="trading-agent dashboard", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=_TEMPLATE_DIR)
     templates.env.filters["money"] = _money
@@ -146,6 +157,11 @@ def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
     agents: list[str] = list(getattr(settings.dashboard, "agents", ["crypto", "stocks"]))
     refresh_seconds = int(getattr(settings.dashboard, "refresh_seconds", 5))
 
+    # §7.24 opt-in process supervision: absent unless explicitly allowed by config.
+    if launcher is None and getattr(settings.dashboard, "allow_launch", False):
+        launcher = AgentLauncher(data_dir=Path(settings.storage.database_path).parent)
+    allow_launch = launcher is not None
+
     def _check_agent(agent: str) -> None:
         if agent not in agents:
             raise HTTPException(status_code=404, detail=f"unknown agent '{agent}'")
@@ -155,6 +171,7 @@ def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
             "request": request,
             "agents": agents,
             "refresh_seconds": refresh_seconds,
+            "allow_launch": allow_launch,
             "active": "",
         }
         base.update(extra)
@@ -189,6 +206,8 @@ def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
                     "has_overrides": bool(
                         getattr(control, "config_override_json", None) if control else None
                     ),
+                    # §7.24: pid when this dashboard launched/adopted the runner process.
+                    "managed_pid": launcher.managed_pid(agent) if launcher else None,
                 }
             )
         return rows
@@ -324,6 +343,50 @@ def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
 
     @app.get("/partials/health", response_class=HTMLResponse)
     async def health_partial(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "_health.html", _ctx(request, health_rows=await _health_rows())
+        )
+
+    # ── Process supervision (§7.24 — opt-in via dashboard.allow_launch) ───
+
+    @app.post("/launch/{agent}/{action}", response_class=HTMLResponse)
+    async def launch(request: Request, agent: str, action: str) -> HTMLResponse:
+        if launcher is None:  # supervision disabled wholesale
+            raise HTTPException(status_code=403, detail="process launching is disabled")
+        _check_agent(agent)
+        if action == "start":
+            cfg = getattr(settings, f"{agent}_agent", None)
+            if not getattr(cfg, "enabled", False):
+                # The runner would exit at its enabled-gate; starting it is pointless.
+                raise HTTPException(status_code=409, detail=f"{agent} agent is disabled in config")
+            control = await storage.get_agent_control(agent)
+            status = agent_status(
+                enabled=True,
+                state=getattr(control, "state", "running") if control else "running",
+                last_cycle_at=getattr(control, "last_cycle_at", None) if control else None,
+                interval_minutes=int(getattr(cfg, "interval_minutes", 5) or 5),
+            )
+            if status == "running":
+                # A fresh heartbeat means an agent is already trading (started
+                # elsewhere); launching a second one would double-decide.
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{agent} already running (fresh heartbeat) — not launching a second",
+                )
+            try:
+                await launcher.start(agent)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        elif action == "stop":
+            stopped = await launcher.stop(agent)
+            if not stopped:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{agent} was not launched by this dashboard — not killing foreign processes",
+                )
+        else:  # pragma: no cover - unknown verbs never posted by our UI
+            raise HTTPException(status_code=404, detail=f"unknown launch action '{action}'")
+        logger.info("dashboard launch action", agent=agent, action=action)
         return templates.TemplateResponse(
             request, "_health.html", _ctx(request, health_rows=await _health_rows())
         )

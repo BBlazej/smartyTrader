@@ -90,6 +90,11 @@ dashboard:
   port: 8080
   refresh_seconds: 5           # HTMX polling interval for live fragments
   agents: ["crypto", "stocks"] # which control rows to show/control
+  # §7.24 process supervision: Start/Stop buttons spawn/terminate local
+  # `scripts.run_<agent>_agent` runners (logs: data/agent_<name>.out.log). Only ever
+  # stops processes this dashboard launched. Keep FALSE under docker-compose —
+  # services there are managed by compose, not by the dashboard container.
+  allow_launch: true
 
 # XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
 # When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password

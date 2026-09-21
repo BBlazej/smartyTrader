@@ -23,6 +23,8 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/*.db-journal
+data/agent_*.out.log
+data/*_agent.pid
 data/*.sqlite3
 data/*.sqlite
 !data/.gitkeep

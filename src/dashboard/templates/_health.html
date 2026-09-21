@@ -22,6 +22,15 @@
         {% else %}
           <button class="btn" hx-post="/control/{{ a.name }}/resume" hx-target="#health" hx-swap="outerHTML">Resume</button>
         {% endif %}
+        {% if allow_launch %}
+          {% if a.managed_pid %}
+            <button class="btn danger" hx-post="/launch/{{ a.name }}/stop" hx-target="#health" hx-swap="outerHTML"
+                    hx-confirm="Terminate the {{ a.name }} agent process (pid {{ a.managed_pid }}) started from this dashboard?">Stop (pid {{ a.managed_pid }})</button>
+          {% elif a.status == 'offline' and a.enabled %}
+            <button class="btn" title="Spawns scripts.run_{{ a.name }}_agent on this host; logs go to data/agent_{{ a.name }}.out.log"
+                    hx-post="/launch/{{ a.name }}/start" hx-target="#health" hx-swap="outerHTML">Start</button>
+          {% endif %}
+        {% endif %}
         <button class="btn danger" hx-post="/control/{{ a.name }}/close-all" hx-target="#health" hx-swap="outerHTML"
                 hx-confirm="Close ALL open positions for {{ a.name }}? These execute even while paused.">Close all</button>
       </div>

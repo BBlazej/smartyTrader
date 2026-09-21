@@ -199,6 +199,9 @@ class BaseTradingAgent:
 
         if getattr(control, "state", "running") == "paused":
             self._logger.info("cycle skipped (paused via control plane)")
+            # Heartbeat while paused too: a stale beat then unambiguously means the
+            # process is gone, not merely paused (drives §7.24 start/stop safety).
+            await self._record_health(None)
             return "paused"
         return None
 
