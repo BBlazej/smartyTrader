@@ -13,7 +13,7 @@ This is an autonomous paper-trading agent system powered by a local LLM (LM Stud
 - Stocks data: yfinance, xAPI (XTB demo)
 - Structured logging: structlog
 - Config: YAML (`config/settings.yaml`) + `.env` for secrets
-- Documentation map: `AGENTS.md` (this file — agent-facing facts/rules), `README.md` (overview & quickstart), `ARCHITECTURE.md` (architecture: modules, data flow, schema, control plane, design decisions), `PLAN.md` (gaps/todos/next steps only — §7 lives there), `HISTORY.md` (delivered work + completed §7 items write-ups), `nightly_finds.md` (bugs/gaps found during development), `review.MD` / `review2.md` (external reviews)
+- Documentation map: `AGENTS.md` (this file — agent-facing facts/rules), `README.md` (overview & quickstart), `ARCHITECTURE.md` (architecture: modules, data flow, schema, control plane, design decisions), `PLAN.md` (gaps/todos/next steps only — §7 lives there), `HISTORY.md` (delivered work + completed §7 items write-ups), `nightly_finds.md` (bugs/gaps found during development), `review.MD` / `review2.md` / `external_review3.md` (external reviews)
 - Documentation: More specific topics are documented in `*.md` files in `docs/`
 - Documentation: Code specifics are documented in comments and docstrings
 

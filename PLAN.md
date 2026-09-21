@@ -14,11 +14,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | **PLAN.md** (this file) | gaps, todos & next steps (§7), Phase 4 iteration, risks |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
 | `nightly_finds.md` | bugs/gaps discovered during development (numbered findings) |
-| `review.MD` / `review2.md` | external full-codebase reviews (`[R-xx]` tags reference these) |
+| `review.MD` / `review2.md` / `external_review3.md` | external full-codebase reviews (`[R-xx]` tags reference these) |
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-21):** 488 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.23 are complete — including the dashboard + Docker packaging (§7.15), real XTB demo execution over xAPI (§7.16), the `analysis/` layer extraction (§7.17) and the code-nits bundle (§7.19) — plus §7.24 (start/stop agents from the dashboard, opt-in process supervision; see HISTORY.md). Open: §7.18 (optional enrichment — needs a provider decision).
+**Current state (2026-09-21):** 495 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.23, and §7.24 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.25–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -61,25 +61,68 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | XTB API access delayed | Stocks agent blocked | Start with crypto only; use yfinance for data even without execution |
 | Overfitting to paper trading | Live performance differs | Simulate fees/slippage; start small if going live |
 | Hallucinated indicators | Wrong decisions | Validate LLM output against computed values; include raw numbers in prompt |
-| LLM non-determinism | Backtest replay won't reproduce stored decisions | `temperature=0.2` set (not 0); **no seed** — pin `temperature=0` and a seed where the model allows, and log the full prompt+response for audit (still open) |
+| LLM non-determinism | Backtest replay won't reproduce stored decisions | `temperature=0.2` set (not 0); **no seed** — pin `temperature=0` and a seed where the model allows, and log the full prompt+response for audit (still open — see §7.33) |
 | Paper PnL is optimistic | Overstates strategy quality | Verify `PaperExecutor` fee/slippage defaults before trusting paper PnL against the §4.3 live-readiness gates |
 
 ---
 
 ## 7. Gaps & Next Steps
 
-Updated after the full-codebase reviews of **2026-09-15** and **2026-09-17** — findings are tagged **[R-xx]** referencing `review.MD` and `review2.md` at the repo root (H = high, M = medium, L = low severity there). Bugs/gaps found during development are logged separately in `nightly_finds.md`. Items marked ⏳ are planned/not yet implemented. The original sections **A. Low-hanging fruit** and **B. High severity** completed fully in 2026-09; what remains keeps the original severity grouping (**C. Medium → D. Low/housekeeping**) plus carried follow-ups.
+Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.17, §7.19–§7.23 and §7.24 were completed in 2026-09; their full write-ups (with test counts) live in [HISTORY.md](HISTORY.md) under the same §7.N numbers — no stubs are kept here.
+> **This section lists only open work.** Items §7.1–§7.17, §7.19–§7.23 and §7.24 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
-### Follow-ups carried from completed items
+### High severity (open)
 
-- **§7.6 live smoke:** a keyed run against the Kraken testnet from a network-enabled environment is still pending (the dev sandbox blocks outbound HTTPS — `nightly_finds.md` #1); per-cycle reconciliation of orders left `open` remains unpinned.
-- **§7.9 venue-side stops:** SL/TP enforcement is local to the agent; venue-side OCO stop orders remain future work.
+25. **Rehydrate FIFO PositionTracker ledgers across restarts** ⏳ [R2-1.1, R3-H2, find #7]
+    - `PaperExecutor.load_portfolio_state` (and live executors) rehydrate cash and `Position` objects from SQLite, but do not rebuild `PositionTracker` lot ledgers. Positions opened prior to a restart lose entry price/lot history and decision IDs; subsequent closing sells report empty `closed_entries` and zero realized PnL.
+    - **Fix:** At startup in `core/rehydration.py`, query historical filled `orders` (which store `decision_id`, price, and quantity) and replay them into `PositionTracker`.
 
-### C. Medium severity (open)
+26. **Config-driven loss-streak threshold in state rehydration** ⏳ [R3-H1, find #15]
+    - `rehydrate_risk_engine` in `src/core/rehydration.py:98` hardcodes `streak >= 3` instead of checking `risk_engine.settings.consecutive_losses_threshold`. If configured to a value other than 3 in `settings.yaml`, process restarts evaluate loss streaks against 3.
+    - **Fix:** Pass `risk_engine.settings.consecutive_losses_threshold` to `rehydrate_risk_engine` and compare `streak >= threshold`.
 
-### D. Low severity / housekeeping
+### Medium severity (open)
 
-18. **Data-enrichment feeds** ⏳ (optional, lower priority)
-   - Sentiment provider (crypto) and economic-calendar feed (stocks) are still aspirational. Ship the higher-priority items above first; add these as the prompt benefits from richer context.
+27. **Clock injection for RiskEngine (backtest replay fidelity)** ⏳ [R2-1.2, R3-M1, find #10]
+    - `DailyLossTracker` and `ConsecutiveLossTracker` rely on `datetime.now(UTC)`. During multi-month decision replays in `DecisionReplayBacktester`, wall-clock time does not advance, causing the daily loss cap to act as a single continuous cap across the entire replay period.
+    - **Fix:** Inject a `Clock` protocol into `RiskEngine` (defaulting to `datetime.now(UTC)` for live trading) so the backtester can pass historical candle timestamps.
+
+28. **Live Kraken testnet smoke pass & order reconciliation** ⏳ [R1-H4, §7.6 follow-up, find #1]
+    - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS). Per-cycle status reconciliation of orders left `open` remains unpinned.
+
+29. **Resolve test suite deprecation and async mock warnings** ⏳ [R3-M2]
+    - Fix 19 warnings during `pytest`: Python 3.12+ `aiosqlite` datetime adapter deprecation warnings, and an unawaited `AsyncMock` coroutine warning in `test_control_plane.py` (for synchronous `update_daily_value`).
+
+30. **Update stale XTB executor protocol documentation** ⏳ [R3-M3, find #13]
+    - `src/execution/xtb_executor.py` docstring still references an obsolete OAuth2 requirement and paper-only default, despite §7.16 landing WebSocket xAPI execution over `wss://ws.xapi.pro`.
+
+31. **End-to-end Control API <-> Agent loop integration test** ⏳ [R2-3.1]
+    - Write an integration test in `tests/integration/` verifying that `POST /api/agents/crypto/pause` and `close-all` pause cycles or execute emergency close in a running `BaseTradingAgent`.
+
+32. **APScheduler concurrency, misfire, and overlap tests** ⏳ [R2-3.2]
+    - Add unit/integration tests in `tests/unit/test_scheduler.py` covering job misfire policies, cycle overlap prevention, and concurrent execution under errors.
+
+33. **LLM response size guards and config seed parameter** ⏳ [R2-2.2, R2-2.4]
+    - Expose optional `seed` parameter in `LLMSettings` and `config/settings.yaml` for deterministic evaluation; add raw response size upper-bound checks in `llm_client.py` before parsing.
+
+### Low severity / housekeeping (open)
+
+18. **Data-enrichment feeds** ⏳ (optional)
+    - Sentiment provider (crypto) and economic-calendar feed (stocks) are aspirational context enrichments.
+
+34. **Venue-side stop orders (OCO)** ⏳ [§7.9 follow-up]
+    - SL/TP enforcement is local to the agent; venue-side OCO stop orders on Kraken/XTB remain future work.
+
+35. **SQLite automated point-in-time database backup (`.backup`)** ⏳ [R2-4.1]
+    - Add an `aiosqlite` `.backup()` call during retention pruning in `core/retention.py` to create timestamped database backups.
+
+36. **Storage repository sub-module decomposition (`storage.py`)** ⏳ [R2-4.2]
+    - Split `storage.py` into sub-modules under `core/storage/` (`migrations.py`, `snapshots.py`, `decisions.py`, `control.py`) while keeping `Storage` as an orchestrating facade.
+
+37. **Calendar-aware Sharpe annualization & indicator math optimizations** ⏳ [R3-L3, R3-L4, find #3, find #11]
+    - Adjust `_PERIODS_PER_YEAR` in `backtester.py` for stock trading calendars (~252 days/year); optimize $O(N^2)$ MACD loop in `analysis/indicators.py` to $O(N)$; add epsilon tolerance to daily loss float boundary check.
+
+38. **Short-side position model support & multi-side FIFO tracking** ⏳ [R3-L2, find #4, find #9]
+    - Add an explicit `side` (long/short) field to `Position` model in `core/models.py` and extend `PositionTracker` for short opening/closing lots if margin/derivatives trading is added.
+

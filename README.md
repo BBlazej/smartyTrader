@@ -223,12 +223,10 @@ and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real 
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**465 tests passing at ~93% coverage.**
+**495 tests passing at ~93% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
-for the full list — reordered after the 2026-09-15 full-codebase review
-(low-hanging fruit first, then High → Low severity); its detailed findings
-live in `review.MD` at the repo root, with follow-up undocumented TODO items tracked in `review2.md`.
+for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, and `external_review3.md` at the repo root.
 
 ## Documentation map
 
@@ -240,3 +238,4 @@ live in `review.MD` at the repo root, with follow-up undocumented TODO items tra
 | `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
 | `nightly_finds.md` | bugs/gaps discovered during development |
+| `review.MD` / `review2.md` / `external_review3.md` | external full-codebase architecture & code reviews |

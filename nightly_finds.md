@@ -121,3 +121,10 @@ fixed unless explicitly marked.
     false-alarmed offline overnight — `BaseTradingAgent.run_cycle` now records a heartbeat
     on skip too. Pause returns earlier and needs none (the latch itself renders `paused`).
     **Status: fixed.**
+
+## Found during external review 3 (2026-09-21)
+
+15. **Hardcoded consecutive-loss threshold in state rehydration** (`src/core/rehydration.py:98`):
+    `rehydrate_risk_engine` checks `streak >= 3` instead of `risk_engine.settings.consecutive_losses_threshold`.
+    If configured to a value other than 3 in `settings.yaml`, restart rehydration misapplies cooldown evaluation.
+    **Status: open.**
