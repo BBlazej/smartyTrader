@@ -112,6 +112,30 @@ def _assert_no_secrets(body: str) -> None:
         assert token.lower() not in low, f"forbidden token leaked: {token!r}"
 
 
+class TestLogViewer:
+    async def test_missing_log_shows_hint(self, env) -> None:
+        body = (await env.client.get("/logs/crypto")).text
+        assert "No log file yet" in body
+
+    async def test_page_tails_written_log(self, env, tmp_path) -> None:
+        (tmp_path / "agent_crypto.out.log").write_text(
+            "[2026-09-21 20:34:41][info] cycle start symbols=['BTC/USDT']\n"
+            "[2026-09-21 20:34:42][info] cycle end executed=0\n"
+        )
+        body = (await env.client.get("/logs/crypto")).text
+        assert "cycle start" in body and "cycle end" in body
+
+    async def test_partial_refreshes_tail(self, env, tmp_path) -> None:
+        (tmp_path / "agent_crypto.out.log").write_text("first line\n")
+        assert "first line" in (await env.client.get("/logs/crypto/partial")).text
+        (tmp_path / "agent_crypto.out.log").write_text("second line\n")
+        body = (await env.client.get("/logs/crypto/partial")).text
+        assert "second line" in body and "first line" not in body
+
+    async def test_unknown_agent_404(self, env) -> None:
+        assert (await env.client.get("/logs/nonexistent")).status_code == 404
+
+
 class TestLaunchDisabled:
     """Without dashboard.allow_launch (the default) there is no supervision at all."""
 

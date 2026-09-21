@@ -33,6 +33,7 @@
         {% endif %}
         <button class="btn danger" hx-post="/control/{{ a.name }}/close-all" hx-target="#health" hx-swap="outerHTML"
                 hx-confirm="Close ALL open positions for {{ a.name }}? These execute even while paused.">Close all</button>
+        {% if a.has_log %}<a class="btn" href="/logs/{{ a.name }}">Logs</a>{% endif %}
       </div>
     </div>
   {% endfor %}

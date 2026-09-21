@@ -39,7 +39,13 @@ from ..core.control_config import (
 )
 from ..core.storage import Storage
 from .launch import AgentLauncher
-from .views import agent_status, decision_stats, parse_positions, portfolio_chart
+from .views import (
+    agent_status,
+    decision_stats,
+    parse_positions,
+    portfolio_chart,
+    tail_lines,
+)
 
 logger = structlog.get_logger()
 
@@ -157,9 +163,12 @@ def create_dashboard_app(
     agents: list[str] = list(getattr(settings.dashboard, "agents", ["crypto", "stocks"]))
     refresh_seconds = int(getattr(settings.dashboard, "refresh_seconds", 5))
 
+    # Data dir shared by the launcher and the log viewer: next to the live SQLite DB.
+    data_dir = Path(storage.database_path).parent
+
     # §7.24 opt-in process supervision: absent unless explicitly allowed by config.
     if launcher is None and getattr(settings.dashboard, "allow_launch", False):
-        launcher = AgentLauncher(data_dir=Path(settings.storage.database_path).parent)
+        launcher = AgentLauncher(data_dir=data_dir)
     allow_launch = launcher is not None
 
     def _check_agent(agent: str) -> None:
@@ -208,6 +217,7 @@ def create_dashboard_app(
                     ),
                     # §7.24: pid when this dashboard launched/adopted the runner process.
                     "managed_pid": launcher.managed_pid(agent) if launcher else None,
+                    "has_log": _agent_log_path(agent).exists(),
                 }
             )
         return rows
@@ -251,6 +261,59 @@ def create_dashboard_app(
             request,
             "positions.html",
             _ctx(request, active="positions", latest=latest, positions=parse_positions(latest)),
+        )
+
+    # ── Agent logs (tail of data/agent_<name>.out.log, §7.24 launches) ───
+
+    def _agent_log_path(agent: str) -> Path:
+        # Same data dir the launcher writes to: next to the shared SQLite DB.
+        return data_dir / f"agent_{agent}.out.log"
+
+    def _read_log_tail(path: Path, max_bytes: int = 64 * 1024) -> tuple[str, bool]:
+        """(tail text, byte-truncated?) — never reads more than the last chunk."""
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as handle:
+                if size > max_bytes:
+                    handle.seek(size - max_bytes)
+                data = handle.read()
+        except OSError:
+            return "", False
+        text = data.decode(errors="replace")
+        if size > max_bytes and "\n" in text:  # drop the partial first line
+            text = text.split("\n", 1)[1]
+        return tail_lines(text), size > max_bytes
+
+    @app.get("/logs/{agent}", response_class=HTMLResponse)
+    async def logs_page(request: Request, agent: str) -> HTMLResponse:
+        _check_agent(agent)
+        path = _agent_log_path(agent)
+        exists = path.exists()
+        tail, truncated = _read_log_tail(path) if exists else ("", False)
+        return templates.TemplateResponse(
+            request,
+            "logs.html",
+            _ctx(
+                request,
+                active="logs",
+                agent=agent,
+                log_path=str(path),
+                exists=exists,
+                tail=tail,
+                truncated=truncated,
+            ),
+        )
+
+    @app.get("/logs/{agent}/partial", response_class=HTMLResponse)
+    async def logs_partial(request: Request, agent: str) -> HTMLResponse:
+        _check_agent(agent)
+        path = _agent_log_path(agent)
+        exists = path.exists()
+        tail, truncated = _read_log_tail(path) if exists else ("", False)
+        return templates.TemplateResponse(
+            request,
+            "_log_tail.html",
+            _ctx(request, agent=agent, exists=exists, tail=tail, truncated=truncated),
         )
 
     @app.get("/config/{agent}", response_class=HTMLResponse)

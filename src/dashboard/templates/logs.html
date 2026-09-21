@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ agent }} logs · Trading Agents{% endblock %}
+{% block content %}
+  <h1>{{ agent }} — agent log</h1>
+  <p class="muted">
+    Tail of <code>{{ log_path }}</code> (written by agents launched from this
+    dashboard, §7.24). Auto-refreshes every {{ refresh_seconds }}s; only the last
+    few hundred lines are shown{% if truncated %}, byte-truncated to the final 64 KiB{% endif %}.
+  </p>
+  {% include "_log_tail.html" %}
+  <p style="margin-top:1rem;"><a class="btn" href="/">← back</a></p>
+{% endblock %}

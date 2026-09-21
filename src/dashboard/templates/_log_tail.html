@@ -1,0 +1,7 @@
+<div id="log-tail" hx-get="/logs/{{ agent }}/partial" hx-trigger="every {{ refresh_seconds }}s" hx-swap="outerHTML">
+  {% if not exists %}
+    <p class="muted">No log file yet — it appears once this agent is started from the dashboard.</p>
+  {% else %}
+    <pre class="log">{{ tail }}</pre>
+  {% endif %}
+</div>

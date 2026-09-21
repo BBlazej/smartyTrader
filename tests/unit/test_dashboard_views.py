@@ -11,7 +11,13 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.core.models import Position
-from src.dashboard.views import agent_status, decision_stats, parse_positions, portfolio_chart
+from src.dashboard.views import (
+    agent_status,
+    decision_stats,
+    parse_positions,
+    portfolio_chart,
+    tail_lines,
+)
 
 
 def _dt(year: int, month: int, day: int) -> datetime:
@@ -123,6 +129,15 @@ class TestAgentStatus:
             )
             == "running"
         )
+
+
+class TestTailLines:
+    def test_short_content_untouched(self) -> None:
+        assert tail_lines("a\nb", max_lines=10) == "a\nb"
+
+    def test_keeps_last_n_lines(self) -> None:
+        content = "\n".join(str(i) for i in range(100))
+        assert tail_lines(content, max_lines=3).splitlines() == ["97", "98", "99"]
 
 
 class TestParsePositions:

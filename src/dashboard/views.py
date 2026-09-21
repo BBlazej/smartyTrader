@@ -60,6 +60,14 @@ def agent_status(
     return "paused" if state == "paused" else "running"
 
 
+def tail_lines(content: str, max_lines: int = 400) -> str:
+    """Keep only the last ``max_lines`` lines of a (possibly huge) log body."""
+    lines = content.splitlines()
+    if max_lines > 0 and len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines)
+
+
 def parse_positions(snapshot: Any) -> list[Position]:
     """Parse the ``positions_json`` of a portfolio snapshot into ``Position`` models.
 

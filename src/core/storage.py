@@ -137,6 +137,11 @@ class Storage:
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._closed = False
 
+    @property
+    def database_path(self) -> str:
+        """Absolute path of the SQLite file (resolved at construction)."""
+        return str(Path(self._engine.url.database).resolve())
+
     async def initialize(self) -> None:
         """Create tables if they don't exist and apply lightweight migrations.
 
