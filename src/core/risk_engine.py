@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, Protocol
 
 import structlog
 
@@ -19,10 +19,29 @@ logger = structlog.get_logger()
 DEFAULT_CONSECUTIVE_LOSS_THRESHOLD: Final = 3
 
 
+class Clock(Protocol):
+    """Source of current time for the stateful risk trackers (§7.27).
+
+    Live trading uses :class:`SystemClock`; the backtester injects a clock that
+    follows candle/decision timestamps, so daily-loss windows and cooldowns are
+    evaluated against *market* time rather than the wall clock of the replay run.
+    """
+
+    def now(self) -> datetime: ...
+
+
+class SystemClock:
+    """Default live clock: ``datetime.now(UTC)``."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+
 class DailyLossTracker:
     """Tracks daily PnL to enforce loss limits."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Clock | None = None) -> None:
+        self._clock: Clock = clock or SystemClock()
         self._start_of_day_value: float | None = None
         self._current_date: str = ""
         self._latest_value: float | None = None
@@ -32,7 +51,7 @@ class DailyLossTracker:
         return self._start_of_day_value
 
     def reset_if_new_day(self, portfolio_value: float) -> None:
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        today = self._clock.now().strftime("%Y-%m-%d")
         if today != self._current_date:
             self._current_date = today
             self._start_of_day_value = portfolio_value
@@ -43,7 +62,7 @@ class DailyLossTracker:
         Without this the -daily-loss rule silently re-baselines to *current*
         value on every restart, forgetting losses already incurred today.
         """
-        self._current_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        self._current_date = self._clock.now().strftime("%Y-%m-%d")
         self._start_of_day_value = start_of_day_value
 
     @property
@@ -68,7 +87,8 @@ class DailyLossTracker:
 class ConsecutiveLossTracker:
     """Tracks consecutive losses and cooldown state."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Clock | None = None) -> None:
+        self._clock: Clock = clock or SystemClock()
         self._consecutive_losses: int = 0
         self._cooldown_until: datetime | None = None
 
@@ -80,7 +100,7 @@ class ConsecutiveLossTracker:
     def in_cooldown(self) -> bool:
         if self._cooldown_until is None:
             return False
-        return datetime.now(UTC) < self._cooldown_until
+        return self._clock.now() < self._cooldown_until
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -92,7 +112,7 @@ class ConsecutiveLossTracker:
     ) -> None:
         self._consecutive_losses += 1
         if self._consecutive_losses >= threshold:
-            self._cooldown_until = datetime.now(UTC) + timedelta(minutes=cooldown_minutes)
+            self._cooldown_until = self._clock.now() + timedelta(minutes=cooldown_minutes)
 
     def record_win(self) -> None:
         self._consecutive_losses = 0
@@ -111,10 +131,13 @@ class RiskEngine:
     is rejected with a clear reason.
     """
 
-    def __init__(self, settings: RiskSettings) -> None:
+    def __init__(self, settings: RiskSettings, clock: Clock | None = None) -> None:
         self.settings = settings
-        self._daily_tracker = DailyLossTracker()
-        self._loss_tracker = ConsecutiveLossTracker()
+        # Injected clock (§7.27): live trading gets SystemClock; replays pass a
+        # market-time clock so daily windows/cooldowns follow candle timestamps.
+        active_clock = clock or SystemClock()
+        self._daily_tracker = DailyLossTracker(active_clock)
+        self._loss_tracker = ConsecutiveLossTracker(active_clock)
         # High-water mark for the max-drawdown rule. In-memory only — callers
         # seed it from persisted portfolio history at startup (see
         # ``seed_peak_equity``) so a process restart cannot silently reset the

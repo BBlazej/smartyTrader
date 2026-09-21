@@ -11,10 +11,11 @@ entries are sized by the shared :func:`calculate_quantity` and gated by
 ``RiskEngine.evaluate`` with ``planned_notional`` — what the gate approves is what
 fills. Decisions replay in timestamp order across symbols against one shared book.
 
+The risk engine runs on a **timeline clock** (§7.27): its daily-loss windows and
+cooldowns advance with candle/decision timestamps, so a multi-month replay gets
+real per-day caps instead of one continuous wall-clock "today".
+
 Known simplifications (documented deliberately):
-* The risk engine's daily-loss/cooldown trackers key off **wall-clock now**, so in a
-  replay they behave as one continuous "today" (a whole-window loss cap rather than
-  per-day windows, and cooldowns relative to replay execution). See ``nightly_finds.md``.
 * Equity-curve Sharpe annualizes by the candle timeframe's nominal periods/year;
   stocks have weekends/gaps, so it is an approximation.
 
@@ -38,6 +39,24 @@ from .models import OHLCV, Action, OrderSide, PortfolioState, TradeSignal
 from .risk_engine import RiskEngine
 
 logger = structlog.get_logger()
+
+
+class TimelineClock:
+    """A :class:`~src.core.risk_engine.Clock` driven by the replay timeline (§7.27).
+
+    ``now()`` returns the timestamp of the most recently applied event, so the
+    risk engine's day boundaries and cooldown expiries follow market time. Before
+    the first event it falls back to wall-clock now (no state exists yet anyway).
+    """
+
+    def __init__(self) -> None:
+        self._current: datetime | None = None
+
+    def set(self, ts: datetime) -> None:
+        self._current = ts
+
+    def now(self) -> datetime:
+        return self._current if self._current is not None else datetime.now(UTC)
 
 # Nominal candle periods per year for Sharpe annualization (crypto runs 24/7; stock
 # series have gaps — approximation documented above).
@@ -112,8 +131,10 @@ class DecisionReplayBacktester:
         slippage_pct: float = 0.0,
     ) -> None:
         # Fresh engine/executor per run: the replay must never observe live state, and
-        # two runs must not share trackers.
-        self._risk_engine = RiskEngine(risk_settings)
+        # two runs must not share trackers. The engine's clock follows the replay
+        # timeline, not the wall clock of the run (§7.27).
+        self._clock = TimelineClock()
+        self._risk_engine = RiskEngine(risk_settings, clock=self._clock)
         self._settings = risk_settings
         self._executor = PaperExecutor(
             initial_cash=initial_cash,
@@ -154,12 +175,17 @@ class DecisionReplayBacktester:
         )
 
         for ts, kind, payload in events:
+            self._clock.set(ts)  # risk engine day/cooldown time follows the timeline
             if kind == "candle":
                 symbol, candle = payload
                 await self._on_candle(symbol, candle)
             else:
                 await self._on_decision(payload)
-            equity_curve.append((ts, await self._total_value()))
+            value = await self._total_value()
+            # Live parity: BaseTradingAgent feeds every cycle's equity into the daily
+            # tracker; per-event here advances day windows under the timeline clock.
+            self._risk_engine.update_daily_value(value)
+            equity_curve.append((ts, value))
 
         # Drop consecutive duplicate points (same mark → no information, skews Sharpe).
         curve = _dedupe_consecutive(equity_curve)

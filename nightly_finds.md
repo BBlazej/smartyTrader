@@ -79,7 +79,8 @@ fixed unless explicitly marked.
     date. Live behavior is correct; only replay fidelity is affected. A fix means
     injecting a clock into `RiskEngine` (and updating its many tests); for now the
     limitation is documented in the backtester module docstring and CLI output.
-    **Status: open (documented).**
+    **Status: fixed in §7.27** — `RiskEngine` takes an injectable `Clock`; the
+    backtester drives it from candle/decision timestamps via `TimelineClock`.
 
 11. **Sharpe annualization is coarse for non-24/7 series** (`backtester.py`):
     equity-curve returns are scaled by √(timeframe's nominal periods/year), which

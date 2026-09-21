@@ -92,6 +92,39 @@ class TestReplayEngine:
         assert report.win_rate == pytest.approx(1.0)
         assert report.closed_trades == 1
 
+    async def test_daily_loss_cap_resets_when_replay_day_advances(self) -> None:
+        """§7.27: replay runs on market time — tomorrow gets a fresh daily-loss window."""
+
+        def _c(ts_hour_closes: list[tuple[int, int, float]]) -> list[OHLCV]:
+            return [
+                OHLCV(
+                    timestamp=_ts(day, hour),
+                    open=c,
+                    high=c,
+                    low=c,
+                    close=c,
+                    volume=1.0,
+                )
+                for day, hour, c in ts_hour_closes
+            ]
+
+        candles = {
+            "X": _c([(1, 0, 100.0), (1, 12, 80.0), (2, 0, 80.0)]),
+        }
+        decisions = [
+            ReplayDecision(_ts(1, 6), "X", "buy", 0.8, stop_loss=50.0),  # approved
+            ReplayDecision(_ts(1, 13), "X", "buy", 0.8, stop_loss=50.0),  # daily cap (-20%)
+            ReplayDecision(_ts(2, 9), "X", "buy", 0.8, stop_loss=50.0),  # new day → approved
+        ]
+        report = await _backtester().replay(decisions, candles, timeframe="1d")
+
+        # Pre-§7.27 the whole replay was one wall-clock "today": buy #3 would also
+        # have been rejected by the still-breaching cumulative cap.
+        assert report.risk_rejected == 1
+        # Buy 1: 10 units @100 (cash 9000). Mark to 80 → equity 9800. Buy 3: 12.25
+        # units @80 (cash 8020) → equity back to 9800.
+        assert report.final_equity == pytest.approx(9_800.0)
+
     async def test_stop_loss_auto_exit_without_decision(self) -> None:
         candles = {"X": _candles([100.0, 94.0])}  # day2 close breaches the 95 stop
         decisions = [ReplayDecision(_ts(1, 12), "X", "buy", 0.8, stop_loss=95.0)]

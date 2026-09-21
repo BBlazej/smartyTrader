@@ -239,6 +239,11 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
    - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
 
+### §7.27 — Clock injection for RiskEngine (backtest replay fidelity) — ✅ complete [R2-1.2, R3-M1, find #10]
+
+   - **Done ✅:** new `Clock` Protocol + `SystemClock` default in `risk_engine.py`; `DailyLossTracker`, `ConsecutiveLossTracker` and `RiskEngine.__init__` accept an optional clock (live paths unchanged — still `datetime.now(UTC)`). `DecisionReplayBacktester` now owns a `TimelineClock` that follows each candle/decision timestamp, and feeds every event's equity through `update_daily_value` (live parity with `BaseTradingAgent`), so multi-month replays get real per-day loss windows and market-time cooldowns instead of one continuous wall-clock "today".
+   - **Tests:** `TestClockInjection` in `test_risk_engine.py` (day rollover and cooldown expiry driven purely by a fake clock; default engine keeps live behavior) and `test_daily_loss_cap_resets_when_replay_day_advances` in `test_backtester.py` — an exact-numbers regression that pre-§7.27 rejected the third buy under a cumulative whole-window cap. 504 tests passing.
+
 ## Completed §7 items — C. Medium severity (§7.8–§7.16)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*

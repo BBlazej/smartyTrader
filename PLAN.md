@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-21):** 500 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.24 and §7.25–§7.26 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.27–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-21):** 504 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.28 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.29–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -73,10 +73,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 > **This section lists only open work.** Items §7.1–§7.24 and §7.25–§7.26 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
-
-27. **Clock injection for RiskEngine (backtest replay fidelity)** ⏳ [R2-1.2, R3-M1, find #10]
-    - `DailyLossTracker` and `ConsecutiveLossTracker` rely on `datetime.now(UTC)`. During multi-month decision replays in `DecisionReplayBacktester`, wall-clock time does not advance, causing the daily loss cap to act as a single continuous cap across the entire replay period.
-    - **Fix:** Inject a `Clock` protocol into `RiskEngine` (defaulting to `datetime.now(UTC)` for live trading) so the backtester can pass historical candle timestamps.
 
 28. **Live Kraken testnet smoke pass & order reconciliation** ⏳ [R1-H4, §7.6 follow-up, find #1]
     - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS). Per-cycle status reconciliation of orders left `open` remains unpinned.

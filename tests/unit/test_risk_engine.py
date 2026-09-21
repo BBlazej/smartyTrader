@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from src.core.config import RiskSettings
@@ -400,3 +402,46 @@ class TestConsecutiveLossTracker:
         result = engine.evaluate(signal, portfolio)
         assert result.verdict == RiskVerdict.REJECTED
         assert "cooldown" in result.reason.lower()
+
+
+class TestClockInjection:
+    """§7.27: stateful trackers evaluate against an injected clock."""
+
+    class FakeClock:
+        def __init__(self, start: datetime) -> None:
+            self.current = start
+
+        def now(self) -> datetime:
+            return self.current
+
+    def test_daily_tracker_rolls_day_on_injected_clock(self) -> None:
+        clock = self.FakeClock(datetime(2026, 1, 1, 23, 0, tzinfo=UTC))
+        tracker = DailyLossTracker(clock)
+        tracker.reset_if_new_day(10_000.0)
+        tracker.update_latest_value(9_000.0)
+        assert tracker.daily_pnl_pct == pytest.approx(-0.1)
+
+        # Same injected day → baseline kept; crossing midnight on the fake clock
+        # (not wall-clock) re-baselines.
+        clock.current += timedelta(hours=2)
+        tracker.reset_if_new_day(9_000.0)
+        assert tracker.start_of_day_value == pytest.approx(9_000.0)
+
+    def test_cooldown_expires_per_injected_clock(self) -> None:
+        clock = self.FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+        tracker = ConsecutiveLossTracker(clock)
+        tracker.record_loss(cooldown_minutes=30, threshold=1)
+        assert tracker.in_cooldown
+
+        clock.current += timedelta(minutes=29)
+        assert tracker.in_cooldown
+        clock.current += timedelta(minutes=2)
+        assert not tracker.in_cooldown
+
+    def test_engine_defaults_to_system_clock(self, risk_settings: RiskSettings) -> None:
+        # No injected clock → live behavior (real now), cooldown active immediately.
+        engine = RiskEngine(risk_settings)
+        engine.record_outcome(was_profitable=False)
+        for _ in range(3):
+            engine.record_outcome(was_profitable=False)
+        assert engine._loss_tracker.in_cooldown
