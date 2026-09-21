@@ -239,7 +239,7 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
    - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
 
-## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.31)
+## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.32)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*
 
@@ -334,6 +334,11 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Done ✅:** new `tests/integration/test_control_loop.py` drives the **real** `create_control_app` FastAPI surface (in-process httpx ASGITransport) against a **real** `CryptoAgent` — real pipeline (only provider + LLM mocked), real `RiskEngine`, real `PaperExecutor`, real SQLite. Pins: HTTP pause halts cycles (no new decision rows), resume restarts them, `close-all` closes positions on the next cycle and clears its latch with the closing sell persisted + outcome backfilled to the entry decision, close-all executes even behind a pause latch, and the agent heartbeat is visible on the very row the API reads.
    - **Bug found & fixed (nightly_finds #16):** `CryptoAgent`/`StocksAgent` passed `component="crypto_agent"`/`"stocks_agent"` to `BaseTradingAgent`, keying their `agent_control` row under names **no consumer used** — the runner, control API and dashboard all speak `crypto`/`stocks`. In production this meant pause/close-all latches were never read and heartbeats landed on orphan rows (dashboard health permanently `offline`). Unit tests missed it because they construct `BaseTradingAgent` directly with matching names. The subclasses now use the runner component names, and these integration tests pin the shared key.
    - **Tests:** 5 new integration tests; suite at 509 passing, zero warnings.
+
+### §7.32 — APScheduler concurrency, misfire and overlap tests — ✅ complete [R2-3.2]
+
+   - **Done ✅:** `TestRealSchedulerSemantics` in `tests/unit/test_scheduler.py` pins the behaviors `AsyncSchedulerManager.schedule_cycle`'s policy kwargs (`max_instances=1`, `coalesce=True`) promise, against a **real** `AsyncIOScheduler` on the test loop: a slow job outliving several ticks never overlaps itself yet later ticks still run; misfires during a long block collapse to a trickle instead of one replay per missed tick; a raising job keeps being scheduled (job survives its own errors); and a failing trading-cycle job does not disturb a second job (storage prune) on the same scheduler — mirroring the runner's two-job setup.
+   - **Tests:** 4 new real-scheduler tests + a manager policy-kwargs assertion. 514 passing; timing margins verified stable over repeated runs.
 
 ## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19)
 

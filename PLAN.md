@@ -16,9 +16,9 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | `nightly_finds.md` | bugs/gaps discovered during development (numbered findings) |
 | `review.MD` / `review2.md` / `external_review3.md` | external full-codebase reviews (`[R-xx]` tags reference these) |
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
+**Numbering rule:** §7.N identifiers (§7.1–§7.38) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-22):** 509 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27 and §7.29–§7.31 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.32–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-22):** 514 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27 and §7.29–§7.32 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.33–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29 and §7.30 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27 and §7.29–§7.32 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
 
@@ -79,8 +79,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 
 
-32. **APScheduler concurrency, misfire, and overlap tests** ⏳ [R2-3.2]
-    - Add unit/integration tests in `tests/unit/test_scheduler.py` covering job misfire policies, cycle overlap prevention, and concurrent execution under errors.
 
 33. **LLM response size guards and config seed parameter** ⏳ [R2-2.2, R2-2.4]
     - Expose optional `seed` parameter in `LLMSettings` and `config/settings.yaml` for deterministic evaluation; add raw response size upper-bound checks in `llm_client.py` before parsing.
