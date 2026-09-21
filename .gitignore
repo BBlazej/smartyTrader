@@ -20,6 +20,9 @@ htmlcov/
 
 # Local data (keep the directory, not the databases)
 data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
 data/*.sqlite3
 data/*.sqlite
 !data/.gitkeep

@@ -215,7 +215,8 @@ closed on the next cycle without asking the LLM or the risk gate — toggle with
 agent's own stored decisions against fresh historical candles through the same risk
 engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`),
 and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
-with win-rate/confidence stats, agent health; HTMX pause/resume/close-all controls and a
+with win-rate/confidence stats, agent health (heartbeat-derived — stale agents show
+`offline`, not the last latch value); HTMX pause/resume/close-all controls and a
 safe-config editor — all writing the same `agent_control` latches; `scripts/run_dashboard.py`,
 §7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
 and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real XTB demo

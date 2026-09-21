@@ -9,7 +9,7 @@ unit-testable without spinning up FastAPI or SQLite.
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -26,6 +26,37 @@ _CONFIDENCE_BINS: tuple[tuple[float, float], ...] = (
     (0.6, 0.8),
     (0.8, 1.0),
 )
+
+
+def agent_status(
+    *,
+    enabled: bool,
+    state: str,
+    last_cycle_at: datetime | None,
+    interval_minutes: int = 5,
+    now: datetime | None = None,
+) -> str:
+    """Effective on-screen status of an agent: ``disabled`` / ``paused`` / ``offline`` / ``running``.
+
+    The ``agent_control.state`` latch records *intent*, not process liveness — a stopped
+    agent keeps its last latch value (``running``) forever, so the badge must not trust
+    it alone. Liveness is derived from the heartbeat instead: if the last completed
+    cycle is older than twice the configured interval (floored at 10 min, plus a 5-min
+    grace for long cycles), the agent is ``offline``.
+
+    Timestamps are naive UTC, as stored by SQLite (see :func:`portfolio_chart`).
+    """
+    if not enabled:
+        return "disabled"
+    if state == "paused":
+        return "paused"
+    if last_cycle_at is None:
+        return "offline"
+    if now is None:
+        now = datetime.now(UTC).replace(tzinfo=None)
+    stale_after_seconds = max(2 * interval_minutes, 10) * 60 + 300
+    age_seconds = (now - last_cycle_at).total_seconds()
+    return "running" if age_seconds <= stale_after_seconds else "offline"
 
 
 def parse_positions(snapshot: Any) -> list[Position]:

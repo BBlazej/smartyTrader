@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.core.models import Position
-from src.dashboard.views import decision_stats, parse_positions, portfolio_chart
+from src.dashboard.views import agent_status, decision_stats, parse_positions, portfolio_chart
 
 
 def _dt(year: int, month: int, day: int) -> datetime:
@@ -21,6 +21,95 @@ def _dt(year: int, month: int, day: int) -> datetime:
 
 def _row(**kw) -> SimpleNamespace:
     return SimpleNamespace(**kw)
+
+
+def _naive(y: int, mo: int, d: int, h: int = 0, mi: int = 0) -> datetime:
+    """Naive-UTC timestamp with time, matching how SQLite stores heartbeats."""
+    return datetime(y, mo, d, h, mi, tzinfo=UTC).replace(tzinfo=None)
+
+
+class TestAgentStatus:
+    """Heartbeat-derived liveness: the state latch alone would show dead agents as running."""
+
+    _NOW = _naive(2026, 9, 21, 12)
+
+    def test_fresh_heartbeat_is_running(self) -> None:
+        assert (
+            agent_status(
+                enabled=True,
+                state="running",
+                last_cycle_at=self._NOW,
+                interval_minutes=5,
+                now=self._NOW,
+            )
+            == "running"
+        )
+
+    def test_stale_heartbeat_is_offline_despite_running_latch(self) -> None:
+        # 2x interval + 5min grace = 15min for a 5-min agent; one hour is clearly stale.
+        assert (
+            agent_status(
+                enabled=True,
+                state="running",
+                last_cycle_at=_naive(2026, 9, 21, 11),
+                interval_minutes=5,
+                now=self._NOW,
+            )
+            == "offline"
+        )
+
+    def test_heartbeat_within_grace_still_running(self) -> None:
+        assert (
+            agent_status(
+                enabled=True,
+                state="running",
+                last_cycle_at=_naive(2026, 9, 21, 11, 50),
+                interval_minutes=5,
+                now=self._NOW,
+            )
+            == "running"
+        )
+
+    def test_missing_heartbeat_is_offline(self) -> None:
+        assert (
+            agent_status(enabled=True, state="running", last_cycle_at=None, now=self._NOW)
+            == "offline"
+        )
+
+    def test_paused_latch_wins_over_staleness(self) -> None:
+        assert (
+            agent_status(
+                enabled=True,
+                state="paused",
+                last_cycle_at=_naive(2026, 9, 1),
+                now=self._NOW,
+            )
+            == "paused"
+        )
+
+    def test_disabled_wins_over_everything(self) -> None:
+        assert (
+            agent_status(
+                enabled=False,
+                state="running",
+                last_cycle_at=self._NOW,
+                now=self._NOW,
+            )
+            == "disabled"
+        )
+
+    def test_wide_interval_allows_longer_gap(self) -> None:
+        # 60-min interval → stale after max(120,10)+5 = 125min; a 90-min-old beat is fine.
+        assert (
+            agent_status(
+                enabled=True,
+                state="running",
+                last_cycle_at=_naive(2026, 9, 21, 10, 30),
+                interval_minutes=60,
+                now=self._NOW,
+            )
+            == "running"
+        )
 
 
 class TestParsePositions:

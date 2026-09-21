@@ -107,3 +107,17 @@ fixed unless explicitly marked.
     symbol specs not validated), `create_order` payloads carry no commission (fills tracked
     gross — §7.8 precedent), and position marks come from one-shot `getTickPrices`, not the
     streaming channel. **Status: implemented accordingly (§7.16).**
+
+## Found while using the dashboard (post-§7.19)
+
+14. **Dashboard showed stopped agents as "running"** (`src/dashboard/`): the health badge
+    rendered the raw `agent_control.state` latch, which records *intent* only — it keeps its
+    last value (`running`, or the default when no row exists) forever after the process dies,
+    and nothing checked the heartbeat. Now the badge shows an effective status derived in
+    `views.py::agent_status`: `disabled` → `paused` (latch) → `offline` when `last_cycle_at`
+    is missing or older than 2× the agent's `interval_minutes` (floored at 10 min, +5 min
+    grace) → else `running`. Related gap on the agent side: skipped cycles (market-hours
+    guard) returned before stamping the heartbeat, so a *live* stocks agent would have
+    false-alarmed offline overnight — `BaseTradingAgent.run_cycle` now records a heartbeat
+    on skip too. Pause returns earlier and needs none (the latch itself renders `paused`).
+    **Status: fixed.**

@@ -132,6 +132,10 @@ class BaseTradingAgent:
         skip = self._skip_cycle_reason()
         if skip is not None:
             self._logger.info("cycle skipped (market closed)", reason=skip)
+            # Still a heartbeat: the process is alive and ticking, so the dashboard's
+            # heartbeat-derived liveness (offline when stale) must not false-alarm
+            # during quiet market windows.
+            await self._record_health(None)
             return []
 
         self._logger.info("cycle start", symbols=self._symbols)

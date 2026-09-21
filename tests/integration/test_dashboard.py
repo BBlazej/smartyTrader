@@ -120,7 +120,20 @@ class TestMonitorPages:
         assert "10,100.00" in body  # total_value money-formatted
         assert "crypto" in body and "stocks" in body  # health cards for both agents
         assert "/api/portfolio.json" in body  # uPlot polling wired
+        # No heartbeat rows seeded → an enabled agent must NOT show as running.
+        assert "badge b-offline" in body
         _assert_no_secrets(body)
+
+    async def test_fresh_heartbeat_shows_running(self, env) -> None:
+        await env.storage.record_cycle_health("crypto")
+        body = (await env.client.get("/partials/health")).text
+        assert "badge b-running" in body
+        assert ">running</span>" in body
+
+    async def test_disabled_agent_shows_disabled(self, env) -> None:
+        # stocks_agent has enabled: false in the test settings.
+        body = (await env.client.get("/partials/health")).text
+        assert "disabled" in body
 
     async def test_positions_page_shows_open_position(self, env) -> None:
         body = (await env.client.get("/positions")).text

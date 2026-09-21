@@ -37,7 +37,7 @@ from ..core.control_config import (
     validate_overrides_payload,
 )
 from ..core.storage import Storage
-from .views import decision_stats, parse_positions, portfolio_chart
+from .views import agent_status, decision_stats, parse_positions, portfolio_chart
 
 logger = structlog.get_logger()
 
@@ -165,11 +165,22 @@ def create_dashboard_app(storage: Storage, settings: Settings) -> FastAPI:
         for agent in agents:
             control = await storage.get_agent_control(agent)
             agent_cfg = getattr(settings, f"{agent}_agent", None)
+            enabled = bool(getattr(agent_cfg, "enabled", False))
+            state = getattr(control, "state", "running") if control else "running"
+            last_cycle_at = getattr(control, "last_cycle_at", None) if control else None
             rows.append(
                 {
                     "name": agent,
-                    "enabled": bool(getattr(agent_cfg, "enabled", False)),
-                    "state": getattr(control, "state", "running") if control else "running",
+                    "enabled": enabled,
+                    "state": state,
+                    # Effective status: the latch is intent only — a dead agent keeps
+                    # its last "running" value, so liveness comes from heartbeat age.
+                    "status": agent_status(
+                        enabled=enabled,
+                        state=state,
+                        last_cycle_at=last_cycle_at,
+                        interval_minutes=int(getattr(agent_cfg, "interval_minutes", 5) or 5),
+                    ),
                     "close_all_requested": bool(
                         getattr(control, "close_all_requested", False) if control else False
                     ),
