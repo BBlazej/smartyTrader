@@ -107,7 +107,8 @@ fixed unless explicitly marked.
     in §7.16 code/docs: xAPI sizes positions in *lots* (≈1 share per lot for XTB equities,
     symbol specs not validated), `create_order` payloads carry no commission (fills tracked
     gross — §7.8 precedent), and position marks come from one-shot `getTickPrices`, not the
-    streaming channel. **Status: implemented accordingly (§7.16).**
+    streaming channel. **Status: implemented accordingly (§7.16); the stale
+    `xtb_executor.py` docstring residue was corrected in §7.30.**
 
 ## Found while using the dashboard (post-§7.19)
 

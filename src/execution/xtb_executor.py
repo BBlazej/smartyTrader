@@ -5,13 +5,15 @@ Implements the shared ``Executor`` protocol (``place_order``, ``get_positions``,
 is injected so this module is testable without a network connection or an approved
 XTB demo account.
 
-External blocker
-----------------
-XTB's xAPI requires an **approved demo account** plus an **OAuth2 flow** to obtain a
-token (see ``PLAN.md``). :class:`XTBClient` is that seam: a real xAPI client implements
-its three methods (``create_order``, ``cancel_order``, ``get_positions``,
-``get_balance``) and is passed to :class:`XTBExecutor`. Until that lands, the paper
-executor (``paper_executor.py``) remains the safe default.
+Wiring status (§7.16)
+---------------------
+The real client has landed: :class:`src.execution.xtb_client.XApiClient` speaks the
+xAPI WebSocket protocol (``wss://ws.xapi.pro/{demo,real}``, classic ``login`` auth
+with the account id + xAPI verification code — there is **no OAuth2 endpoint**).
+The stocks runner wires this executor only when ``xtb_execution.enabled`` AND both
+``XTB_ACCOUNT_ID``/``XTB_ACCOUNT_PASSWORD`` are set; anything missing keeps the
+paper executor (still the safe default), and the block is deliberately outside the
+dashboard's safe-config whitelist.
 """
 
 from __future__ import annotations
@@ -40,8 +42,8 @@ _STATUS_MAP: dict[str, str] = {
 class XTBClient(Protocol):
     """Minimal async xAPI surface the executor depends on.
 
-    A real xAPI client (OAuth2 + REST) implements these four methods; tests pass a
-    mock that satisfies this protocol.
+    Implemented for real by :class:`src.execution.xtb_client.XApiClient` (§7.16);
+    tests pass a mock satisfying this protocol — zero network, per project rules.
     """
 
     async def create_order(

@@ -211,11 +211,6 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
 
 ## Completed §7 items — B. High severity
 
-### §7.25 — Rehydrate FIFO PositionTracker ledgers across restarts — ✅ complete [R2-1.1, R3-H2, find #7]
-
-   - **Done ✅:** `rehydrate_paper_executor` now queries the full chronological filled-order history (`Storage.get_filled_orders()` — `status == "filled"`, id-ascending, optional symbol filter) and feeds it into `PaperExecutor.load_portfolio_state(cash, positions, fills=...)` as new `FillRecord`s (`execution/position_tracker.py`). Buys re-open lots **with their originating `decision_id`**, historical sells consume them FIFO — so a position opened before a restart still attributes closing-sell PnL back to its entry decision (`closed_entries`) instead of reporting a decision-less outcome. Stored orders carry no commission, so rebuilt lots are fee-free (documented); any quantity gap between replayed fills and the loaded book (e.g. order history pruned by §7.12 retention) is topped up with one synthetic lot per position at its `avg_entry_price`, keeping tracker and book consistent — exactly the pre-§7.25 fallback.
-   - **Tests:** `TestFillLedgerRehydration` in `test_rehydration.py` (two lots + partial sell before restart → post-restart tail-sell realizes FIFO basis of lot 2 with `{entry_decision_id: 2}` attribution; pruned-history fallback to synthetic lots) and a chronological/status-filter test for `get_filled_orders` in `test_storage.py`. 500 tests passing.
-
 ### §7.5 — Close the two no-op risk rules (drawdown; position size at the gate) — ✅ complete [R-H2]
 
    - **Done ✅ (drawdown, option b):** `RiskEngine._check_drawdown` is live: it tracks a high-water mark (`note_equity`, lazily seeded from the first reading) and rejects any active signal while equity is more than `risk.max_drawdown_pct` below the peak. Cross-restart persistence uses **SQLite**: `Storage.get_max_portfolio_value()` (MAX over `portfolio_snapshots.total_value`) seeds the engine at startup in both runners (`seed_peak_equity`, fail-soft), so a restart can't reset the guard. The engine stays a pure sync object — the peak is fed in from storage by the caller, mirroring `update_daily_value`.
@@ -234,22 +229,17 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `initial_cash` is config-driven — new `execution.initial_cash` (default 100 000) seeds a *fresh* paper portfolio only; after the first cycle the persisted snapshot wins. Both runners pass it to `PaperExecutor`.
    - **Tests:** `tests/unit/test_rehydration.py` (cash/positions/marks restored, no-snapshot and hook-less skips, baseline honesty after restart, streak+cooldown restored, recent win breaks streak, combined entry point) plus new storage query tests. 276 tests passing.
 
+### §7.25 — Rehydrate FIFO PositionTracker ledgers across restarts — ✅ complete [R2-1.1, R3-H2, find #7]
+
+   - **Done ✅:** `rehydrate_paper_executor` now queries the full chronological filled-order history (`Storage.get_filled_orders()` — `status == "filled"`, id-ascending, optional symbol filter) and feeds it into `PaperExecutor.load_portfolio_state(cash, positions, fills=...)` as new `FillRecord`s (`execution/position_tracker.py`). Buys re-open lots **with their originating `decision_id`**, historical sells consume them FIFO — so a position opened before a restart still attributes closing-sell PnL back to its entry decision (`closed_entries`) instead of reporting a decision-less outcome. Stored orders carry no commission, so rebuilt lots are fee-free (documented); any quantity gap between replayed fills and the loaded book (e.g. order history pruned by §7.12 retention) is topped up with one synthetic lot per position at its `avg_entry_price`, keeping tracker and book consistent — exactly the pre-§7.25 fallback.
+   - **Tests:** `TestFillLedgerRehydration` in `test_rehydration.py` (two lots + partial sell before restart → post-restart tail-sell realizes FIFO basis of lot 2 with `{entry_decision_id: 2}` attribution; pruned-history fallback to synthetic lots) and a chronological/status-filter test for `get_filled_orders` in `test_storage.py`. 500 tests passing.
+
 ### §7.26 — Config-driven loss-streak threshold in state rehydration — ✅ complete [R3-H1, find #15]
 
    - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
    - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
 
-### §7.27 — Clock injection for RiskEngine (backtest replay fidelity) — ✅ complete [R2-1.2, R3-M1, find #10]
-
-   - **Done ✅:** new `Clock` Protocol + `SystemClock` default in `risk_engine.py`; `DailyLossTracker`, `ConsecutiveLossTracker` and `RiskEngine.__init__` accept an optional clock (live paths unchanged — still `datetime.now(UTC)`). `DecisionReplayBacktester` now owns a `TimelineClock` that follows each candle/decision timestamp, and feeds every event's equity through `update_daily_value` (live parity with `BaseTradingAgent`), so multi-month replays get real per-day loss windows and market-time cooldowns instead of one continuous wall-clock "today".
-   - **Tests:** `TestClockInjection` in `test_risk_engine.py` (day rollover and cooldown expiry driven purely by a fake clock; default engine keeps live behavior) and `test_daily_loss_cap_resets_when_replay_day_advances` in `test_backtester.py` — an exact-numbers regression that pre-§7.27 rejected the third buy under a cumulative whole-window cap. 504 tests passing.
-
-### §7.29 — Test suite deprecation & async-mock warnings resolved — ✅ complete [R3-M2]
-
-   - **Done ✅:** `pytest` now runs with **zero warnings** (was 19). Root causes: (a) test helpers back-dating rows via raw `text("UPDATE ... SET timestamp = :old")` bound Python `datetime` params, which fall through to sqlite3's default datetime adapter (deprecated since 3.12); they now bind the string in SQLAlchemy's SQLite DATETIME format (`%Y-%m-%d %H:%M:%S.%f`) — typed ORM statements were never affected; (b) `_agent_with` in `test_control_plane.py` mocked `RiskEngine.update_daily_value` (a *synchronous* method) with an auto-created `AsyncMock` attribute, so the sync call produced an unawaited coroutine; the mock now pins a `MagicMock` mirroring the real signature. No production code changes were needed — both were test-side artifacts.
-   - **Files:** `tests/unit/test_storage.py` (two helpers), `tests/unit/test_control_api.py`, `tests/unit/test_control_plane.py`. 504 tests passing, no warnings.
-
-## Completed §7 items — C. Medium severity (§7.8–§7.16)
+## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.30)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*
 
@@ -324,6 +314,20 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Done ✅ (opt-in wiring):** the stocks runner builds `XTBExecutor(XApiClient)` only when `xtb_execution.enabled` AND both `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` are set; anything missing → paper stays with a warning naming what's absent. New validated `xtb_execution` config block (`account_type: demo|real` rejected otherwise); deliberately **not** in the dashboard safe-config whitelist — enabling real execution must stay a file+env change.
    - **Known limitations (documented, accepted):** volume is xAPI *lots* (≈1 share/lot for XTB equities; symbol specs not validated), fills tracked gross of commission (trade records carry fees, `create_order` doesn't — §7.8 precedent), and the streamer channel isn't subscribed — marks come from one-shot `getTickPrices` per positions fetch.
    - **Tests:** 17 in `tests/unit/test_xtb_client.py` (login ordering/args + failure, order payload shape buy/sell, spec-price fallback, rejection dict, poll-to-terminal, position marking incl. malformed records, reconnect/retry once then raise, logout-once, account_type/url guards) + 3 executor-selection tests in `test_run_stocks_agent.py`. **456 tests passing, ~93% coverage.**
+
+### §7.27 — Clock injection for RiskEngine (backtest replay fidelity) — ✅ complete [R2-1.2, R3-M1, find #10]
+
+   - **Done ✅:** new `Clock` Protocol + `SystemClock` default in `risk_engine.py`; `DailyLossTracker`, `ConsecutiveLossTracker` and `RiskEngine.__init__` accept an optional clock (live paths unchanged — still `datetime.now(UTC)`). `DecisionReplayBacktester` now owns a `TimelineClock` that follows each candle/decision timestamp, and feeds every event's equity through `update_daily_value` (live parity with `BaseTradingAgent`), so multi-month replays get real per-day loss windows and market-time cooldowns instead of one continuous wall-clock "today".
+   - **Tests:** `TestClockInjection` in `test_risk_engine.py` (day rollover and cooldown expiry driven purely by a fake clock; default engine keeps live behavior) and `test_daily_loss_cap_resets_when_replay_day_advances` in `test_backtester.py` — an exact-numbers regression that pre-§7.27 rejected the third buy under a cumulative whole-window cap. 504 tests passing.
+
+### §7.29 — Test suite deprecation & async-mock warnings resolved — ✅ complete [R3-M2]
+
+   - **Done ✅:** `pytest` now runs with **zero warnings** (was 19). Root causes: (a) test helpers back-dating rows via raw `text("UPDATE ... SET timestamp = :old")` bound Python `datetime` params, which fall through to sqlite3's default datetime adapter (deprecated since 3.12); they now bind the string in SQLAlchemy's SQLite DATETIME format (`%Y-%m-%d %H:%M:%S.%f`) — typed ORM statements were never affected; (b) `_agent_with` in `test_control_plane.py` mocked `RiskEngine.update_daily_value` (a *synchronous* method) with an auto-created `AsyncMock` attribute, so the sync call produced an unawaited coroutine; the mock now pins a `MagicMock` mirroring the real signature. No production code changes were needed — both were test-side artifacts.
+   - **Files:** `tests/unit/test_storage.py` (two helpers), `tests/unit/test_control_api.py`, `tests/unit/test_control_plane.py`. 504 tests passing, no warnings.
+
+### §7.30 — Update stale XTB executor protocol documentation — ✅ complete [R3-M3, find #13]
+
+   - **Done ✅ (docs):** `execution/xtb_executor.py` module + `XTBClient` Protocol docstrings no longer describe an OAuth2 blocker that never existed and a "until the real client lands" state — §7.16 shipped `xtb_client.py::XApiClient` (WebSocket xAPI, classic `login` auth) and the opt-in runner wiring; the docstrings now point at that reality (hosts, verification-code auth, `xtb_execution.enabled` + env-credential gate, paper still default).
 
 ## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19)
 
