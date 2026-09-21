@@ -29,6 +29,22 @@ class _Lot:
 
 
 @dataclass
+class FillRecord:
+    """A historical fill replayed into a tracker at startup (§7.25).
+
+    Deliberately fee-free: stored orders do not record commissions, so rebuilt
+    lots carry ``fee_paid=0`` — the cost basis and decision attribution are what
+    matter for post-restart outcome tracking.
+    """
+
+    symbol: str
+    side: str  # "buy" | "sell"
+    quantity: float
+    price: float
+    decision_id: int | None = None
+
+
+@dataclass
 class SellOutcome:
     """Result of consuming lots for a sell fill."""
 

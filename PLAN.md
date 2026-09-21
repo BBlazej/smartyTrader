@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-21):** 497 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.23, §7.24 and §7.26 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.25, §7.27–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-21):** 500 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.24 and §7.25–§7.26 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.27–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,13 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.17, §7.19–§7.24 and §7.26 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
-
-### High severity (open)
-
-25. **Rehydrate FIFO PositionTracker ledgers across restarts** ⏳ [R2-1.1, R3-H2, find #7]
-    - `PaperExecutor.load_portfolio_state` (and live executors) rehydrate cash and `Position` objects from SQLite, but do not rebuild `PositionTracker` lot ledgers. Positions opened prior to a restart lose entry price/lot history and decision IDs; subsequent closing sells report empty `closed_entries` and zero realized PnL.
-    - **Fix:** At startup in `core/rehydration.py`, query historical filled `orders` (which store `decision_id`, price, and quantity) and replay them into `PositionTracker`.
+> **This section lists only open work.** Items §7.1–§7.24 and §7.25–§7.26 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
 

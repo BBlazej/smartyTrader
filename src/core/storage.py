@@ -439,6 +439,21 @@ class Storage:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def get_filled_orders(self, symbol: str | None = None) -> list[OrderRow]:
+        """All *filled* orders in chronological order (insertion order).
+
+        Used at startup to replay the FIFO lot ledger into executors (§7.25):
+        rows carry ``side``, ``quantity``, ``price`` and the originating
+        ``decision_id``. Ids are monotonic with execution time for both paper
+        and venue paths (rows are written when the fill happens).
+        """
+        async with await self._session() as session:
+            stmt = select(OrderRow).where(OrderRow.status == "filled").order_by(OrderRow.id.asc())
+            if symbol:
+                stmt = stmt.where(OrderRow.symbol == symbol)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     # ── Portfolio Snapshots ───────────────────────────────────
 
     async def save_portfolio_snapshot(

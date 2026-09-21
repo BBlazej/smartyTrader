@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from ..core.models import OrderResult, OrderSide, Position
-from .position_tracker import PositionTracker
+from .position_tracker import FillRecord, PositionTracker
 
 
 class PaperExecutor:
@@ -238,21 +238,53 @@ class PaperExecutor:
         order.status = "cancelled"
         return True
 
-    def load_portfolio_state(self, cash: float, positions: list[Position]) -> None:
+    def load_portfolio_state(
+        self,
+        cash: float,
+        positions: list[Position],
+        fills: list[FillRecord] | None = None,
+    ) -> dict[str, int]:
         """Replace the book wholesale from persisted state (restart rehydration [§7.7]).
 
         Called once at startup by the runner — before any cycle has traded on this
         executor — so decisions/orders persisted in earlier runs reference trades
         that still exist, and the risk trackers can be seeded from real values.
+
+        ``fills`` (optional, chronological order) rebuilds the FIFO lot ledger
+        from historical filled orders, so positions opened before a restart keep
+        their per-lot cost basis **and entry decision ids** — closing sells after
+        the restart still report ``closed_entries`` for the "learn from your track
+        record" backfill (§7.25). Stored orders carry no commission, so rebuilt
+        lots are fee-free; any quantity gap between the replayed fills and the
+        loaded positions (pruned order history) is topped up with one synthetic
+        lot per position at its ``avg_entry_price``, keeping tracker and book
+        consistent. Returns counts for logging: ``replayed_fills`` / ``synthetic_lots``.
         """
         self._cash = cash
         self._positions = {p.symbol: p for p in positions}
 
-        # Rebuild one FIFO lot per loaded position so post-restart sells keep a
-        # correct cost basis (buy-side fees are already in the bankroll history).
-        self._tracker = PositionTracker()
+        tracker = PositionTracker()
+        replayed = 0
+        for f in fills or []:
+            if f.side == "buy":
+                tracker.on_buy(f.symbol, f.quantity, f.price, decision_id=f.decision_id)
+            elif f.side == "sell":
+                # Outcome PnL of historical sells was already backfilled into the
+                # decisions then; we only need the ledger state after them.
+                tracker.on_sell(f.symbol, f.quantity, f.price)
+            else:  # pragma: no cover - guard against bad rows
+                continue
+            replayed += 1
+
+        synthetic = 0
         for p in positions:
-            self._tracker.on_buy(p.symbol, p.quantity, p.avg_entry_price)
+            missing = p.quantity - tracker.quantity(p.symbol)
+            if missing > 1e-12:
+                tracker.on_buy(p.symbol, missing, p.avg_entry_price)
+                synthetic += 1
+
+        self._tracker = tracker
+        return {"replayed_fills": replayed, "synthetic_lots": synthetic}
 
     def update_price(self, symbol: str, new_price: float) -> None:
         """Re-mark an open position at the latest market price.

@@ -23,6 +23,7 @@ from typing import Any
 
 import structlog
 
+from ..execution.position_tracker import FillRecord
 from .models import Position
 from .risk_engine import RiskEngine
 from .storage import Storage
@@ -51,7 +52,28 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
         if row is None:
             return False
         positions = [Position(**p) for p in json.loads(row.positions_json or "[]")]
-        load(cash=float(row.cash), positions=positions)
+
+        # Replay historical fills into the FIFO ledger so open positions keep
+        # their per-lot basis + entry decision ids across restarts (§7.25).
+        # Fail-soft: without the history the executor falls back to one
+        # synthetic lot per position, i.e. pre-§7.25 behavior.
+        fills: list[FillRecord] | None = None
+        try:
+            fills = [
+                FillRecord(
+                    symbol=o.symbol,
+                    side=o.side,
+                    quantity=float(o.quantity),
+                    price=float(o.price),
+                    decision_id=o.decision_id,
+                )
+                for o in await storage.get_filled_orders()
+                if o.price is not None
+            ]
+        except Exception as exc:  # noqa: BLE001 — fill history is best-effort
+            logger.warning("failed to load filled-order history", error=str(exc))
+
+        counts = load(cash=float(row.cash), positions=positions, fills=fills)
     except Exception as exc:  # noqa: BLE001 — startup must not die on a bad row
         logger.warning("failed to rehydrate paper portfolio; starting fresh", error=str(exc))
         return False
@@ -59,6 +81,8 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
         "paper portfolio rehydrated from storage",
         cash=float(row.cash),
         positions=len(positions),
+        replayed_fills=(counts or {}).get("replayed_fills"),
+        synthetic_lots=(counts or {}).get("synthetic_lots"),
     )
     return True
 

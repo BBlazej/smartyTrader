@@ -306,6 +306,32 @@ class TestOrders:
 
         assert order_id > 0
 
+    async def test_get_filled_orders_chronological_and_filtered(
+        self, storage: Storage
+    ) -> None:
+        """§7.25: only fills, oldest first, optional symbol filter."""
+        for oid, status, symbol in (
+            ("o1", "filled", "BTC/USDT"),
+            ("o2", "rejected", "ETH/USDT"),
+            ("o3", "filled", "ETH/USDT"),
+            ("o4", "pending", "BTC/USDT"),
+            ("o5", "filled", "BTC/USDT"),
+        ):
+            await storage.save_order(
+                order_id=oid,
+                symbol=symbol,
+                side="buy",
+                quantity=1.0,
+                price=10.0,
+                status=status,
+            )
+
+        all_fills = await storage.get_filled_orders()
+        assert [o.order_id for o in all_fills] == ["o1", "o3", "o5"]
+
+        btc_only = await storage.get_filled_orders("BTC/USDT")
+        assert [o.order_id for o in btc_only] == ["o1", "o5"]
+
 
 class TestPortfolioSnapshots:
     @pytest.mark.asyncio

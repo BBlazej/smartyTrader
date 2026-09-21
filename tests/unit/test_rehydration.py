@@ -7,7 +7,7 @@ import json
 import pytest
 
 from src.core.config import RiskSettings
-from src.core.models import Position
+from src.core.models import OrderSide, Position
 from src.core.rehydration import (
     rehydrate_from_storage,
     rehydrate_paper_executor,
@@ -79,6 +79,74 @@ class TestPaperRehydration:
         await storage.initialize()
         try:
             assert await rehydrate_paper_executor(VenueExecutor(), storage) is False
+        finally:
+            await storage.close()
+
+
+class TestFillLedgerRehydration:
+    """§7.25: FIFO lots + entry decision ids survive a restart."""
+
+    async def test_closed_entries_survive_restart(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            book = PaperExecutor(initial_cash=100_000.0, slippage_pct=0.0)
+
+            # Pre-restart history: two buys (decisions 1 and 2), one partial sell.
+            b1 = await book.place_order("BTC/USDT", OrderSide.BUY, 0.5, 50_000.0, decision_id=1)
+            await storage.save_order(
+                order_id=b1.order_id, symbol="BTC/USDT", side="buy", quantity=0.5,
+                price=b1.price, status="filled", decision_id=1, filled_at=b1.filled_at,
+            )
+            b2 = await book.place_order("BTC/USDT", OrderSide.BUY, 0.5, 60_000.0, decision_id=2)
+            await storage.save_order(
+                order_id=b2.order_id, symbol="BTC/USDT", side="buy", quantity=0.5,
+                price=b2.price, status="filled", decision_id=2, filled_at=b2.filled_at,
+            )
+            s1 = await book.place_order("BTC/USDT", OrderSide.SELL, 0.7, 70_000.0)
+            await storage.save_order(
+                order_id=s1.order_id, symbol="BTC/USDT", side="sell", quantity=0.7,
+                price=s1.price, status="filled", decision_id=None, filled_at=s1.filled_at,
+            )
+            assert s1.realized_pnl == pytest.approx(12_000.0)
+
+            positions = await book.get_positions()
+            await storage.save_portfolio_snapshot(
+                cash=book.cash,
+                positions_json=_positions_json(*positions),
+                total_value=book.cash + sum(p.quantity * p.current_price for p in positions),
+            )
+
+            # Restart: fresh executor rehydrates cash, position AND lot ledger.
+            revived = PaperExecutor(initial_cash=100_000.0, slippage_pct=0.0)
+            assert await rehydrate_paper_executor(revived, storage) is True
+
+            s2 = await revived.place_order("BTC/USDT", OrderSide.SELL, 0.3, 80_000.0)
+            assert s2.status == "filled"
+            # Remaining 0.3 units are FIFO-wise the tail of lot 2 (@60k, decision 2).
+            assert s2.realized_pnl == pytest.approx((80_000.0 - 60_000.0) * 0.3)
+            entries = {e.entry_decision_id: e.pnl for e in s2.closed_entries}
+            assert entries == {2: pytest.approx(6_000.0)}
+        finally:
+            await storage.close()
+
+    async def test_pruned_history_falls_back_to_synthetic_lots(self, tmp_db_path: str) -> None:
+        """No stored fills → one synthetic lot per position at avg entry (basis kept)."""
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            held = Position(
+                symbol="ETH/USDT", quantity=2.0, avg_entry_price=20.0, current_price=22.0
+            )
+            await storage.save_portfolio_snapshot(
+                cash=100.0, positions_json=_positions_json(held), total_value=144.0
+            )
+
+            revived = PaperExecutor(initial_cash=1_000.0, slippage_pct=0.0)
+            assert await rehydrate_paper_executor(revived, storage) is True
+            sold = await revived.place_order("ETH/USDT", OrderSide.SELL, 2.0, 30.0)
+            assert sold.status == "filled"
+            assert sold.realized_pnl == pytest.approx((30.0 - 20.0) * 2.0)
         finally:
             await storage.close()
 

@@ -211,6 +211,11 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
 
 ## Completed §7 items — B. High severity
 
+### §7.25 — Rehydrate FIFO PositionTracker ledgers across restarts — ✅ complete [R2-1.1, R3-H2, find #7]
+
+   - **Done ✅:** `rehydrate_paper_executor` now queries the full chronological filled-order history (`Storage.get_filled_orders()` — `status == "filled"`, id-ascending, optional symbol filter) and feeds it into `PaperExecutor.load_portfolio_state(cash, positions, fills=...)` as new `FillRecord`s (`execution/position_tracker.py`). Buys re-open lots **with their originating `decision_id`**, historical sells consume them FIFO — so a position opened before a restart still attributes closing-sell PnL back to its entry decision (`closed_entries`) instead of reporting a decision-less outcome. Stored orders carry no commission, so rebuilt lots are fee-free (documented); any quantity gap between replayed fills and the loaded book (e.g. order history pruned by §7.12 retention) is topped up with one synthetic lot per position at its `avg_entry_price`, keeping tracker and book consistent — exactly the pre-§7.25 fallback.
+   - **Tests:** `TestFillLedgerRehydration` in `test_rehydration.py` (two lots + partial sell before restart → post-restart tail-sell realizes FIFO basis of lot 2 with `{entry_decision_id: 2}` attribution; pruned-history fallback to synthetic lots) and a chronological/status-filter test for `get_filled_orders` in `test_storage.py`. 500 tests passing.
+
 ### §7.5 — Close the two no-op risk rules (drawdown; position size at the gate) — ✅ complete [R-H2]
 
    - **Done ✅ (drawdown, option b):** `RiskEngine._check_drawdown` is live: it tracks a high-water mark (`note_equity`, lazily seeded from the first reading) and rejects any active signal while equity is more than `risk.max_drawdown_pct` below the peak. Cross-restart persistence uses **SQLite**: `Storage.get_max_portfolio_value()` (MAX over `portfolio_snapshots.total_value`) seeds the engine at startup in both runners (`seed_peak_equity`, fail-soft), so a restart can't reset the guard. The engine stays a pure sync object — the peak is fed in from storage by the caller, mirroring `update_daily_value`.
