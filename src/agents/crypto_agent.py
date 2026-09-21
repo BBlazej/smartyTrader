@@ -35,6 +35,9 @@ class CryptoAgent(BaseTradingAgent):
             llm_client=llm_client,
             symbols=pairs,
             timeframe=timeframe,
-            component="crypto_agent",
+            # Control-plane key must match the runner/dashboard/control-API name
+            # ("crypto") — an "_agent" suffix here silently orphaned latches and
+            # heartbeats from every consumer (nightly_finds #16).
+            component="crypto",
             alerts=alerts,
         )

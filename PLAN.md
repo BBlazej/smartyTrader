@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-21):** 504 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17 and §7.19–§7.27, §7.29 and §7.30 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.31–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-22):** 509 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27 and §7.29–§7.31 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.32–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -78,8 +78,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS). Per-cycle status reconciliation of orders left `open` remains unpinned.
 
 
-31. **End-to-end Control API <-> Agent loop integration test** ⏳ [R2-3.1]
-    - Write an integration test in `tests/integration/` verifying that `POST /api/agents/crypto/pause` and `close-all` pause cycles or execute emergency close in a running `BaseTradingAgent`.
 
 32. **APScheduler concurrency, misfire, and overlap tests** ⏳ [R2-3.2]
     - Add unit/integration tests in `tests/unit/test_scheduler.py` covering job misfire policies, cycle overlap prevention, and concurrent execution under errors.

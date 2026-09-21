@@ -239,7 +239,7 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
    - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
 
-## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.30)
+## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.31)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*
 
@@ -328,6 +328,12 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
 ### §7.30 — Update stale XTB executor protocol documentation — ✅ complete [R3-M3, find #13]
 
    - **Done ✅ (docs):** `execution/xtb_executor.py` module + `XTBClient` Protocol docstrings no longer describe an OAuth2 blocker that never existed and a "until the real client lands" state — §7.16 shipped `xtb_client.py::XApiClient` (WebSocket xAPI, classic `login` auth) and the opt-in runner wiring; the docstrings now point at that reality (hosts, verification-code auth, `xtb_execution.enabled` + env-credential gate, paper still default).
+
+### §7.31 — End-to-end Control API ↔ Agent loop integration test — ✅ complete (and it caught a live bug) [R2-3.1, find #16]
+
+   - **Done ✅:** new `tests/integration/test_control_loop.py` drives the **real** `create_control_app` FastAPI surface (in-process httpx ASGITransport) against a **real** `CryptoAgent` — real pipeline (only provider + LLM mocked), real `RiskEngine`, real `PaperExecutor`, real SQLite. Pins: HTTP pause halts cycles (no new decision rows), resume restarts them, `close-all` closes positions on the next cycle and clears its latch with the closing sell persisted + outcome backfilled to the entry decision, close-all executes even behind a pause latch, and the agent heartbeat is visible on the very row the API reads.
+   - **Bug found & fixed (nightly_finds #16):** `CryptoAgent`/`StocksAgent` passed `component="crypto_agent"`/`"stocks_agent"` to `BaseTradingAgent`, keying their `agent_control` row under names **no consumer used** — the runner, control API and dashboard all speak `crypto`/`stocks`. In production this meant pause/close-all latches were never read and heartbeats landed on orphan rows (dashboard health permanently `offline`). Unit tests missed it because they construct `BaseTradingAgent` directly with matching names. The subclasses now use the runner component names, and these integration tests pin the shared key.
+   - **Tests:** 5 new integration tests; suite at 509 passing, zero warnings.
 
 ## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19)
 

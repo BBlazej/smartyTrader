@@ -130,3 +130,19 @@ fixed unless explicitly marked.
     `rehydrate_risk_engine` checks `streak >= 3` instead of `risk_engine.settings.consecutive_losses_threshold`.
     If configured to a value other than 3 in `settings.yaml`, restart rehydration misapplies cooldown evaluation.
     **Status: open.**
+
+## Found while implementing §7.31 (control-loop integration test)
+
+16. **Agent control-plane key mismatch — latches never reached the real agents**
+    (`src/agents/crypto_agent.py`, `src/agents/stocks_agent.py`): both subclasses passed
+    `component="crypto_agent"` / `"stocks_agent"` to `BaseTradingAgent`, which keys the
+    `agent_control` row by that value. But every consumer — `run_agent(component="crypto")`,
+    the control API (`agent_name=component`), and the dashboard's configured agent list
+    (`["crypto", "stocks"]`) — uses `"crypto"` / `"stocks"`. Consequences in production:
+    pause/close-all latches written by the dashboard/control API were never read by the
+    running agents, and agent heartbeats stamped rows nobody watched (dashboard health
+    would show `offline` forever). Unit tests missed it because they construct
+    `BaseTradingAgent` directly with matching names; no test previously combined the real
+    subclasses with the control plane. **Status: fixed in §7.31** — subclass components are
+    now `"crypto"` / `"stocks"`, pinned by a new integration test that drives pause and
+    close-all through the actual control API against a real `CryptoAgent`.

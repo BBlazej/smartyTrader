@@ -134,7 +134,9 @@ class StocksAgent(BaseTradingAgent):
             llm_client=llm_client,
             symbols=symbols,
             timeframe=timeframe,
-            component="stocks_agent",
+            # Control-plane key must match the runner/dashboard/control-API name
+            # ("stocks") — see nightly_finds #16.
+            component="stocks",
             alerts=alerts,
         )
         self._market_hours = market_hours
