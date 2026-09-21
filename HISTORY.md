@@ -244,6 +244,11 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** new `Clock` Protocol + `SystemClock` default in `risk_engine.py`; `DailyLossTracker`, `ConsecutiveLossTracker` and `RiskEngine.__init__` accept an optional clock (live paths unchanged — still `datetime.now(UTC)`). `DecisionReplayBacktester` now owns a `TimelineClock` that follows each candle/decision timestamp, and feeds every event's equity through `update_daily_value` (live parity with `BaseTradingAgent`), so multi-month replays get real per-day loss windows and market-time cooldowns instead of one continuous wall-clock "today".
    - **Tests:** `TestClockInjection` in `test_risk_engine.py` (day rollover and cooldown expiry driven purely by a fake clock; default engine keeps live behavior) and `test_daily_loss_cap_resets_when_replay_day_advances` in `test_backtester.py` — an exact-numbers regression that pre-§7.27 rejected the third buy under a cumulative whole-window cap. 504 tests passing.
 
+### §7.29 — Test suite deprecation & async-mock warnings resolved — ✅ complete [R3-M2]
+
+   - **Done ✅:** `pytest` now runs with **zero warnings** (was 19). Root causes: (a) test helpers back-dating rows via raw `text("UPDATE ... SET timestamp = :old")` bound Python `datetime` params, which fall through to sqlite3's default datetime adapter (deprecated since 3.12); they now bind the string in SQLAlchemy's SQLite DATETIME format (`%Y-%m-%d %H:%M:%S.%f`) — typed ORM statements were never affected; (b) `_agent_with` in `test_control_plane.py` mocked `RiskEngine.update_daily_value` (a *synchronous* method) with an auto-created `AsyncMock` attribute, so the sync call produced an unawaited coroutine; the mock now pins a `MagicMock` mirroring the real signature. No production code changes were needed — both were test-side artifacts.
+   - **Files:** `tests/unit/test_storage.py` (two helpers), `tests/unit/test_control_api.py`, `tests/unit/test_control_plane.py`. 504 tests passing, no warnings.
+
 ## Completed §7 items — C. Medium severity (§7.8–§7.16)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*

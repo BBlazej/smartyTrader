@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -155,10 +155,15 @@ class TestApplyOverrides:
 
 
 def _agent_with(pipeline, stor):
+    risk_engine = AsyncMock()
+    # ``RiskEngine.update_daily_value`` is synchronous in the real class; an
+    # auto-created AsyncMock attribute would return a coroutine that base_agent
+    # (correctly) never awaits — pin the spec-mirroring sync mock instead (§7.29).
+    risk_engine.update_daily_value = MagicMock()
     return BaseTradingAgent(
         pipeline=pipeline,
         storage=stor,
-        risk_engine=AsyncMock(),
+        risk_engine=risk_engine,
         llm_client=AsyncMock(),
         symbols=["BTC/USDT"],
         timeframe="1h",

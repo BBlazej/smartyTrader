@@ -118,9 +118,11 @@ class TestReadEndpoints:
 
         old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
         async with await env.storage._session() as session:
+            # String bind in SQLAlchemy's SQLite DATETIME format — raw datetime
+            # params on text() SQL hit sqlite3's deprecated adapter (§7.29).
             await session.execute(
                 text("UPDATE llm_decisions SET timestamp = :old WHERE id = :rid"),
-                {"old": old, "rid": first},
+                {"old": old.strftime("%Y-%m-%d %H:%M:%S.%f"), "rid": first},
             )
             await session.commit()
 

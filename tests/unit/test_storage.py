@@ -246,9 +246,12 @@ class TestDecisionsInRange:
         )
         old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days_ago)
         async with await storage._session() as session:
+            # Bind as a string in SQLAlchemy's SQLite DATETIME format: raw
+            # datetime params on text() SQL hit sqlite3's deprecated default
+            # adapter (§7.29); typed ORM statements never do.
             await session.execute(
                 text("UPDATE llm_decisions SET timestamp = :old WHERE id = :rid"),
-                {"old": old, "rid": rid},
+                {"old": old.strftime("%Y-%m-%d %H:%M:%S.%f"), "rid": rid},
             )
             await session.commit()
         return rid
@@ -495,9 +498,11 @@ class TestPruning:
 
         old = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
         async with await storage._session() as session:
+            # String bind in SQLAlchemy's SQLite DATETIME format — see §7.29
+            # (raw datetime params on text() SQL hit sqlite3's deprecated adapter).
             await session.execute(
                 text(f"UPDATE {table} SET {column} = :old WHERE id = :rid"),
-                {"old": old, "rid": row_id},
+                {"old": old.strftime("%Y-%m-%d %H:%M:%S.%f"), "rid": row_id},
             )
             await session.commit()
 

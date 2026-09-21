@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.24) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-21):** 504 tests passing at ~93% coverage. §7.1–§7.17, §7.19–§7.28 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18 and §7.29–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-21):** 504 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17 and §7.19–§7.27, §7.29 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.30–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,15 +70,12 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.24 and §7.25–§7.26 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27 and §7.29 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
 
 28. **Live Kraken testnet smoke pass & order reconciliation** ⏳ [R1-H4, §7.6 follow-up, find #1]
     - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS). Per-cycle status reconciliation of orders left `open` remains unpinned.
-
-29. **Resolve test suite deprecation and async mock warnings** ⏳ [R3-M2]
-    - Fix 19 warnings during `pytest`: Python 3.12+ `aiosqlite` datetime adapter deprecation warnings, and an unawaited `AsyncMock` coroutine warning in `test_control_plane.py` (for synchronous `update_daily_value`).
 
 30. **Update stale XTB executor protocol documentation** ⏳ [R3-M3, find #13]
     - `src/execution/xtb_executor.py` docstring still references an obsolete OAuth2 requirement and paper-only default, despite §7.16 landing WebSocket xAPI execution over `wss://ws.xapi.pro`.
