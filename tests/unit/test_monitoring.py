@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from src.agents.crypto_agent import CryptoAgent
 from src.core.config import RiskSettings
@@ -34,6 +35,22 @@ class TestSetupLogging:
     def test_reconfigurable(self) -> None:
         setup_logging("WARNING")
         setup_logging("INFO")  # calling again must not raise
+
+    def test_line_format_timestamp_level_message(self, capsys: pytest.CaptureFixture) -> None:
+        import re
+        import time
+
+        setup_logging("INFO")
+        structlog.get_logger("fmt-test").info("hello", symbol="BTC/USDT", note="has space")
+        captured = capsys.readouterr()
+        line = (captured.out + captured.err).strip().splitlines()[-1]
+        assert re.match(
+            r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\[info\] hello "
+            r"symbol=BTC/USDT note='has space'$",
+            line,
+        )
+        # The stamp is this machine's local wall clock, not a placeholder.
+        assert line[1:5] == str(time.localtime().tm_year)
 
 
 # ── Noop sink ─────────────────────────────────────────────────
