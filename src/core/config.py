@@ -47,6 +47,14 @@ class LLMSettings:
         # Base delay for the exponential backoff between retry attempts; 0 disables
         # sleeping (used by tests).
         retry_backoff_base_seconds: float = 1.0,
+        # Deterministic-evaluation seed (§7.33): sent with every request when set
+        # (models that support it reproduce outputs; LM Studio honors `seed`).
+        # None omits the field entirely — provider default behavior.
+        seed: int | None = None,
+        # Upper bound on a raw completion's character count before parsing (§7.33):
+        # a runaway/degenerate generation is treated as a failed attempt, never
+        # fed into the signal parser.
+        max_response_chars: int = 20_000,
     ) -> None:
         env_endpoint = os.getenv("LM_STUDIO_ENDPOINT")
         self.endpoint = env_endpoint or endpoint
@@ -56,6 +64,8 @@ class LLMSettings:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.retry_backoff_base_seconds = retry_backoff_base_seconds
+        self.seed = seed
+        self.max_response_chars = max_response_chars
         # Opt-in: request a strict JSON response schema. Enable once you've
         # confirmed the local model supports ``response_format`` — some setups
         # reject it, which would otherwise force the safe HOLD fallback every cycle.

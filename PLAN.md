@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.38) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-22):** 514 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27 and §7.29–§7.32 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.33–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-22):** 518 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27 and §7.29–§7.33 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28 and §7.34–§7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -61,7 +61,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | XTB API access delayed | Stocks agent blocked | Start with crypto only; use yfinance for data even without execution |
 | Overfitting to paper trading | Live performance differs | Simulate fees/slippage; start small if going live |
 | Hallucinated indicators | Wrong decisions | Validate LLM output against computed values; include raw numbers in prompt |
-| LLM non-determinism | Backtest replay won't reproduce stored decisions | `temperature=0.2` set (not 0); **no seed** — pin `temperature=0` and a seed where the model allows, and log the full prompt+response for audit (still open — see §7.33) |
+| LLM non-determinism | Backtest replay won't reproduce stored decisions | `temperature=0.2` set (not 0); optional determinism `seed` shipped (§7.33, model permitting); full prompt+response audit logging in place — decision-replay backtests (§7.14) need no LLM at all |
 | Paper PnL is optimistic | Overstates strategy quality | Verify `PaperExecutor` fee/slippage defaults before trusting paper PnL against the §4.3 live-readiness gates |
 
 ---
@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27 and §7.29–§7.32 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27 and §7.29–§7.33 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
 
@@ -80,8 +80,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 
 
-33. **LLM response size guards and config seed parameter** ⏳ [R2-2.2, R2-2.4]
-    - Expose optional `seed` parameter in `LLMSettings` and `config/settings.yaml` for deterministic evaluation; add raw response size upper-bound checks in `llm_client.py` before parsing.
 
 ### Low severity / housekeeping (open)
 

@@ -239,7 +239,7 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
    - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
 
-## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.32)
+## Completed §7 items — C. Medium severity (§7.8–§7.16, §7.27, §7.29–§7.33)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*
 
@@ -339,6 +339,12 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
 
    - **Done ✅:** `TestRealSchedulerSemantics` in `tests/unit/test_scheduler.py` pins the behaviors `AsyncSchedulerManager.schedule_cycle`'s policy kwargs (`max_instances=1`, `coalesce=True`) promise, against a **real** `AsyncIOScheduler` on the test loop: a slow job outliving several ticks never overlaps itself yet later ticks still run; misfires during a long block collapse to a trickle instead of one replay per missed tick; a raising job keeps being scheduled (job survives its own errors); and a failing trading-cycle job does not disturb a second job (storage prune) on the same scheduler — mirroring the runner's two-job setup.
    - **Tests:** 4 new real-scheduler tests + a manager policy-kwargs assertion. 514 passing; timing margins verified stable over repeated runs.
+
+### §7.33 — LLM seed parameter + response size guard — ✅ complete [R2-2.2, R2-2.4]
+
+   - **Done ✅:** `LLMSettings.seed` (`int | None`, shipped as `seed: null` in `settings.yaml`) is sent with every chat request when set — the determinism knob for evaluating one model version repeatably (pairs with §7.19's `temperature`/`max_tokens`); omitted entirely when unset so provider defaults apply untouched.
+   - **Done ✅:** `llm.max_response_chars` (default 20 000, `0` disables) caps the raw completion length in `llm_client.py` *before* parsing — a runaway/degenerate generation fails the attempt like any other error (retry with backoff → safe HOLD fallback), never reaching `_parse_signal`. Deliberately **not** on the dashboard's `SafeConfigOverrides` whitelist.
+   - **Tests:** `TestSeedAndSizeGuard` in `test_llm_client.py` (seed omitted by default / sent when set; oversized response rejected on every attempt ending in a fallback HOLD naming "too large"; guard-off passthrough) plus shipped-config assertions in `test_config.py`. 518 passing.
 
 ## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19)
 

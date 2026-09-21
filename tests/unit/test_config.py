@@ -22,6 +22,9 @@ class TestSettingsLoad:
         assert s.llm.model == "qwen/qwen3.8-27b"
         assert s.risk.max_position_pct == 0.10
         assert s.risk.min_confidence == 0.6
+        # §7.33 knobs ship in settings.yaml and load cleanly.
+        assert s.llm.seed is None
+        assert s.llm.max_response_chars == 20_000
 
     def test_crypto_agent_config(self, config_path: str) -> None:
         s = Settings(config_path=config_path)

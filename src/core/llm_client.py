@@ -91,6 +91,11 @@ class LLMClient:
                     "max_tokens": self.settings.max_tokens,
                 }
 
+                # Optional determinism knob (§7.33) — omitted when unset so the
+                # provider default applies.
+                if self.settings.seed is not None:
+                    payload["seed"] = self.settings.seed
+
                 if effective_schema:
                     payload["response_format"] = {
                         "type": "json_schema",
@@ -102,6 +107,14 @@ class LLMClient:
 
                 data = resp.json()
                 raw_content = data["choices"][0]["message"]["content"]
+
+                # Size guard (§7.33): a runaway generation must fail the attempt
+                # (retry → eventual HOLD fallback), never reach the parser.
+                limit = self.settings.max_response_chars
+                if limit > 0 and len(raw_content) > limit:
+                    raise ValueError(
+                        f"LLM response too large: {len(raw_content)} chars > limit {limit}"
+                    )
 
                 # Audit trail (§3.3 / §7.8): the *full* prompt + response behind
                 # every live decision, not just the parsed action.
