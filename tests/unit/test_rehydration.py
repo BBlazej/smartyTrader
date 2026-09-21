@@ -134,6 +134,47 @@ class TestRiskEngineRehydration:
         finally:
             await storage.close()
 
+    async def test_cooldown_uses_configured_threshold_not_three(
+        self, risk_settings: RiskSettings, tmp_db_path: str
+    ) -> None:
+        """§7.26: a non-default threshold must be honored across restarts."""
+        risk_settings.consecutive_losses_threshold = 5
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            for pnl in (-5.0, -4.0, -3.0):
+                decision_id = await _save_decision(storage, "BTC/USDT")
+                await storage.set_realized_pnl(decision_id, pnl)
+
+            engine = RiskEngine(risk_settings)
+            await rehydrate_risk_engine(engine, storage)
+
+            # Streak survives the restart, but 3 < threshold 5 → no cooldown.
+            assert engine._loss_tracker.consecutive_losses == 3
+            assert not engine._loss_tracker.in_cooldown
+        finally:
+            await storage.close()
+
+    async def test_cooldown_restored_at_custom_threshold(
+        self, risk_settings: RiskSettings, tmp_db_path: str
+    ) -> None:
+        """§7.26: reaching the configured threshold re-arms the cooldown."""
+        risk_settings.consecutive_losses_threshold = 2
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            for pnl in (-5.0, -4.0):
+                decision_id = await _save_decision(storage, "BTC/USDT")
+                await storage.set_realized_pnl(decision_id, pnl)
+
+            engine = RiskEngine(risk_settings)
+            await rehydrate_risk_engine(engine, storage)
+
+            assert engine._loss_tracker.consecutive_losses == 2
+            assert engine._loss_tracker.in_cooldown
+        finally:
+            await storage.close()
+
     async def test_recent_win_breaks_the_streak(
         self, risk_settings: RiskSettings, tmp_db_path: str
     ) -> None:

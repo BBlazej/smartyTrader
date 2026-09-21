@@ -229,6 +229,11 @@ Moved verbatim from PLAN.md §7.A on 2026-09-17. Original item numbers (=§7.N) 
    - **Done ✅:** `initial_cash` is config-driven — new `execution.initial_cash` (default 100 000) seeds a *fresh* paper portfolio only; after the first cycle the persisted snapshot wins. Both runners pass it to `PaperExecutor`.
    - **Tests:** `tests/unit/test_rehydration.py` (cash/positions/marks restored, no-snapshot and hook-less skips, baseline honesty after restart, streak+cooldown restored, recent win breaks streak, combined entry point) plus new storage query tests. 276 tests passing.
 
+### §7.26 — Config-driven loss-streak threshold in state rehydration — ✅ complete [R3-H1, find #15]
+
+   - **Done ✅:** `rehydrate_risk_engine` no longer hardcodes `streak >= 3` when deciding whether a restarted losing streak should re-arm the cooldown; it reads `risk_engine.settings.consecutive_losses_threshold` (same config knob the live tracker uses since §7.19), so restart-time and in-process cooldown policy can never diverge.
+   - **Tests:** `test_cooldown_uses_configured_threshold_not_three` (streak of 3 with threshold 5 survives restart *without* cooldown) and `test_cooldown_restored_at_custom_threshold` (threshold 2 re-arms it) in `tests/unit/test_rehydration.py`. 497 tests passing.
+
 ## Completed §7 items — C. Medium severity (§7.8–§7.16)
 
 ### §7.8 — Decision-history quality: attribute outcomes to entry decisions; exclude fallback rows — ✅ complete [R-M2/M3] *(absorbs the earlier external-review item "Deferred #4")*

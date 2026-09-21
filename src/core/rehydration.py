@@ -69,9 +69,10 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
     * Baseline ← ``total_value`` of today's earliest portfolio snapshot (absent
       → left unset so it seeds lazily from the first fresh reading).
     * Losing streak ← trailing run of *closed* decisions (newest first) with a
-      negative realized PnL; at the configured threshold the cooldown restarts
-      from the newest loss's timestamp + ``consecutive_losses_cooldown_minutes``
-      if it has not already elapsed.
+      negative realized PnL; at the configured threshold
+      (``risk.consecutive_losses_threshold``, §7.26 — never a hardcoded 3) the
+      cooldown restarts from the newest loss's timestamp +
+      ``consecutive_losses_cooldown_minutes`` if it has not already elapsed.
     """
     try:
         first_today = await storage.get_first_portfolio_snapshot_of_day()
@@ -95,7 +96,8 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
             else:
                 break
         cooldown_until = None
-        if streak >= 3 and newest_loss_ts is not None:
+        threshold = risk_engine.settings.consecutive_losses_threshold
+        if streak >= threshold and newest_loss_ts is not None:
             cooldown_until = newest_loss_ts + timedelta(
                 minutes=risk_engine.settings.consecutive_losses_cooldown_minutes
             )
