@@ -27,4 +27,5 @@ data/agent_*.out.log
 data/*_agent.pid
 data/*.sqlite3
 data/*.sqlite
+data/backups/
 !data/.gitkeep

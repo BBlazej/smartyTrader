@@ -173,11 +173,19 @@ class StorageSettings:
         history_retention_days: int = 0,
         # How often the runners run the pruning job while alive.
         prune_interval_minutes: int = 1440,
+        # Point-in-time DB backups ahead of every prune pass (§7.35). Empty string
+        # disables them; otherwise each pass writes ``<dir>/<db-stem>-<UTC stamp>.db``
+        # via SQLite's online backup API BEFORE any rows are deleted.
+        backup_dir: str = "",
+        # How many backups to keep (oldest rotated out); 0 keeps everything.
+        backup_keep: int = 0,
     ) -> None:
         self.database_path = database_path
         self.snapshot_retention_days = snapshot_retention_days
         self.history_retention_days = history_retention_days
         self.prune_interval_minutes = prune_interval_minutes
+        self.backup_dir = backup_dir
+        self.backup_keep = backup_keep
 
 
 class MonitoringSettings:

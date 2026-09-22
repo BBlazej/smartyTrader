@@ -214,6 +214,24 @@ class Storage:
         await self._engine.dispose()
         self._closed = True
 
+    async def backup(self, dest_path: str) -> None:
+        """Point-in-time copy via SQLite's **online backup** API (§7.35).
+
+        Consistent even while other connections write (WAL included), and cheap
+        for this database's size. Used by the retention pass to snapshot the DB
+        *before* pruning anything away.
+        """
+        import aiosqlite
+
+        Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+        source = await aiosqlite.connect(self.database_path)
+        target = await aiosqlite.connect(str(dest_path))
+        try:
+            await source.backup(target)
+        finally:
+            await target.close()
+            await source.close()
+
     # ── Helpers ───────────────────────────────────────────────
 
     async def _session(self) -> AsyncSession:

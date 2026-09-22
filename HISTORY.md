@@ -353,7 +353,12 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Done ✅ (epsilon):** `_check_daily_loss` compares with a relative epsilon biased toward rejection — a drop float-rounding lands a hair short of the cap is still rejected; the guard never became more permissive.
    - **Tests:** new `tests/unit/test_indicator_math.py` (oracle-identity MACD incl. threshold/short cases, series-vs-prefix EMA equality, stock/crypto/short-curve annualization) and `TestDailyLossEpsilon` in `test_risk_engine.py`. 528 passing.
 
-## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.37)
+### §7.35 — Automated point-in-time SQLite backups before pruning — ✅ complete [R2-4.1]
+
+   - **Done ✅:** `Storage.backup(dest)` wraps SQLite's **online backup** API over aiosqlite (consistent even with WAL writers active), and `prune_storage` now runs an optional backup pass *before every prune* — timestamped `<backup_dir>/<db-stem>-<UTC stamp>.db`. Config: `storage.backup_dir` (shipped as `data/backups`, empty disables) and `storage.backup_keep` (rotation of the oldest, shipped at 14; 0 keeps all — rotation only ever touches files matching this DB's own prefix in that directory). Backup failures are fail-soft and never block pruning; the whole pass stays crash-safe as before.
+   - **Tests:** `TestDatabaseBackup` in `test_retention.py` — backup precedes deletion with the pruned row recoverable from the snapshot file, disabled-config writes nothing, rotation keeps only the newest N, and a failing backup still lets the prune run. 532 passing.
+
+## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.35, §7.37)
 
 ### §7.17 — Split `analysis/` out of `core/decision_pipeline.py` — ✅ complete
 

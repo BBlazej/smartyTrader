@@ -69,6 +69,10 @@ storage:
   snapshot_retention_days: 30
   history_retention_days: 0
   prune_interval_minutes: 1440   # how often runners prune while alive (startup always)
+  # §7.35: timestamped DB snapshot before EVERY prune (SQLite online backup).
+  # Set backup_dir to "" to disable; backup_keep rotates old backups (0 = keep all).
+  backup_dir: "data/backups"
+  backup_keep: 14
 
 monitoring:
   log_level: INFO
