@@ -84,6 +84,22 @@ class TestGetPositions:
         assert positions[0].current_price == 155.0
 
     @pytest.mark.asyncio
+    async def test_short_payloads_map_to_short_positions(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        """§7.38: xAPI side hint (and signed quantities) never fake a long."""
+        from src.core.models import PositionSide
+
+        mock_client.get_positions.return_value = [
+            {"symbol": "TSLA", "quantity": 4.0, "side": "short", "avg_entry_price": 200.0,
+             "current_price": 190.0},
+        ]
+        positions = await executor.get_positions()
+        assert positions[0].side == PositionSide.SHORT
+        assert positions[0].quantity == 4.0
+        assert positions[0].pnl == pytest.approx(40.0)  # short gains on the fall
+
+    @pytest.mark.asyncio
     async def test_skips_zero_quantity(self, executor: XTBExecutor, mock_client: AsyncMock) -> None:
         mock_client.get_positions.return_value = [
             {"symbol": "AAPL", "quantity": 0.0, "avg_entry_price": 150.0},

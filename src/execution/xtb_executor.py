@@ -23,7 +23,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from ..core.models import OrderResult, OrderSide, Position
+from ..core.models import OrderResult, OrderSide, Position, PositionSide
 from .position_tracker import PositionTracker
 
 logger = structlog.get_logger()
@@ -153,18 +153,26 @@ class XTBExecutor:
         raw_positions = await self._client.get_positions()
         positions: list[Position] = []
         for pos in raw_positions or []:
-            quantity = float(pos.get("quantity") or pos.get("contracts") or 0.0)
-            if quantity <= 0:
+            raw_qty = float(pos.get("quantity") or pos.get("contracts") or 0.0)
+            if raw_qty == 0.0:
                 continue
+            # xAPI volumes are positive with direction in ``side`` (§7.38);
+            # signed payloads are honored too. Shorts never masquerade as longs.
+            side = (
+                PositionSide.SHORT
+                if str(pos.get("side", "long")).lower() == "short" or raw_qty < 0
+                else PositionSide.LONG
+            )
             avg_entry = float(pos.get("avg_entry_price") or pos.get("entry_price") or 0.0)
             current = float(pos.get("current_price") or pos.get("mark_price") or avg_entry)
             levels = self._exit_levels.get(str(pos.get("symbol")))
             positions.append(
                 Position(
                     symbol=str(pos.get("symbol")),
-                    quantity=quantity,
+                    quantity=abs(raw_qty),
                     avg_entry_price=avg_entry,
                     current_price=current,
+                    side=side,
                     stop_loss=levels[0] if levels else None,
                     take_profit=levels[1] if levels else None,
                 )

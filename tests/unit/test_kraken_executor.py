@@ -100,6 +100,25 @@ class TestGetPositions:
         assert positions[0].current_price == 51000.0
 
     @pytest.mark.asyncio
+    async def test_shorts_map_honestly_not_as_fake_longs(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        """§7.38 (find #4): both ccxt short encodings land as side=SHORT."""
+        from src.core.models import PositionSide
+
+        mock_client.fetch_positions.return_value = [
+            {"symbol": "BTC/USDT", "contracts": -0.5, "entryPrice": 50_000.0, "markPrice": 49_000.0},
+            {"symbol": "ETH/USDT", "side": "short", "contracts": 2.0, "entryPrice": 2_500.0},
+        ]
+
+        positions = await executor.get_positions()
+        btc, eth = positions
+        assert btc.side == PositionSide.SHORT and btc.quantity == 0.5
+        # Short at 49k mark vs 50k entry → +500 unrealized (§7.38 pnl inversion).
+        assert btc.pnl == pytest.approx(500.0)
+        assert eth.side == PositionSide.SHORT and eth.quantity == 2.0
+
+    @pytest.mark.asyncio
     async def test_skips_zero_contracts(
         self, executor: KrakenExecutor, mock_client: AsyncMock
     ) -> None:

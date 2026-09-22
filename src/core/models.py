@@ -56,6 +56,15 @@ class DecisionRecord(BaseModel):
 # ── Risk Verdict ──────────────────────────────────────────────
 
 
+class PositionSide(str, Enum):
+    """Which way a position is exposed (§7.38). Spot-only today — everything
+``long``; the ``short`` half exists so margin/derivatives work can build on an
+honest model instead of encoding shorts as positive-quantity longs (find #4)."""
+
+    LONG = "long"
+    SHORT = "short"
+
+
 class RiskVerdict(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -73,9 +82,13 @@ class RiskResult(BaseModel):
 
 class Position(BaseModel):
     symbol: str
-    quantity: float
+    quantity: float  # always the absolute size; direction lives in ``side``
     avg_entry_price: float
     current_price: float
+    # §7.38 (find #4): explicit direction. Defaults to long, so every existing
+    # spot path and stored snapshot keeps working unchanged; a short maps here
+    # with POSITIVE quantity and side=SHORT — never a fake long.
+    side: PositionSide = PositionSide.LONG
     # Deterministic exit levels carried from the entry signal (§7.9). The pipeline
     # closes the position when the mark price breaches them, without consulting
     # the LLM. ``None`` = level not set. Stored with portfolio snapshots, so they
@@ -84,14 +97,19 @@ class Position(BaseModel):
     take_profit: float | None = None
 
     @property
+    def _direction(self) -> float:
+        return -1.0 if self.side == PositionSide.SHORT else 1.0
+
+    @property
     def pnl(self) -> float:
-        return (self.current_price - self.avg_entry_price) * self.quantity
+        # Shorts gain when price falls below entry (§7.38).
+        return (self.current_price - self.avg_entry_price) * self.quantity * self._direction
 
     @property
     def pnl_pct(self) -> float:
         if self.avg_entry_price == 0:
             return 0.0
-        return (self.current_price - self.avg_entry_price) / self.avg_entry_price
+        return (self.current_price - self.avg_entry_price) / self.avg_entry_price * self._direction
 
 
 class PortfolioState(BaseModel):
@@ -100,7 +118,12 @@ class PortfolioState(BaseModel):
 
     @property
     def total_value(self) -> float:
-        position_value = sum(p.quantity * p.current_price for p in self.positions)
+        # Shorts are carried as a liability at the close price (proceeds of the
+        # opening sell already sit in cash) — §7.38.
+        position_value = sum(
+            p.quantity * p.current_price * (-1.0 if p.side == PositionSide.SHORT else 1.0)
+            for p in self.positions
+        )
         return self.cash + position_value
 
     @property

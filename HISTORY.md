@@ -358,7 +358,15 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Done ✅:** `Storage.backup(dest)` wraps SQLite's **online backup** API over aiosqlite (consistent even with WAL writers active), and `prune_storage` now runs an optional backup pass *before every prune* — timestamped `<backup_dir>/<db-stem>-<UTC stamp>.db`. Config: `storage.backup_dir` (shipped as `data/backups`, empty disables) and `storage.backup_keep` (rotation of the oldest, shipped at 14; 0 keeps all — rotation only ever touches files matching this DB's own prefix in that directory). Backup failures are fail-soft and never block pruning; the whole pass stays crash-safe as before.
    - **Tests:** `TestDatabaseBackup` in `test_retention.py` — backup precedes deletion with the pruned row recoverable from the snapshot file, disabled-config writes nothing, rotation keeps only the newest N, and a failing backup still lets the prune run. 532 passing.
 
-## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.35, §7.37)
+### §7.38 — Short-side position model & multi-side FIFO tracking — ✅ complete [R3-L2, find #4, find #9]
+
+   - **Done ✅ (model):** `Position.side` (`PositionSide` StrEnum, default `long`) with absolute `quantity`; `pnl`/`pnl_pct` invert for shorts and `PortfolioState.total_value` carries short exposure as a liability at the close price. Defaults keep every spot path and every stored snapshot working untouched (side round-trips through portfolio JSON).
+   - **Done ✅ (tracker):** `PositionTracker` gains an explicit second ledger — `open_short()` / `cover()` with the same FIFO, fee pro-rating and `closed_entries` decision attribution as the long book; plus `short_quantity()`. Sides are *never inferred from buy/sell verbs* (find #9): direction is chosen by the executor, so a spot sell can't accidentally open a short.
+   - **Done ✅ (venues, find #4):** `KrakenExecutor.get_positions` now maps ccxt shorts honestly — negative contracts *or* an explicit `side: "short"` payload → `PositionSide.SHORT` with absolute quantity, never a positive-quantity long. `XTBExecutor`/`XApiClient` likewise carry xAPI's direction (opening `cmd`) through the position payload.
+   - **Scope note:** groundwork for margin/derivatives — no executor opens shorts today, and the risk engine still guards the spot book only; wiring short *trading* into signals/risk remains future work.
+   - **Tests:** short-side classes in `test_models.py` (pnl inversion, liability valuation, JSON round-trip), `TestShortSide` in `test_position_tracker.py` (profit/loss, FIFO attribution across lots, fee splits, untracked cover reports nothing, independent sides on one symbol), venue mapping tests in `test_kraken_executor.py` / `test_xtb_executor.py`, and a client payload assertion in `test_xtb_client.py`. 545 passing.
+
+## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.35, §7.37, §7.38)
 
 ### §7.17 — Split `analysis/` out of `core/decision_pipeline.py` — ✅ complete
 

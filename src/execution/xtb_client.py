@@ -342,6 +342,9 @@ class XApiClient:
                 {
                     "symbol": symbol,
                     "quantity": float(record.get("volume", 0.0)),
+                    # xAPI keeps volume positive; direction is the opening cmd
+                    # (§7.38) — expose it so the executor maps shorts honestly.
+                    "side": "long" if int(record.get("cmd", 0)) == _CMD_BUY else "short",
                     "avg_entry_price": float(record.get("open_price", 0.0)),
                     "current_price": current or None,
                     "profit": float(record.get("profit", 0.0) or 0.0),

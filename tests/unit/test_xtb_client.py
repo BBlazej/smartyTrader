@@ -185,6 +185,9 @@ class TestPositionsAndBalance:
         assert long_pos["avg_entry_price"] == 100.0
         assert long_pos["current_price"] == 110.0  # longs mark at the bid
         assert short_pos["current_price"] == 191.0  # shorts mark at the ask
+        # §7.38: direction from the opening cmd rides along in the payload.
+        assert long_pos["side"] == "long"
+        assert short_pos["side"] == "short"
 
     async def test_positions_without_quotes_fall_back_gracefully(self) -> None:
         t = FakeTransport(

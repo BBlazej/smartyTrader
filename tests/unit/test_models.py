@@ -79,6 +79,24 @@ class TestPortfolioState:
 
         assert portfolio.total_value == 10000.0 + 10 * 160.0
 
+    def test_total_value_counts_shorts_as_liability(self) -> None:
+        """§7.38: short exposure subtracts (opening proceeds already in cash)."""
+        from src.core.models import PositionSide
+
+        portfolio = PortfolioState(
+            cash=11_000.0,  # includes 10×100 short proceeds
+            positions=[
+                Position(
+                    symbol="AAPL",
+                    quantity=10,
+                    avg_entry_price=100.0,
+                    current_price=90.0,
+                    side=PositionSide.SHORT,
+                ),
+            ],
+        )
+        assert portfolio.total_value == pytest.approx(11_000.0 - 10 * 90.0)
+
     def test_unrealized_pnl_positive(self) -> None:
         portfolio = PortfolioState(
             cash=5000.0,
@@ -107,6 +125,47 @@ class TestPortfolioState:
 
 
 class TestPosition:
+    def test_default_side_is_long(self) -> None:
+        pos = Position(symbol="X", quantity=1, avg_entry_price=10.0, current_price=12.0)
+        assert pos.side.value == "long"
+
+    def test_short_pnl_inverted(self) -> None:
+        """§7.38: a short gains when price falls below entry."""
+        from src.core.models import PositionSide
+
+        pos = Position(
+            symbol="X",
+            quantity=2.0,
+            avg_entry_price=100.0,
+            current_price=90.0,
+            side=PositionSide.SHORT,
+        )
+        assert pos.pnl == pytest.approx(20.0)
+        assert pos.pnl_pct == pytest.approx(0.10)
+
+    def test_short_loses_when_price_rises(self) -> None:
+        from src.core.models import PositionSide
+
+        pos = Position(
+            symbol="X",
+            quantity=2.0,
+            avg_entry_price=100.0,
+            current_price=110.0,
+            side=PositionSide.SHORT,
+        )
+        assert pos.pnl == pytest.approx(-20.0)
+
+    def test_side_survives_json_round_trip(self) -> None:
+        """Stored portfolio snapshots must keep the direction (§7.38)."""
+        from src.core.models import PositionSide
+
+        pos = Position(
+            symbol="X", quantity=1, avg_entry_price=5.0, current_price=4.0, side=PositionSide.SHORT
+        )
+        restored = Position(**pos.model_dump(mode="json"))
+        assert restored.side == PositionSide.SHORT
+        assert restored.pnl == pytest.approx(1.0)
+
     def test_pnl_pct(self) -> None:
         pos = Position(symbol="X", quantity=1, avg_entry_price=100.0, current_price=120.0)
 

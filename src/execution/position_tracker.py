@@ -54,10 +54,18 @@ class SellOutcome:
 
 
 class PositionTracker:
-    """Per-symbol FIFO cost-basis ledger fed with an executor's own fills."""
+    """Per-symbol FIFO cost-basis ledger fed with an executor's own fills.
+
+    Two ledgers per symbol (§7.38, find #9): the long book (``on_buy``/``on_sell``,
+    what every spot executor uses today) and an explicit short book
+    (``open_short``/``cover``) for margin/derivatives adapters. The sides are
+    deliberately *not* inferred from buy/sell verbs — a spot executor's sell can
+    never accidentally open a short; direction is chosen by the caller.
+    """
 
     def __init__(self) -> None:
         self._lots: dict[str, list[_Lot]] = {}
+        self._short_lots: dict[str, list[_Lot]] = {}
 
     def quantity(self, symbol: str) -> float:
         return sum(lot.quantity for lot in self._lots.get(symbol, []))
@@ -108,6 +116,63 @@ class PositionTracker:
 
         if not lots:
             self._lots.pop(symbol, None)
+
+        outcome.closed_entries = [
+            ClosedEntry(entry_decision_id=decision_id, pnl=pnl)
+            for decision_id, pnl in per_entry.items()
+        ]
+        return outcome
+
+    # ── Short side (§7.38) ─────────────────────────────
+
+    def short_quantity(self, symbol: str) -> float:
+        return sum(lot.quantity for lot in self._short_lots.get(symbol, []))
+
+    def open_short(
+        self,
+        symbol: str,
+        quantity: float,
+        price: float,
+        fee: float = 0.0,
+        decision_id: int | None = None,
+    ) -> None:
+        """Record a short-opening sell fill as a new FIFO short lot (§7.38)."""
+        if quantity <= 0:
+            return
+        lots = self._short_lots.setdefault(symbol, [])
+        lots.append(_Lot(quantity=quantity, price=price, fee_paid=fee, decision_id=decision_id))
+
+    def cover(self, symbol: str, quantity: float, price: float, fee: float = 0.0) -> SellOutcome:
+        """Consume ``quantity`` short lots FIFO at the covering buy ``price``.
+
+        Short PnL is inverted: profit when the cover price sits *below* the
+        entry. Attribution works exactly like :meth:`on_sell` — each consumed
+        lot carries its opening ``decision_id``, and fees split pro-rata.
+        """
+        outcome = SellOutcome()
+        remaining = quantity
+        lots = self._short_lots.get(symbol, [])
+        per_entry: dict[int | None, float] = {}
+
+        while remaining > 0 and lots:
+            lot = lots[0]
+            take = min(lot.quantity, remaining)
+            gross = (lot.price - price) * take  # short: entry minus cover
+            open_fee_share = lot.fee_paid * (take / lot.quantity) if lot.quantity > 0 else 0.0
+            cover_fee_share = fee * (take / quantity) if quantity > 0 else 0.0
+            net = gross - open_fee_share - cover_fee_share
+
+            outcome.gross_pnl += gross
+            outcome.net_pnl += net
+            per_entry[lot.decision_id] = per_entry.get(lot.decision_id, 0.0) + net
+
+            lot.quantity -= take
+            remaining -= take
+            if lot.quantity <= 1e-12:
+                lots.pop(0)
+
+        if not lots:
+            self._short_lots.pop(symbol, None)
 
         outcome.closed_entries = [
             ClosedEntry(entry_decision_id=decision_id, pnl=pnl)

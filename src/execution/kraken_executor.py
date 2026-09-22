@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from ..core.models import OrderResult, OrderSide, Position
+from ..core.models import OrderResult, OrderSide, Position, PositionSide
 from .position_tracker import PositionTracker
 
 logger = structlog.get_logger()
@@ -199,18 +199,29 @@ class KrakenExecutor:
             return []
         positions: list[Position] = []
         for pos in raw_positions or []:
-            quantity = float(pos.get("contracts") or pos.get("amount") or 0.0)
-            if quantity <= 0:
+            raw_qty = float(pos.get("contracts") or pos.get("amount") or 0.0)
+            if raw_qty == 0.0:
                 continue
+            # §7.38 (find #4): ccxt encodes shorts either as negative contracts
+            # (net-position payloads) or via the ``side`` field (detail payloads).
+            # They map honestly to side=SHORT with an absolute quantity — never a
+            # positive-quantity long in disguise.
+            raw_side = str(pos.get("side") or "").lower()
+            side = (
+                PositionSide.SHORT
+                if raw_side == "short" or raw_qty < 0
+                else PositionSide.LONG
+            )
             avg_entry = float(pos.get("entryPrice") or pos.get("averageCost") or 0.0)
             current = float(pos.get("markPrice") or pos.get("entryPrice") or avg_entry)
             levels = self._exit_levels.get(str(pos.get("symbol")))
             positions.append(
                 Position(
                     symbol=str(pos.get("symbol")),
-                    quantity=quantity,
+                    quantity=abs(raw_qty),
                     avg_entry_price=avg_entry,
                     current_price=current,
+                    side=side,
                     stop_loss=levels[0] if levels else None,
                     take_profit=levels[1] if levels else None,
                 )

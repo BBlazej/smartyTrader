@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.38) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-22):** 532 tests passing at ~93% coverage, zero pytest warnings. §7.1–§7.17, §7.19–§7.27, §7.29–§7.33, §7.35 and §7.37 are complete (see [HISTORY.md](HISTORY.md)). Open items §7.18, §7.28, §7.34, §7.36 and §7.38 reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-22):** 545 tests passing at ~93% coverage, zero pytest warnings. All of §7 except §7.18 (optional enrichment), §7.28 (keyed Kraken-testnet run — needs a network-enabled environment), §7.34 (venue-side OCO) and §7.36 (storage decomposition) is complete (see [HISTORY.md](HISTORY.md)). The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), and **2026-09-21** (`external_review3.md`). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27 and §7.29–§7.33 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.38 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Medium severity (open)
 
@@ -95,6 +95,5 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 
 
-38. **Short-side position model support & multi-side FIFO tracking** ⏳ [R3-L2, find #4, find #9]
-    - Add an explicit `side` (long/short) field to `Position` model in `core/models.py` and extend `PositionTracker` for short opening/closing lots if margin/derivatives trading is added.
+
 
