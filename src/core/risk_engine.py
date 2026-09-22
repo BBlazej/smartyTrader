@@ -290,7 +290,12 @@ class RiskEngine:
         self._daily_tracker.update_latest_value(portfolio.total_value)
 
         pnl_pct = self._daily_tracker.daily_pnl_pct
-        if pnl_pct is not None and pnl_pct <= -self.settings.daily_loss_limit_pct:
+        # Epsilon tolerance at the boundary (find #3, §7.37), biased *toward*
+        # rejection: a drop that float rounding lands a hair short of the cap is
+        # still treated as breaching it. Exact-boundary comparisons stop being
+        # round-luck while the guard never gets more permissive.
+        threshold = self.settings.daily_loss_limit_pct * (1.0 - 1e-9)
+        if pnl_pct is not None and pnl_pct <= -threshold:
             return RiskResult(
                 verdict=RiskVerdict.REJECTED,
                 reason=f"Daily loss {pnl_pct:.2%} exceeds limit {-self.settings.daily_loss_limit_pct:.2%}",

@@ -101,7 +101,13 @@ def _compute_rsi(closes: list[float], period: int = 14) -> float | None:
 def _compute_macd(
     closes: list[float],
 ) -> tuple[float | None, float | None, float | None]:
-    """Compute MACD line, signal line, and histogram."""
+    """Compute MACD line, signal line, and histogram.
+
+    O(N): the EMA *series* is walked once per period (§7.37, find #11's math
+    half — the old prefix-reslice loop was O(N²) on long stock histories).
+    Values are bit-identical to recomputing :func:`_ema` per prefix, since each
+    entry of the series *is* the EMA of that prefix.
+    """
     if len(closes) < 26:
         return None, None, None
 
@@ -113,19 +119,36 @@ def _compute_macd(
 
     macd_line = ema_12 - ema_26
 
-    # Signal line — EMA of MACD values (simplified: use last N MACD values)
-    macd_values: list[float] = []
-    for i in range(26, len(closes) + 1):
-        chunk = closes[:i]
-        e12 = _ema(chunk, 12)
-        e26 = _ema(chunk, 26)
-        if e12 is not None and e26 is not None:
-            macd_values.append(e12 - e26)
+    # Signal line — EMA of the MACD series (from the first index both EMAs exist,
+    # i.e. prefixes of length 26..N, exactly as before).
+    e12_series = _ema_series(closes, 12)
+    e26_series = _ema_series(closes, 26)
+    macd_values = [
+        e12 - e26
+        for e12, e26 in zip(e12_series[25:], e26_series[25:])
+        if e12 is not None and e26 is not None
+    ]
 
     signal_line = _ema(macd_values, 9) if len(macd_values) >= 9 else macd_line
     histogram = macd_line - (signal_line or 0)
 
     return macd_line, signal_line, histogram
+
+
+def _ema_series(values: list[float], period: int) -> list[float | None]:
+    """Running EMA of every prefix: ``out[k]`` is the EMA of ``values[:k+1]``
+    (``None`` while fewer than ``period`` seeds exist). One pass, O(N) (§7.37)."""
+    out: list[float | None] = [None] * len(values)
+    if len(values) < period:
+        return out
+
+    multiplier = 2.0 / (period + 1)
+    ema = sum(values[:period]) / period  # Start with SMA
+    out[period - 1] = ema
+    for k in range(period, len(values)):
+        ema = (values[k] - ema) * multiplier + ema
+        out[k] = ema
+    return out
 
 
 def _ema(values: list[float], period: int) -> float | None:

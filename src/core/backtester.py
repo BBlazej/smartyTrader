@@ -15,9 +15,11 @@ The risk engine runs on a **timeline clock** (§7.27): its daily-loss windows an
 cooldowns advance with candle/decision timestamps, so a multi-month replay gets
 real per-day caps instead of one continuous wall-clock "today".
 
-Known simplifications (documented deliberately):
-* Equity-curve Sharpe annualizes by the candle timeframe's nominal periods/year;
-  stocks have weekends/gaps, so it is an approximation.
+Sharpe annualization is **calendar-aware** (§7.37): when the equity curve itself
+spans enough history, periods-per-year is inferred from its realized cadence —
+daily stock series land near ~252 trading periods instead of the nominal 365 that
+overstates stock Sharpe relative to crypto; sparse/short curves fall back to the
+nominal timeframe table.
 
 Metrics: total return vs buy-and-hold benchmark, win rate, avg win/loss, max drawdown,
 Sharpe, per-symbol breakdown. The CLI lives in ``scripts/backtest.py``.
@@ -349,8 +351,10 @@ class DecisionReplayBacktester:
             else 0.0
         )
         max_dd = max_drawdown([value for _, value in curve])
+        nominal_ppy = _PERIODS_PER_YEAR.get(timeframe, 365.0)
         sharpe = sharpe_ratio(
-            [value for _, value in curve], _PERIODS_PER_YEAR.get(timeframe, 365.0)
+            [value for _, value in curve],
+            estimate_periods_per_year(curve, nominal_ppy),
         )
 
         closed = self._wins + self._losses
@@ -411,6 +415,27 @@ def max_drawdown(values: list[float]) -> float:
         if peak > 0:
             max_dd = max(max_dd, (peak - value) / peak)
     return max_dd
+
+
+def estimate_periods_per_year(points: list[tuple[datetime, float]], nominal: float) -> float:
+    """Calendar-aware annualization for :func:`sharpe_ratio` (§7.37).
+
+    Infers the realized periods/year from the curve's own span and point count,
+    so a daily *stock* series (weekends/holidays missing) lands near ~252 rather
+    than the nominal 365 — stock Sharpes stop being inflated against crypto.
+    Falls back to ``nominal`` when the curve is too short to say anything
+    (< 10 points or degenerate span) or its cadence is implausible (> 2× off,
+    e.g. event bursts in a short window).
+    """
+    if len(points) < 10:
+        return nominal
+    span_days = (points[-1][0] - points[0][0]).total_seconds() / 86_400.0
+    if span_days <= 0:
+        return nominal
+    estimate = len(points) / (span_days / 365.25)
+    if not (nominal / 2.0 <= estimate <= nominal * 2.0):
+        return nominal
+    return estimate
 
 
 def sharpe_ratio(values: list[float], periods_per_year: float) -> float:

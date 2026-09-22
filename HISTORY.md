@@ -346,7 +346,14 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Done ✅:** `llm.max_response_chars` (default 20 000, `0` disables) caps the raw completion length in `llm_client.py` *before* parsing — a runaway/degenerate generation fails the attempt like any other error (retry with backoff → safe HOLD fallback), never reaching `_parse_signal`. Deliberately **not** on the dashboard's `SafeConfigOverrides` whitelist.
    - **Tests:** `TestSeedAndSizeGuard` in `test_llm_client.py` (seed omitted by default / sent when set; oversized response rejected on every attempt ending in a fallback HOLD naming "too large"; guard-off passthrough) plus shipped-config assertions in `test_config.py`. 518 passing.
 
-## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19)
+### §7.37 — Calendar-aware Sharpe annualization, O(N) MACD, daily-loss epsilon — ✅ complete [R3-L3, R3-L4, find #3, find #11]
+
+   - **Done ✅ (Sharpe):** new `backtester.py::estimate_periods_per_year` infers the equity curve's realized cadence (points ÷ span-years), so daily *stock* series annualize near ~252 trading periods instead of the nominal 365 that inflated stock Sharpes against crypto; falls back to the nominal timeframe table when the curve is too short (<10 points), degenerate, or >2× implausible.
+   - **Done ✅ (MACD O(N)):** `_compute_macd` no longer re-slices and recomputes both EMAs per prefix (O(N²) on 6-month stock histories); a new `_ema_series` walks each period once — `out[k]` *is* the EMA of `values[:k+1]`, so results are **bit-identical** to the old loop (pinned against a verbatim reference implementation).
+   - **Done ✅ (epsilon):** `_check_daily_loss` compares with a relative epsilon biased toward rejection — a drop float-rounding lands a hair short of the cap is still rejected; the guard never became more permissive.
+   - **Tests:** new `tests/unit/test_indicator_math.py` (oracle-identity MACD incl. threshold/short cases, series-vs-prefix EMA equality, stock/crypto/short-curve annualization) and `TestDailyLossEpsilon` in `test_risk_engine.py`. 528 passing.
+
+## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.37)
 
 ### §7.17 — Split `analysis/` out of `core/decision_pipeline.py` — ✅ complete
 

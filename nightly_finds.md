@@ -24,7 +24,9 @@ fixed unless explicitly marked.
    drop of *exactly* `-2.000…%` trips it depends on float rounding of the specific
    values. Not wrong, but tests asserting the exact boundary are brittle (one
    property test had to widen its range). Consider `>=` with a small epsilon or
-   documenting "strictly beyond". **Status: open.**
+   documenting "strictly beyond". **Status: fixed in §7.37** — the comparison now
+   carries a relative epsilon biased toward rejection (rounding can never buy an
+   approval at the cap), pinned by `TestDailyLossEpsilon`.
 
 4. **Position side is ignored in the shared model** (`core/models.py::Position`,
    seen in §7.6): `KrakenExecutor.get_positions` maps *short* ccxt positions into
@@ -86,8 +88,10 @@ fixed unless explicitly marked.
     equity-curve returns are scaled by √(timeframe's nominal periods/year), which
     ignores weekends/holiday gaps in stock candles — stock Sharpes are overstated
     relative to crypto. Acceptable for v1 comparison; revisit with calendar-aware
-    period counts if the stocks backtest becomes important. **Status: open
-    (documented).**
+    period counts if the stocks backtest becomes important. **Status: fixed in
+    §7.37** — `estimate_periods_per_year` infers realized cadence from the equity
+    curve itself (daily stock series → ~252), falling back to the nominal table
+    for short/implausible curves; MACD also optimized O(N²)→O(N) alongside it.
 
 12. **`YFinanceSource.fetch_history` dropped the interval argument** (found by
     lint while writing §7.14 tests): `_fetch_range` was called without the mapped

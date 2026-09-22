@@ -60,6 +60,40 @@ class TestHOLDAlwaysApproved:
         assert result.verdict == RiskVerdict.APPROVED
 
 
+class TestDailyLossEpsilon:
+    """§7.37 (find #3): boundary comparisons are epsilon-tolerant, biased to reject."""
+
+    def test_boundary_within_epsilon_rejects(self, risk_settings: RiskSettings) -> None:
+        engine = RiskEngine(risk_settings)
+        # Baseline exactly 10k; the mark sits a hair *above* the -2% line so raw
+        # float math lands just short of it — rounding must not buy an approval.
+        engine.restore_daily_baseline(10_000.0)
+        portfolio = PortfolioState(cash=9_800.0000001, positions=[])
+        signal = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="r",
+            stop_loss=1.0,
+        )
+        result = engine.evaluate(signal, portfolio)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "daily loss" in (result.reason or "").lower()
+
+    def test_clearly_inside_limit_still_approves(self, risk_settings: RiskSettings) -> None:
+        engine = RiskEngine(risk_settings)
+        engine.restore_daily_baseline(10_000.0)
+        signal = TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="r",
+            stop_loss=1.0,
+        )
+        result = engine.evaluate(signal, PortfolioState(cash=9_850.0, positions=[]))
+        assert result.verdict == RiskVerdict.APPROVED
+
+
 class TestConfidenceCheck:
     def test_rejects_low_confidence(
         self, engine: RiskEngine, healthy_portfolio: PortfolioState
