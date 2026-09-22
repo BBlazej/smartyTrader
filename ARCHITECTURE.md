@@ -42,7 +42,7 @@ flowchart TB
         PIPE["decision_pipeline.py — indicators, prompt, risk gate, persistence"]
         RISK["risk_engine.py — 7 deterministic rules"]
         LLMCLI["llm_client.py — retry + JSON parse + HOLD fallback"]
-        STORE["storage.py — SQLite repository (WAL)"]
+        STORE["core/storage/ package — SQLite repository (WAL)"]
         CTRLAPI["control_api.py — FastAPI control plane (§7.15)"]
         CTRLCFG["control_config.py — safe-override whitelist"]
         BT["backtester.py — decision replay (§7.14)"]
@@ -100,7 +100,9 @@ src/
 │   ├── config.py             # YAML + env settings loader (Settings validates config/settings.yaml)
 │   ├── llm_client.py         # LM Studio HTTP client (retry, JSON parse, HOLD fallback, llm_exchange audit log)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
-│   ├── storage.py            # SQLite via SQLAlchemy + aiosqlite (WAL); tables + repository queries
+│   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
+│   │                         # models/engine/snapshots/decisions/orders/control/pruning mixins,
+│   │                         # Storage facade composed in storage.py, re-exported from __init__
 │   ├── decision_pipeline.py  # fetch → mark positions → exit-level check → indicators → prompt → LLM → risk gate → execute → persist
 │   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
 │   ├── rehydration.py        # startup pass: paper book, daily-loss baseline, streak/cooldown from persisted rows (§7.7)

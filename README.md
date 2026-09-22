@@ -83,7 +83,7 @@ src/
 │   ├── config.py             # YAML + env settings loader
 │   ├── llm_client.py         # LM Studio HTTP client (retry + JSON parse + HOLD fallback)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live)
-│   ├── storage.py            # SQLite (SQLAlchemy + aiosqlite) repository
+│   ├── storage/              # SQLite (SQLAlchemy + aiosqlite) repository package (§7.36)
 │   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → persist decision → execute
 │   ├── rehydration.py        # Restores paper book + risk trackers from SQLite at startup
 │   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)

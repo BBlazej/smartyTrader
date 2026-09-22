@@ -366,7 +366,13 @@ Locked design: ARCHITECTURE.md "Data pipeline, storage & dashboard" — FastAPI 
    - **Scope note:** groundwork for margin/derivatives — no executor opens shorts today, and the risk engine still guards the spot book only; wiring short *trading* into signals/risk remains future work.
    - **Tests:** short-side classes in `test_models.py` (pnl inversion, liability valuation, JSON round-trip), `TestShortSide` in `test_position_tracker.py` (profit/loss, FIFO attribution across lots, fee splits, untracked cover reports nothing, independent sides on one symbol), venue mapping tests in `test_kraken_executor.py` / `test_xtb_executor.py`, and a client payload assertion in `test_xtb_client.py`. 545 passing.
 
-## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.35, §7.37, §7.38)
+### §7.36 — Storage repository sub-module decomposition — ✅ complete [R2-4.2]
+
+   - **Done ✅:** `core/storage.py` became the package `core/storage/` with focused sub-modules — `models.py` (Base + all row models + `_as_naive_utc`), `engine.py` (`StorageBase`: engine construction/WAL/ALTER-TABLE migrations/`backup()`/`_session`), `snapshots.py` (market + portfolio snapshot mixins), `decisions.py`, `orders.py`, `control.py` (control-plane latches), `pruning.py` (`prune`). All method bodies moved **verbatim**.
+   - **Facade kept:** `Storage` is composed from the mixins in `storage.py` and re-exported from `core/storage/__init__.py` together with every row model — every existing import (`from src.core.storage import Storage, AgentControlRow, …`) works unchanged; zero behavior change.
+   - **Tests:** no new tests needed (pure decomposition); full suite green through the new import paths. 545 passing, ~94% coverage.
+
+## Completed §7 items — D. Low severity / housekeeping (§7.17–§7.19, §7.35–§7.38)
 
 ### §7.17 — Split `analysis/` out of `core/decision_pipeline.py` — ✅ complete
 
