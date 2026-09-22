@@ -63,9 +63,7 @@ class TestParseSignal:
 
 def _resp(content: str) -> MagicMock:
     mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "choices": [{"message": {"content": content}}]
-    }
+    mock_response.json.return_value = {"choices": [{"message": {"content": content}}]}
     mock_response.raise_for_status = MagicMock()
     return mock_response
 
@@ -74,9 +72,11 @@ class TestSeedAndSizeGuard:
     """§7.33: optional determinism seed + raw response size upper bound."""
 
     async def test_seed_omitted_by_default(self, client: LLMClient) -> None:
-        post = AsyncMock(return_value=_resp(
-            '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x"}'
-        ))
+        post = AsyncMock(
+            return_value=_resp(
+                '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x"}'
+            )
+        )
         with patch.object(client._client, "post", new=post):
             await client.ask_trade_signal("s", "u")
         assert "seed" not in post.call_args.kwargs["json"]
@@ -84,9 +84,11 @@ class TestSeedAndSizeGuard:
     async def test_seed_sent_when_configured(self, llm_settings: LLMSettings) -> None:
         llm_settings.seed = 42
         client = LLMClient(llm_settings)
-        post = AsyncMock(return_value=_resp(
-            '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x"}'
-        ))
+        post = AsyncMock(
+            return_value=_resp(
+                '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x"}'
+            )
+        )
         with patch.object(client._client, "post", new=post):
             await client.ask_trade_signal("s", "u")
         assert post.call_args.kwargs["json"]["seed"] == 42
@@ -96,7 +98,11 @@ class TestSeedAndSizeGuard:
     ) -> None:
         llm_settings.max_response_chars = 50
         client = LLMClient(llm_settings)
-        huge = '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "' + "y" * 200 + '"}'
+        huge = (
+            '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "'
+            + "y" * 200
+            + '"}'
+        )
         post = AsyncMock(return_value=_resp(huge))
         with patch.object(client._client, "post", new=post):
             signal = await client.ask_trade_signal("s", "u")
@@ -109,7 +115,11 @@ class TestSeedAndSizeGuard:
     async def test_guard_disabled_with_zero(self, llm_settings: LLMSettings) -> None:
         llm_settings.max_response_chars = 0
         client = LLMClient(llm_settings)
-        content = '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "' + "y" * 5000 + '"}'
+        content = (
+            '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "'
+            + "y" * 5000
+            + '"}'
+        )
         with patch.object(client._client, "post", new=AsyncMock(return_value=_resp(content))):
             signal = await client.ask_trade_signal("s", "u")
         assert signal.is_fallback is False

@@ -91,8 +91,13 @@ class TestGetPositions:
         from src.core.models import PositionSide
 
         mock_client.get_positions.return_value = [
-            {"symbol": "TSLA", "quantity": 4.0, "side": "short", "avg_entry_price": 200.0,
-             "current_price": 190.0},
+            {
+                "symbol": "TSLA",
+                "quantity": 4.0,
+                "side": "short",
+                "avg_entry_price": 200.0,
+                "current_price": 190.0,
+            },
         ]
         positions = await executor.get_positions()
         assert positions[0].side == PositionSide.SHORT

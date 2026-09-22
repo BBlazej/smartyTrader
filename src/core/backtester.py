@@ -60,6 +60,7 @@ class TimelineClock:
     def now(self) -> datetime:
         return self._current if self._current is not None else datetime.now(UTC)
 
+
 # Nominal candle periods per year for Sharpe annualization (crypto runs 24/7; stock
 # series have gaps — approximation documented above).
 _PERIODS_PER_YEAR: dict[str, float] = {

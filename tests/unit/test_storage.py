@@ -309,9 +309,7 @@ class TestOrders:
 
         assert order_id > 0
 
-    async def test_get_filled_orders_chronological_and_filtered(
-        self, storage: Storage
-    ) -> None:
+    async def test_get_filled_orders_chronological_and_filtered(self, storage: Storage) -> None:
         """§7.25: only fills, oldest first, optional symbol filter."""
         for oid, status, symbol in (
             ("o1", "filled", "BTC/USDT"),
@@ -334,6 +332,33 @@ class TestOrders:
 
         btc_only = await storage.get_filled_orders("BTC/USDT")
         assert [o.order_id for o in btc_only] == ["o1", "o5"]
+
+    async def test_update_order_status(self, storage: Storage) -> None:
+        """§7.28: reconciliation patches status; optional fill fields never blank prior values."""
+        await storage.save_order(
+            order_id="rc-1",
+            symbol="BTC/USDT",
+            side="buy",
+            quantity=1.0,
+            price=100.0,
+            status="pending",
+        )
+        filled_at = datetime(2030, 1, 1, tzinfo=UTC)
+        ok = await storage.update_order_status("rc-1", "filled", price=105.5, filled_at=filled_at)
+        assert ok is True
+
+        row = next(o for o in await storage.get_recent_orders("BTC/USDT") if o.order_id == "rc-1")
+        assert row.status == "filled"
+        assert row.price == pytest.approx(105.5)
+        assert row.filled_at is not None and row.filled_at.year == 2030
+
+        # A later transition without fill data must not erase the recorded fill.
+        assert await storage.update_order_status("rc-1", "cancelled") is True
+        row = next(o for o in await storage.get_recent_orders("BTC/USDT") if o.order_id == "rc-1")
+        assert row.status == "cancelled"
+        assert row.price == pytest.approx(105.5)
+
+        assert await storage.update_order_status("does-not-exist", "filled") is False
 
 
 class TestPortfolioSnapshots:

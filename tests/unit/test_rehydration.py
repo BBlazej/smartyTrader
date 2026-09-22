@@ -95,18 +95,36 @@ class TestFillLedgerRehydration:
             # Pre-restart history: two buys (decisions 1 and 2), one partial sell.
             b1 = await book.place_order("BTC/USDT", OrderSide.BUY, 0.5, 50_000.0, decision_id=1)
             await storage.save_order(
-                order_id=b1.order_id, symbol="BTC/USDT", side="buy", quantity=0.5,
-                price=b1.price, status="filled", decision_id=1, filled_at=b1.filled_at,
+                order_id=b1.order_id,
+                symbol="BTC/USDT",
+                side="buy",
+                quantity=0.5,
+                price=b1.price,
+                status="filled",
+                decision_id=1,
+                filled_at=b1.filled_at,
             )
             b2 = await book.place_order("BTC/USDT", OrderSide.BUY, 0.5, 60_000.0, decision_id=2)
             await storage.save_order(
-                order_id=b2.order_id, symbol="BTC/USDT", side="buy", quantity=0.5,
-                price=b2.price, status="filled", decision_id=2, filled_at=b2.filled_at,
+                order_id=b2.order_id,
+                symbol="BTC/USDT",
+                side="buy",
+                quantity=0.5,
+                price=b2.price,
+                status="filled",
+                decision_id=2,
+                filled_at=b2.filled_at,
             )
             s1 = await book.place_order("BTC/USDT", OrderSide.SELL, 0.7, 70_000.0)
             await storage.save_order(
-                order_id=s1.order_id, symbol="BTC/USDT", side="sell", quantity=0.7,
-                price=s1.price, status="filled", decision_id=None, filled_at=s1.filled_at,
+                order_id=s1.order_id,
+                symbol="BTC/USDT",
+                side="sell",
+                quantity=0.7,
+                price=s1.price,
+                status="filled",
+                decision_id=None,
+                filled_at=s1.filled_at,
             )
             assert s1.realized_pnl == pytest.approx(12_000.0)
 

@@ -128,7 +128,9 @@ class TestShortSide:
         outcome = tracker.cover("BTC/USDT", 2.0, 90.0)
         assert outcome.gross_pnl == pytest.approx(20.0)
         assert outcome.net_pnl == pytest.approx(20.0)
-        assert {e.entry_decision_id: e.pnl for e in outcome.closed_entries} == {7: pytest.approx(20.0)}
+        assert {e.entry_decision_id: e.pnl for e in outcome.closed_entries} == {
+            7: pytest.approx(20.0)
+        }
         assert tracker.short_quantity("BTC/USDT") == 0.0
 
     def test_cover_losses_on_rise(self) -> None:

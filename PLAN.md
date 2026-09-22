@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.38) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-22):** 545 tests passing at ~94% coverage, zero pytest warnings. All of §7 except §7.18 (optional enrichment), §7.28 (keyed Kraken-testnet run — needs a network-enabled environment) and §7.34 (venue-side OCO) is complete (see [HISTORY.md](HISTORY.md)). The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-22):** 553 tests passing at ~94% coverage, zero pytest warnings. All of §7 except §7.18 (optional enrichment), §7.28 (keyed Kraken-testnet run — needs a network-enabled environment) and §7.34 (venue-side OCO) is complete (see [HISTORY.md](HISTORY.md)). The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -74,8 +74,9 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 ### Medium severity (open)
 
-28. **Live Kraken testnet smoke pass & order reconciliation** ⏳ [R1-H4, §7.6 follow-up, find #1]
-    - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS). Per-cycle status reconciliation of orders left `open` remains unpinned.
+28. **Live Kraken testnet smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1]
+    - A keyed run against the Kraken testnet from a network-enabled environment is pending (the dev sandbox blocks outbound HTTPS).
+    - *Done meanwhile:* per-cycle status reconciliation of orders left `open` is implemented and pinned — `KrakenExecutor.reconcile_open_orders()` re-polls pending venue orders each cycle (agent-side `_reconcile_orders`), patches the stored row via `Storage.update_order_status`, and flows late fills through the FIFO ledger with entry-decision attribution (§7.28).
 
 
 

@@ -376,3 +376,91 @@ class TestCycleErrorIsolation:
         # Should not raise; returns no results.
         results = await agent.run_cycle()
         assert results == []
+
+
+class TestOrderReconciliation:
+    """§7.28: the agent polls venue orders left pending once per cycle and
+    persists their status transitions (fill data + entry attribution)."""
+
+    class VenueLikeExecutor(PaperExecutor):
+        """Paper book plus the venue-style ``reconcile_open_orders`` hook."""
+
+        def __init__(self) -> None:
+            super().__init__(initial_cash=10_000.0, slippage_pct=0.0)
+            self.staged: list = []
+            self.calls = 0
+
+        async def reconcile_open_orders(self) -> list:
+            self.calls += 1
+            updates, self.staged = list(self.staged), []
+            return updates
+
+    async def test_pending_venue_order_is_reconciled_per_cycle(
+        self,
+        storage: Storage,
+        risk_engine: RiskEngine,
+    ) -> None:
+        from src.core.models import ClosedEntry, OrderResult, OrderSide
+
+        executor = self.VenueLikeExecutor()
+        # A venue order we recorded as pending last cycle + the entry decision
+        # its eventual fill must be attributed back to (§7.8).
+        await storage.save_order(
+            order_id="venue-1",
+            symbol=SYMBOL,
+            side="buy",
+            quantity=1.0,
+            price=99.0,
+            status="pending",
+        )
+        entry_id = await storage.save_llm_decision(
+            symbol=SYMBOL,
+            action="buy",
+            confidence=0.8,
+            reasoning="earlier cycle",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        executor.staged.append(
+            OrderResult(
+                order_id="venue-1",
+                symbol=SYMBOL,
+                side=OrderSide.BUY,
+                quantity=1.0,
+                price=100.0,
+                status="filled",
+                realized_pnl=5.0,
+                closed_entries=[ClosedEntry(entry_decision_id=entry_id, pnl=5.0)],
+            )
+        )
+
+        llm = make_llm(
+            [TradeSignal(symbol=SYMBOL, action="hold", confidence=0.5, reasoning="wait")]
+        )
+        pipeline = DecisionPipeline(
+            provider=make_provider([100.0]),
+            llm_client=llm,
+            risk_engine=risk_engine,
+            executor=executor,
+            storage=storage,
+        )
+        agent = CryptoAgent(
+            pipeline=pipeline,
+            storage=storage,
+            risk_engine=risk_engine,
+            llm_client=AsyncMock(),
+            pairs=[SYMBOL],
+        )
+
+        await agent.run_cycle()
+
+        assert executor.calls == 1  # exactly one poll per cycle
+        order = next(o for o in await storage.get_recent_orders() if o.order_id == "venue-1")
+        assert order.status == "filled"
+        assert order.price == pytest.approx(100.0)
+        assert order.filled_at is not None
+
+        decisions = {d.id: d for d in await storage.get_closed_decisions()}
+        assert decisions[entry_id].realized_pnl == pytest.approx(5.0)

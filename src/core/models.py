@@ -58,8 +58,8 @@ class DecisionRecord(BaseModel):
 
 class PositionSide(str, Enum):
     """Which way a position is exposed (§7.38). Spot-only today — everything
-``long``; the ``short`` half exists so margin/derivatives work can build on an
-honest model instead of encoding shorts as positive-quantity longs (find #4)."""
+    ``long``; the ``short`` half exists so margin/derivatives work can build on an
+    honest model instead of encoding shorts as positive-quantity longs (find #4)."""
 
     LONG = "long"
     SHORT = "short"

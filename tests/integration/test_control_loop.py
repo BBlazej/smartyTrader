@@ -188,9 +188,7 @@ class TestCloseAllLoop:
         # The closing sell is persisted and its outcome backfilled to the entry row.
         orders = {o.side: o for o in await env.storage.get_recent_orders()}
         assert orders["sell"].status == "filled"
-        entry = next(
-            d for d in await storage_decisions(env) if d.id == first.decision_id
-        )
+        entry = next(d for d in await storage_decisions(env) if d.id == first.decision_id)
         assert entry.realized_pnl is not None
 
     async def test_close_all_executes_even_while_paused(self, env: _Env) -> None:

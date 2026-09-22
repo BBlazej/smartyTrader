@@ -78,7 +78,8 @@ class TestDatabaseBackup:
 
             backups_dir = tmp_path / "backups"
             await prune_storage(
-                storage, self._settings(snapshot_days=30, history_days=0, backup_dir=str(backups_dir))
+                storage,
+                self._settings(snapshot_days=30, history_days=0, backup_dir=str(backups_dir)),
             )
 
             backups = sorted(backups_dir.glob("agent-*.db"))

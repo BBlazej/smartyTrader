@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .models import OrderRow
 
@@ -37,6 +37,31 @@ class OrderMixin:
             session.add(row)
             await session.commit()
             return row.id
+
+    async def update_order_status(
+        self,
+        order_id: str,
+        status: str,
+        price: float | None = None,
+        filled_at: datetime | None = None,
+    ) -> bool:
+        """Patch a stored order after venue reconciliation (§7.28).
+
+        Returns ``True`` when a row with ``order_id`` existed. ``price`` and
+        ``filled_at`` are only written when supplied, so a later ``canceled``
+        transition never blanks an earlier fill record.
+        """
+        values: dict[str, object] = {"status": status}
+        if price is not None:
+            values["price"] = price
+        if filled_at is not None:
+            values["filled_at"] = filled_at
+        async with await self._session() as session:
+            result = await session.execute(
+                update(OrderRow).where(OrderRow.order_id == order_id).values(**values)
+            )
+            await session.commit()
+            return bool(result.rowcount)
 
     async def get_recent_orders(
         self,

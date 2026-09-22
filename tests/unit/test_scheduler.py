@@ -125,7 +125,9 @@ class TestRealSchedulerSemantics:
             calls.append(len(calls))
             raise RuntimeError("cycle boom")
 
-        sched.add_job(failing_job, "interval", seconds=0.05, id="cycle", max_instances=1, coalesce=True)
+        sched.add_job(
+            failing_job, "interval", seconds=0.05, id="cycle", max_instances=1, coalesce=True
+        )
         await self._run(sched, 0.35)
 
         assert len(calls) >= 2  # the scheduler survives exceptions and keeps ticking
@@ -144,8 +146,17 @@ class TestRealSchedulerSemantics:
             pruned.append(1)
 
         # Mirrors the runner's setup: trading cycle + storage prune on one scheduler.
-        sched.add_job(boom, "interval", seconds=0.05, id="crypto_cycle", max_instances=1, coalesce=True)
-        sched.add_job(keep_running, "interval", seconds=0.05, id="storage_prune", max_instances=1, coalesce=True)
+        sched.add_job(
+            boom, "interval", seconds=0.05, id="crypto_cycle", max_instances=1, coalesce=True
+        )
+        sched.add_job(
+            keep_running,
+            "interval",
+            seconds=0.05,
+            id="storage_prune",
+            max_instances=1,
+            coalesce=True,
+        )
         await self._run(sched, 0.35)
 
         assert len(pruned) >= 2  # the healthy job keeps ticking next to a failing one

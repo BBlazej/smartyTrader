@@ -107,7 +107,12 @@ class TestGetPositions:
         from src.core.models import PositionSide
 
         mock_client.fetch_positions.return_value = [
-            {"symbol": "BTC/USDT", "contracts": -0.5, "entryPrice": 50_000.0, "markPrice": 49_000.0},
+            {
+                "symbol": "BTC/USDT",
+                "contracts": -0.5,
+                "entryPrice": 50_000.0,
+                "markPrice": 49_000.0,
+            },
             {"symbol": "ETH/USDT", "side": "short", "contracts": 2.0, "entryPrice": 2_500.0},
         ]
 
@@ -399,3 +404,129 @@ class TestClose:
     async def test_close_without_close_method_is_noop(self) -> None:
         executor = KrakenExecutor(AsyncMock(spec=["create_order"]), quote_currency="USDT")
         await executor.close()  # must not raise
+
+
+class TestReconcileOpenOrders:
+    """§7.28: orders left ``open`` at the venue are re-polled and their status
+    transitions reported once, flowing through the same FIFO ledger."""
+
+    async def _place_pending(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+        mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
+        result = await executor.place_order(
+            "BTC/USDT",
+            OrderSide.BUY,
+            quantity=1.0,
+            price=100.0,
+            decision_id=7,
+            stop_loss=95.0,
+            take_profit=120.0,
+        )
+        assert result.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_pending_order_lands_filled_with_attribution(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        await self._place_pending(executor, mock_client)
+        mock_client.fetch_order.return_value = {
+            "id": "D-OPEN",
+            "status": "closed",
+            "average": 102.0,
+            "filled": 1.0,
+            "updated": 1700000000000,
+        }
+
+        updates = await executor.reconcile_open_orders()
+        assert len(updates) == 1
+        order = updates[0]
+        assert order.status == "filled"
+        assert order.price == pytest.approx(102.0)
+        assert order.filled_at is not None
+
+        # The entry plan survived the pending phase (§7.9 local enforcement).
+        assert executor._exit_levels["BTC/USDT"] == (95.0, 120.0)
+
+        # The reconciled buy entered the FIFO ledger with its decision id, so a
+        # later closing sell attributes PnL back to decision 7 (§7.8).
+        mock_client.create_order.return_value = {
+            "id": "D-SELL",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 110.0,
+        }
+        sell = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=110.0)
+        assert sell.realized_pnl == pytest.approx(8.0)
+        assert sell.closed_entries[0].entry_decision_id == 7
+
+        # Terminal status ⇒ tracking dropped; nothing to reconcile anymore.
+        assert await executor.reconcile_open_orders() == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_order_reports_and_stops_tracking(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        await self._place_pending(executor, mock_client)
+        mock_client.fetch_order.return_value = {"id": "D-OPEN", "status": "canceled"}
+
+        updates = await executor.reconcile_open_orders()
+        assert [o.status for o in updates] == ["cancelled"]
+        assert executor._tracker.quantity("BTC/USDT") == 0.0
+        assert await executor.reconcile_open_orders() == []
+
+    @pytest.mark.asyncio
+    async def test_still_open_is_skipped_and_retried(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        await self._place_pending(executor, mock_client)
+        mock_client.fetch_order.return_value = {"id": "D-OPEN", "status": "open"}
+        assert await executor.reconcile_open_orders() == []
+
+        # Still tracked — a later fill is reported on the next poll.
+        mock_client.fetch_order.return_value = {
+            "id": "D-OPEN",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+        }
+        updates = await executor.reconcile_open_orders()
+        assert [o.status for o in updates] == ["filled"]
+
+    @pytest.mark.asyncio
+    async def test_failed_poll_is_fail_soft_and_retried(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        await self._place_pending(executor, mock_client)
+        mock_client.fetch_order.side_effect = TimeoutError("venue unreachable")
+        assert await executor.reconcile_open_orders() == []  # no crash, stays tracked
+
+        mock_client.fetch_order.side_effect = None
+        mock_client.fetch_order.return_value = {
+            "id": "D-OPEN",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+        }
+        assert [o.status for o in await executor.reconcile_open_orders()] == ["filled"]
+
+    @pytest.mark.asyncio
+    async def test_client_without_fetch_order_is_a_noop(self) -> None:
+        client = AsyncMock(spec=["create_order", "cancel_order", "fetch_free_balance"])
+        executor = KrakenExecutor(client, quote_currency="USDT")
+        # A list-spec mock is not async-aware; wire the call explicitly.
+        client.create_order = AsyncMock(return_value={"id": "D-OPEN", "status": "open"})
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+        assert await executor.reconcile_open_orders() == []
+
+    @pytest.mark.asyncio
+    async def test_cancel_by_us_stops_reconciliation(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        await self._place_pending(executor, mock_client)
+        assert await executor.cancel_order("D-OPEN") is True
+        # The venue might still echo a late fill, but we no longer track it.
+        mock_client.fetch_order.return_value = {
+            "id": "D-OPEN",
+            "status": "closed",
+            "average": 100.0,
+        }
+        assert await executor.reconcile_open_orders() == []

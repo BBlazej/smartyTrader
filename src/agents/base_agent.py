@@ -138,6 +138,10 @@ class BaseTradingAgent:
             await self._record_health(None)
             return []
 
+        # Venue orders left ``open`` in a previous cycle get one status poll
+        # per cycle before anything else reads the book (§7.28).
+        await self._reconcile_orders()
+
         self._logger.info("cycle start", symbols=self._symbols)
         results: list[PipelineResult] = []
         cycle_error: str | None = None
@@ -228,6 +232,53 @@ class BaseTradingAgent:
             await self._storage.record_cycle_health(self._control_agent, last_error=last_error)
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("health heartbeat failed", error=str(exc))
+
+    async def _reconcile_orders(self) -> None:
+        """Poll + persist status transitions of venue orders left pending (§7.28).
+
+        Uses the executor's optional ``reconcile_open_orders()`` hook (Kraken;
+        paper orders fill instantly and XTB polls internally to a terminal
+        status, so those executors simply have no hook). Fail-soft: a broken
+        poll must never halt the cycle. Fills realized here carry their
+        entry-decision attribution back onto the decision rows (§7.8).
+        """
+        reconcile = getattr(self._pipeline.executor, "reconcile_open_orders", None)
+        if not callable(reconcile):
+            return
+        try:
+            updates = await reconcile()
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("order reconciliation failed", error=str(exc))
+            return
+        if not updates:
+            return
+        changed = False
+        for order in updates:
+            filled_at = order.filled_at
+            if order.status == "filled" and filled_at is None:
+                # Venue reported no timestamp — stamp now rather than lose the record.
+                filled_at = datetime.now(UTC)
+            try:
+                await self._storage.update_order_status(
+                    order.order_id, order.status, price=order.price, filled_at=filled_at
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "failed to persist reconciled order", order_id=order.order_id, error=str(exc)
+                )
+            for entry in order.closed_entries:
+                if entry.entry_decision_id is not None:
+                    await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
+            self._logger.info(
+                "order reconciled",
+                order_id=order.order_id,
+                status=order.status,
+                symbol=order.symbol,
+            )
+            changed = True
+        if changed:
+            # Cash/positions moved at the venue — keep the stored book current.
+            await self._persist_portfolio()
 
     async def _post_process(self, symbol: str, result: PipelineResult) -> None:
         """Update risk tracking and persist the decision / order / portfolio."""

@@ -118,7 +118,8 @@ src/
 ├── execution/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
-│   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled)
+│   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled;
+│   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28)
 │   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
 │   └── xtb_client.py         # real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth, instant orders, tick marks
 ├── agents/
