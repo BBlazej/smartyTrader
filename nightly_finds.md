@@ -58,18 +58,23 @@ fixed unless explicitly marked.
    a position opened before a restart closes afterwards with *no* realized-PnL
    attribution (we deliberately report nothing rather than a fabricated number).
    Fix would be replaying `orders` rows (buy fills carry `decision_id`, price and
-   quantity) into the tracker at startup. **Status: open.**
+   quantity) into the tracker at startup. **Status: fixed in §7.25** — filled-order
+   replay rebuilds the FIFO ledgers with entry-decision ids across restarts.
 
 8. **XTB tracking only works for priced orders** (`xtb_executor.py`): the xAPI seam's
    `create_order` payload is mapped without a fill price, so a *market* order that
    fills has no basis to record and its later close reports no outcome. The pipeline
    always sends marketable limits, so it does not bite today; real xAPI work (§7.16)
-   should read fills from the venue's order/position stream instead. **Status: open.**
+   should read fills from the venue's order/position stream instead. **Status: open**
+   (§7.16 has since landed — instant orders + `tradeTransactionStatus` polling — but
+   the executor still books fills at the requested price, not the venue fill price).
 
 9. **`closed_entries` assumes a single-sided (long-only) book**: the tracker consumes
    lots on sells only, matching this system's spot-only usage. If shorts are ever
    supported (see #4), `PositionTracker.on_sell` must also handle opening shorts and
-   buys closing them. **Status: open (by design for now).**
+   buys closing them. **Status: fixed in §7.38** — explicit `open_short()`/`cover()`
+   ledgers with the same FIFO attribution; sides are chosen by executors, never
+   inferred from order verbs.
 
 ## Found while implementing §7.14 (decision-replay backtesting)
 
@@ -133,7 +138,7 @@ fixed unless explicitly marked.
 15. **Hardcoded consecutive-loss threshold in state rehydration** (`src/core/rehydration.py:98`):
     `rehydrate_risk_engine` checks `streak >= 3` instead of `risk_engine.settings.consecutive_losses_threshold`.
     If configured to a value other than 3 in `settings.yaml`, restart rehydration misapplies cooldown evaluation.
-    **Status: open.**
+    **Status: fixed in §7.26** — the threshold is read from `risk.consecutive_losses_threshold`.
 
 ## Found while implementing §7.31 (control-loop integration test)
 
@@ -150,3 +155,11 @@ fixed unless explicitly marked.
     subclasses with the control plane. **Status: fixed in §7.31** — subclass components are
     now `"crypto"` / `"stocks"`, pinned by a new integration test that drives pause and
     close-all through the actual control API against a real `CryptoAgent`.
+
+## Found while implementing §7.35–§7.38 and the §7.28 reconciliation pass (2026-09-22)
+
+17. **Repo-wide `ruff format` drift** (13 files): despite `ruff format .` being a documented
+    command, committed files had drifted from the formatter's output (blank-line and wrapping
+    differences only — no semantics). Caught by `ruff format --check .` while landing the
+    §7.28 reconciliation work; fixed repo-wide in that commit. **Status: fixed.** Consider
+    running `ruff format .` (not just `ruff check .`) as part of the per-change routine.
