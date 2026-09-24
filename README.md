@@ -223,10 +223,15 @@ and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real 
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**495 tests passing at ~93% coverage.**
+**553 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
-for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, and `external_review3.md` at the repo root.
+for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
+
+> **Open critical findings (external review 4, PLAN §7.39–§7.42):** the two agents share an unscoped DB
+> (don't run both until §7.39 lands), XTB sells open shorts instead of closing longs (keep `xtb_execution`
+> off), Kraken spot has no sandbox (`testnet: false` means **real funds**), and `max_position_pct` caps each
+> order rather than the position. See `AGENTS.md` → *Known open gaps*.
 
 ## Documentation map
 
@@ -238,4 +243,4 @@ for the full list — reordered after the full-codebase reviews; detailed findin
 | `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
 | `nightly_finds.md` | bugs/gaps discovered during development |
-| `review.MD` / `review2.md` / `external_review3.md` | external full-codebase architecture & code reviews |
+| `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase architecture & code reviews |
