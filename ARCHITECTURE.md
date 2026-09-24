@@ -245,7 +245,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 |---|---|---|---|
 | Min confidence | `0.6` to trade | Yes | `_check_confidence` |
 | Max open positions | 5 per agent | Yes | `_check_max_positions` |
-| Max position size | 10% of portfolio per symbol | Yes | `_check_position_size` |
+| Max position size | 10% of portfolio per symbol — existing long exposure + planned BUY (§7.42) | Yes | `_check_position_size` |
 | Daily loss limit | -2% of starting balance | Yes | `_check_daily_loss` |
 | Max drawdown | -5% below the **peak-equity** high-water mark (seeded from persisted portfolio snapshots) | Yes | `_check_drawdown` ✅ (§7.5) |
 | Consecutive-losses cooldown | 3 losses → 60-min pause | Yes | `_check_cooldown` |
@@ -257,6 +257,7 @@ Additional engine facts:
 
 - The drawdown high-water mark is seeded at startup from `Storage.get_max_portfolio_value()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5).
 - Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7).
+- The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
 
 ## Control plane (§7.15 P1/P2 — implemented)

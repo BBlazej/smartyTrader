@@ -343,6 +343,54 @@ class TestPositionSizeGate:
         assert result.verdict == RiskVerdict.APPROVED
 
 
+class TestPerPositionCap:
+    """§7.42: max_position_pct caps the *position*, not each order."""
+
+    @staticmethod
+    def _buy(symbol: str = "BTC/USDT") -> TradeSignal:
+        return TradeSignal(
+            symbol=symbol, action=Action.BUY, confidence=0.9, reasoning="add", stop_loss=1.0
+        )
+
+    @staticmethod
+    def _book(btc_value: float, cash: float = 9_000.0) -> PortfolioState:
+        return PortfolioState(
+            cash=cash,
+            positions=[
+                Position(
+                    symbol="BTC/USDT",
+                    quantity=btc_value / 100.0,
+                    avg_entry_price=100.0,
+                    current_price=100.0,
+                )
+            ],
+        )
+
+    def test_rejects_buy_when_position_already_at_cap(self, engine: RiskEngine) -> None:
+        # total 10_000 → cap 1_000, already holding 1_000.
+        result = engine.evaluate(self._buy(), self._book(1_000.0), planned_notional=10.0)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "already at max size" in (result.reason or "")
+
+    def test_rejects_add_that_would_overshoot(self, engine: RiskEngine) -> None:
+        result = engine.evaluate(self._buy(), self._book(600.0), planned_notional=500.0)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "already holding 600.00" in (result.reason or "")
+
+    def test_approves_add_within_headroom(self, engine: RiskEngine) -> None:
+        # total 9_600 → cap 960; 600 held + 360 planned fits exactly.
+        result = engine.evaluate(self._buy(), self._book(600.0), planned_notional=360.0)
+        assert result.verdict == RiskVerdict.APPROVED
+
+    def test_other_symbols_and_sells_are_unaffected(self, engine: RiskEngine) -> None:
+        book = self._book(1_000.0)
+        assert engine.evaluate(self._buy("ETH/USDT"), book, planned_notional=900.0).verdict == (
+            RiskVerdict.APPROVED
+        )
+        sell = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="x")
+        assert engine.evaluate(sell, book, planned_notional=500.0).verdict == RiskVerdict.APPROVED
+
+
 class TestZeroPortfolio:
     def test_rejects_zero_value(self, engine: RiskEngine) -> None:
         portfolio = PortfolioState(cash=0.0, positions=[])

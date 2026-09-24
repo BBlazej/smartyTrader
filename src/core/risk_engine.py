@@ -8,7 +8,7 @@ from typing import Final, Protocol
 import structlog
 
 from .config import RiskSettings
-from .models import Action, PortfolioState, RiskResult, RiskVerdict, TradeSignal
+from .models import Action, PortfolioState, PositionSide, RiskResult, RiskVerdict, TradeSignal
 
 # structlog like the rest of the codebase — safety-critical rejections must land
 # in the configured renderers, not bypass them via stdlib logging (§7.19).
@@ -17,6 +17,19 @@ logger = structlog.get_logger()
 #: Fallback consecutive-loss streak that triggers the cooldown when no threshold
 #: is configured (the shipped default lives in ``RiskSettings``).
 DEFAULT_CONSECUTIVE_LOSS_THRESHOLD: Final = 3
+
+
+def long_exposure(portfolio: PortfolioState, symbol: str) -> float:
+    """Market value of the long position already held in ``symbol`` (0 when flat).
+
+    The position-size rule caps *positions*, not single orders (§7.42): a BUY adds to
+    this, so the gate and the sizing both start from what is already on the book.
+    """
+    return sum(
+        p.quantity * p.current_price
+        for p in portfolio.positions
+        if p.symbol == symbol and p.side == PositionSide.LONG
+    )
 
 
 class Clock(Protocol):
@@ -263,21 +276,36 @@ class RiskEngine:
                 verdict=RiskVerdict.REJECTED,
                 reason="Portfolio value is zero or negative",
             )
-        # Notional cap at the gate: whatever the pipeline proposes to trade
-        # must fit inside max_position_pct of portfolio value. Sizing itself
-        # lives in the pipeline; this check exists so a sizing regression can
-        # never slip past approval (it used to be invisible — the rule only
-        # checked total_value > 0).
+        cap = self.settings.max_position_pct * total_value
+        # Per-*position* cap (§7.42): a BUY adds to what is already held in the
+        # symbol, so repeated entries can no longer pyramid one symbol past
+        # max_position_pct (12 approved BUYs used to reach 90% of equity).
+        existing = long_exposure(portfolio, signal.symbol) if signal.action == Action.BUY else 0.0
+        if signal.action == Action.BUY and existing >= cap * (1.0 - 1e-9):
+            return RiskResult(
+                verdict=RiskVerdict.REJECTED,
+                reason=(
+                    f"Position in {signal.symbol} already at max size "
+                    f"({existing:.2f} of cap {cap:.2f}, "
+                    f"{self.settings.max_position_pct:.0%} of {total_value:.2f})"
+                ),
+            )
+        # Notional cap at the gate: whatever the pipeline proposes to trade —
+        # plus, for a BUY, the position it adds to — must fit inside
+        # max_position_pct of portfolio value. Sizing itself lives in the
+        # pipeline; this check exists so a sizing regression can never slip
+        # past approval.
         if planned_notional is not None:
-            cap = self.settings.max_position_pct * total_value
+            resulting = existing + planned_notional
             # Tiny relative tolerance for float rounding in the sizing math;
             # real over-sizing exceeds the cap by orders of magnitude.
-            if planned_notional > cap * (1.0 + 1e-6):
+            if resulting > cap * (1.0 + 1e-6):
                 return RiskResult(
                     verdict=RiskVerdict.REJECTED,
                     reason=(
-                        f"Planned position {planned_notional:.2f} exceeds max position size "
+                        f"Planned position {resulting:.2f} exceeds max position size "
                         f"{cap:.2f} ({self.settings.max_position_pct:.0%} of {total_value:.2f})"
+                        + (f"; already holding {existing:.2f}" if existing > 0 else "")
                     ),
                 )
         return RiskResult(verdict=RiskVerdict.APPROVED)

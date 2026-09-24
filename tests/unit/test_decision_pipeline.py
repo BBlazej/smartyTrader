@@ -9,7 +9,7 @@ import pytest
 from src.analysis.indicators import compute_indicators
 from src.analysis.prompt_builder import build_user_prompt
 from src.core.config import RiskSettings
-from src.core.decision_pipeline import DecisionPipeline
+from src.core.decision_pipeline import DecisionPipeline, calculate_quantity
 from src.core.models import (
     OHLCV,
     Action,
@@ -18,10 +18,12 @@ from src.core.models import (
     MarketSnapshot,
     OrderSide,
     PortfolioState,
+    Position,
     RiskResult,
     RiskVerdict,
     TradeSignal,
 )
+from src.core.risk_engine import RiskEngine
 from src.execution.paper_executor import PaperExecutor
 
 
@@ -1079,3 +1081,52 @@ class TestExitLevelEnforcement:
         assert closed is not None
         assert closed.exit_reason == "stop_loss"
         assert closed.executed  # closed despite the cooldown blocking new entries
+
+
+class TestPositionHeadroomSizing:
+    """§7.42: sizing fills only the headroom under the per-position cap."""
+
+    def test_buy_sized_to_remaining_headroom(self) -> None:
+        rs = RiskSettings(max_position_pct=0.10)
+        book = PortfolioState(
+            cash=9_400.0,
+            positions=[
+                Position(
+                    symbol="BTC/USDT", quantity=6.0, avg_entry_price=100.0, current_price=100.0
+                )
+            ],
+        )  # total 10_000 → cap 1_000; 600 already held → 400 of headroom
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="add", stop_loss=90.0
+        )
+        assert calculate_quantity(signal, book, rs, 100.0) == pytest.approx(4.0)
+        full = signal.model_copy(update={"symbol": "ETH/USDT"})
+        assert calculate_quantity(full, book, rs, 100.0) == pytest.approx(10.0)
+
+    async def test_twelve_repeated_buys_stay_at_the_cap(self) -> None:
+        """The review's reproduction (external_4 C4): 12 approved BUYs used to reach
+        ~90% of equity in one symbol; now exposure stops at max_position_pct."""
+        rs = RiskSettings()
+        engine = RiskEngine(rs)
+        executor = PaperExecutor(100_000.0, slippage_pct=0.001, fee_pct=0.0026)
+        fills = 0
+        for _ in range(12):
+            book = PortfolioState(
+                cash=await executor.get_cash(), positions=await executor.get_positions()
+            )
+            signal = TradeSignal(
+                symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+            )
+            qty = calculate_quantity(signal, book, rs, 100.0)
+            if engine.evaluate(signal, book, planned_notional=qty * 100.0).verdict == (
+                RiskVerdict.APPROVED
+            ):
+                fills += (
+                    await executor.place_order("BTC/USDT", OrderSide.BUY, qty, 100.0)
+                ).status == "filled"
+        final = PortfolioState(
+            cash=await executor.get_cash(), positions=await executor.get_positions()
+        )
+        exposure = sum(p.quantity * p.current_price for p in final.positions)
+        assert fills == 1
+        assert exposure / final.total_value <= rs.max_position_pct * 1.01

@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 564 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping) is done — three critical findings remain open (XTB sells opening shorts, Kraken keyed path, per-order-only position cap) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 571 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping) and §7.42 (per-position cap) are done — two critical findings remain open (XTB sells opening shorts, Kraken keyed path) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,11 +70,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39 and §7.42 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7; §7.39 done): §7.42 + §7.45 + §7.56 together (they decide whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
+> Order of work (from `external_4.md` §7; §7.39 and §7.42 done): §7.45 + §7.56 (with §7.42 they decide whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
 
 40. **XTB: SELL must close, not open a short** ⏳ [R4-C2, R4-L9] — *critical*
     - `xtb_client.create_order` always sends `tradeTransaction` `type=OPEN`; `cmd=SELL, type=OPEN` opens a short. LLM sells, §7.9 auto-exits and close-all therefore open shorts while the local FIFO tracker books a fictional realized PnL (feeding the loss streak and the prompt).
@@ -84,10 +84,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - ccxt `kraken` has no `urls['test']`: `set_sandbox_mode(True)` raises `TypeError` at startup (fails closed). The only workaround, `testnet: false`, trades **production funds** while logging "Kraken testnet executor". Only `krakenfutures` has a demo environment.
     - On spot, `get_positions()` is always `[]` and `get_cash()` is free quote only, so every BUY registers as a loss of its own notional (trips daily-loss + drawdown at once and poisons the persisted peak); SL/TP are never enforced, close-all is a no-op, SELL sizing is unclamped.
     - Fix: relabel the keyed path as live and require an explicit acknowledgement (config flag + env flag) — same for `xtb_execution.account_type: real`; derive spot positions from the local FIFO ledger + `fetch_balance()` totals marked at the snapshot close; if a sandbox is required, target `krakenfutures` demo (makes the §7.38 short model load-bearing). Rewrite §7.28 accordingly.
-
-42. **Position-size cap per position, not per order** ⏳ [R4-C4] — *critical*
-    - `_check_position_size` caps only the planned order notional; `_check_max_positions` only blocks new symbols. Repeated BUYs pyramid: 12 approved BUYs → 9 fills → 90% of equity in BTC (reproduced). ARCHITECTURE's risk table claims "per symbol".
-    - Fix: include existing exposure in the check for BUYs and size as `min(cap − existing, …)`; Hypothesis property "per-symbol exposure ≤ cap for any signal sequence".
 
 43. **Dashboard / control API: CSRF, DNS rebinding, tighten-only risk overrides** ⏳ [R4-H1]
     - No auth, no CSRF token, no `Origin`/`Host` validation; urlencoded POSTs are CORS-simple, so any page in the operator's browser can loosen every risk limit via the "safe" whitelist, set `enforce_exit_levels=false`, close-all/pause, or (with `allow_launch`) start agents.
@@ -99,7 +95,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - Fix: per-symbol wrapping of post-processing, retried order persistence with a structlog audit dump as last resort, pop pending orders only after the row persisted.
 
 45. **Prompt carries the agent's own book; honest outcome labels** ⏳ [R4-H3]
-    - The prompt never shows holdings, size, entry, uPnL, active SL/TP or cash, so the LLM cannot tell open from add-to and emits sells on flat symbols. HOLD/rejected rows render as `outcome: still open` forever (100% of the real DB history).
+    - The prompt never shows holdings, size, entry, uPnL, active SL/TP or cash, so the LLM cannot tell open from add-to (§7.42 now caps the result) and emits sells on flat symbols. HOLD/rejected rows render as `outcome: still open` forever (100% of the real DB history).
     - Fix: `POSITION` section from the executor book; `n/a` for HOLD/rejected rows.
 
 46. **Loss-streak rehydration double-counts round trips** ⏳ [R4-H4, R4-L4]
@@ -151,7 +147,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - Fix: no candles → no LLM call, no order.
 
 56. **Configurable timeframe; forming-candle handling** ⏳ [R4-M7]
-    - `CryptoAgent` `"1h"` / `StocksAgent` `"1d"` are hardcoded (violates config-driven rule); with 5/15-minute intervals the LLM re-judges the same candles 12×/~30× per bar including a forming last candle with partial volume — invites repeated entries (§7.42/§7.45).
+    - `CryptoAgent` `"1h"` / `StocksAgent` `"1d"` are hardcoded (violates config-driven rule); with 5/15-minute intervals the LLM re-judges the same candles 12×/~30× per bar including a forming last candle with partial volume — invites repeated entries (§7.45; the §7.42 cap now bounds the damage).
     - Fix: `timeframe` per agent config block; drop or label the in-progress candle; default interval paired to timeframe.
 
 57. **LLM response parser robustness** ⏳ [R4-M8]
@@ -177,7 +173,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - L5: `.2f` price/ATR/Bollinger formatting erases sub-$1 assets; use significant figures.
     - L6: compose — disabled `agent-stocks` with `restart: unless-stopped` restart-loops; compose passes `XTB_API_KEY` but the runner reads `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD`.
     - L8: no data↔execution symbol mapping (yfinance `AAPL` vs xAPI `AAPL.US`-style names); make it a config table.
-    - L10: doc drift — AGENTS.md pidfile `data/<agent>.pid` vs code `data/<agent>_agent.pid`; duplicated "Hard-coded, non-negotiable gates" sentence in ARCHITECTURE.md; risk table "per symbol" (until §7.42).
+    - L10: doc drift — AGENTS.md pidfile `data/<agent>.pid` vs code `data/<agent>_agent.pid`; duplicated "Hard-coded, non-negotiable gates" sentence in ARCHITECTURE.md.
     - L11: orphaned `agent_control` row `crypto_agent` (pre-find-#16) in existing DBs; stale untracked `build/lib/` copy of pre-§7.36 code (`rm -rf build/`).
 
 60. **Continuous integration** ⏳ [R4-L12]

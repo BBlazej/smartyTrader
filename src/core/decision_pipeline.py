@@ -25,7 +25,7 @@ from .models import (
     RiskVerdict,
     TradeSignal,
 )
-from .risk_engine import RiskEngine
+from .risk_engine import RiskEngine, long_exposure
 from .storage import Storage
 
 logger = structlog.get_logger()
@@ -551,9 +551,12 @@ def calculate_quantity(
     """Position size: ``max_position_pct`` of total value, cash- and holdings-clamped.
 
     Used by the live pipeline *and* the decision-replay backtester so sizing rules
-    stay identical between them (§7.14).
+    stay identical between them (§7.14). A BUY only fills the *headroom* left under
+    the per-position cap — what is already held in the symbol counts (§7.42).
     """
     max_position_value = portfolio.total_value * settings.max_position_pct
+    if signal.action == Action.BUY:
+        max_position_value = max(0.0, max_position_value - long_exposure(portfolio, signal.symbol))
 
     price = current_price if (current_price is not None and current_price > 0) else signal.stop_loss
     if price is None or price <= 0:

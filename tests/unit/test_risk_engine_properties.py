@@ -193,3 +193,53 @@ def test_engine_is_deterministic(confidence: float, cash: float):
     a = RiskEngine(make_settings()).evaluate(signal, portfolio)
     b = RiskEngine(make_settings()).evaluate(signal, portfolio)
     assert a.verdict == b.verdict
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    prices=st.lists(
+        st.floats(min_value=1.0, max_value=1e5, allow_nan=False, allow_infinity=False),
+        min_size=1,
+        max_size=15,
+    ),
+    cash=st.floats(min_value=1_000.0, max_value=1e7, allow_nan=False, allow_infinity=False),
+)
+def test_repeated_buys_never_exceed_the_position_cap(prices: list[float], cash: float) -> None:
+    """§7.42: however many BUYs the LLM repeats, the resulting position stays inside
+    max_position_pct of equity (checked at each fill's price — the cap is an entry
+    rule; later appreciation may legitimately lift it)."""
+    import asyncio
+
+    from src.core.decision_pipeline import calculate_quantity
+    from src.core.models import OrderSide
+    from src.execution.paper_executor import PaperExecutor
+
+    rs = make_settings()
+    engine = RiskEngine(rs)
+    executor = PaperExecutor(initial_cash=cash, slippage_pct=0.0, fee_pct=0.0)
+
+    async def run() -> None:
+        for price in prices:
+            executor.update_price("BTC/USDT", price)
+            book = PortfolioState(
+                cash=await executor.get_cash(), positions=await executor.get_positions()
+            )
+            signal = TradeSignal(
+                symbol="BTC/USDT",
+                action=Action.BUY,
+                confidence=0.9,
+                reasoning="again",
+                stop_loss=price * 0.9,
+            )
+            qty = calculate_quantity(signal, book, rs, price)
+            verdict = engine.evaluate(signal, book, planned_notional=qty * price)
+            if verdict.verdict == RiskVerdict.APPROVED and qty > 0:
+                await executor.place_order("BTC/USDT", OrderSide.BUY, qty, price)
+            after = PortfolioState(
+                cash=await executor.get_cash(), positions=await executor.get_positions()
+            )
+            held = sum(p.quantity * p.current_price for p in after.positions)
+            if verdict.verdict == RiskVerdict.APPROVED:
+                assert held <= rs.max_position_pct * after.total_value * (1 + 1e-6)
+
+    asyncio.run(run())
