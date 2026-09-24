@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 571 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping) and §7.42 (per-position cap) are done — two critical findings remain open (XTB sells opening shorts, Kraken keyed path) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 581 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping), §7.42 (per-position cap) and §7.45 (book-aware prompt) are done — two critical findings remain open (XTB sells opening shorts, Kraken keyed path) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,11 +70,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39 and §7.42 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39, §7.42 and §7.45 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7; §7.39 and §7.42 done): §7.45 + §7.56 (with §7.42 they decide whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
+> Order of work (from `external_4.md` §7; §7.39, §7.42, §7.45 done): §7.56 (with §7.42/§7.45 it decides whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
 
 40. **XTB: SELL must close, not open a short** ⏳ [R4-C2, R4-L9] — *critical*
     - `xtb_client.create_order` always sends `tradeTransaction` `type=OPEN`; `cmd=SELL, type=OPEN` opens a short. LLM sells, §7.9 auto-exits and close-all therefore open shorts while the local FIFO tracker books a fictional realized PnL (feeding the loss streak and the prompt).
@@ -93,10 +93,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 44. **Fail-soft, lossless post-order persistence** ⏳ [R4-H2]
     - `BaseTradingAgent._post_process` runs outside the per-symbol `try`; `save_order` / `save_portfolio_snapshot` / reconciliation `add_realized_pnl` are unwrapped. A `database is locked` after a successful fill loses the `orders` row (the §7.25 replay source), aborts the rest of the cycle and skips the heartbeat; reconciliation has already dropped the pending order.
     - Fix: per-symbol wrapping of post-processing, retried order persistence with a structlog audit dump as last resort, pop pending orders only after the row persisted.
-
-45. **Prompt carries the agent's own book; honest outcome labels** ⏳ [R4-H3]
-    - The prompt never shows holdings, size, entry, uPnL, active SL/TP or cash, so the LLM cannot tell open from add-to (§7.42 now caps the result) and emits sells on flat symbols. HOLD/rejected rows render as `outcome: still open` forever (100% of the real DB history).
-    - Fix: `POSITION` section from the executor book; `n/a` for HOLD/rejected rows.
 
 46. **Loss-streak rehydration double-counts round trips** ⏳ [R4-H4, R4-L4]
     - Live `record_outcome` fires once per closing fill, but PnL is written onto both the SELL decision (`set_realized_pnl`) and the entry BUY (`add_realized_pnl`); `get_closed_decisions` counts both → 2 losing trades rehydrate as a streak of 4 and re-arm a phantom cooldown. Auto-exits/close-all write only the entry row (inconsistent), and close-all / reconciled late fills never call `record_outcome` at all.
@@ -147,7 +143,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - Fix: no candles → no LLM call, no order.
 
 56. **Configurable timeframe; forming-candle handling** ⏳ [R4-M7]
-    - `CryptoAgent` `"1h"` / `StocksAgent` `"1d"` are hardcoded (violates config-driven rule); with 5/15-minute intervals the LLM re-judges the same candles 12×/~30× per bar including a forming last candle with partial volume — invites repeated entries (§7.45; the §7.42 cap now bounds the damage).
+    - `CryptoAgent` `"1h"` / `StocksAgent` `"1d"` are hardcoded (violates config-driven rule); with 5/15-minute intervals the LLM re-judges the same candles 12×/~30× per bar including a forming last candle with partial volume — invites repeated entries (§7.42/§7.45 now bound the damage).
     - Fix: `timeframe` per agent config block; drop or label the in-progress candle; default interval paired to timeframe.
 
 57. **LLM response parser robustness** ⏳ [R4-M8]

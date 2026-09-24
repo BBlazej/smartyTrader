@@ -49,8 +49,11 @@ class DecisionRecord(BaseModel):
     reasoning: str
     risk_verdict: str  # approved / rejected / unknown
     risk_reason: str | None = None
-    realized_pnl: float | None = None  # Net PnL once the position closed (None = still open)
+    realized_pnl: float | None = None  # Net PnL once the position closed (None = not closed)
     timestamp: datetime | None = None
+    # Whether an order placed for this decision filled (§7.45) — lets the prompt tell
+    # "still open" from "never traded". ``None`` = not looked up / unknown.
+    filled: bool | None = None
 
 
 # ── Risk Verdict ──────────────────────────────────────────────
@@ -151,6 +154,19 @@ class MarketSnapshot(BaseModel):
     candles: list[OHLCV] = []
     indicators: dict[str, Any] = {}  # RSI, MACD, etc.
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class BookContext(BaseModel):
+    """The agent's own book for one symbol, rendered into the prompt (§7.45).
+
+    Without it the LLM could not tell opening from adding to a position, and issued
+    sells on symbols it did not hold. ``position`` is ``None`` when flat.
+    """
+
+    position: Position | None = None
+    cash: float
+    total_value: float
+    max_position_pct: float | None = None
 
 
 # ── Order Result ──────────────────────────────────────────────

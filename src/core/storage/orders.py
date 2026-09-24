@@ -81,6 +81,22 @@ class OrderMixin:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def get_filled_decision_ids(self, decision_ids: list[int]) -> set[int]:
+        """Which of ``decision_ids`` had an order that filled (§7.45 prompt outcomes).
+
+        Decision ids are globally unique, so no agent scope is needed here.
+        """
+        if not decision_ids:
+            return set()
+        async with await self._session() as session:
+            stmt = (
+                select(OrderRow.decision_id)
+                .where(OrderRow.status == "filled", OrderRow.decision_id.in_(decision_ids))
+                .distinct()
+            )
+            result = await session.execute(stmt)
+            return {row for row in result.scalars().all() if row is not None}
+
     async def get_filled_orders(
         self, symbol: str | None = None, agent: str | None = None
     ) -> list[OrderRow]:

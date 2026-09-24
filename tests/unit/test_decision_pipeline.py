@@ -13,6 +13,7 @@ from src.core.decision_pipeline import DecisionPipeline, calculate_quantity
 from src.core.models import (
     OHLCV,
     Action,
+    BookContext,
     DecisionRecord,
     Executor,
     MarketSnapshot,
@@ -151,7 +152,7 @@ class TestBuildUserPrompt:
                 confidence=0.6,
                 reasoning="No edge",
                 risk_verdict="approved",
-                realized_pnl=None,  # position still open
+                realized_pnl=None,  # a HOLD never trades
             ),
         ]
 
@@ -159,7 +160,9 @@ class TestBuildUserPrompt:
 
         assert "outcome: +25.00 (win)" in prompt
         assert "outcome: -10.00 (loss)" in prompt
-        assert "outcome: still open" in prompt
+        # §7.45: a HOLD used to render "still open" forever — it never traded.
+        assert "outcome: n/a (hold — no trade)" in prompt
+        assert "still open" not in prompt.split("CONTEXT")[1].split("Each outcome")[0]
 
     def test_outcome_flat_renders_zero(self, sample_candles: list[OHLCV]) -> None:
         snapshot = MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=sample_candles)
@@ -1130,3 +1133,158 @@ class TestPositionHeadroomSizing:
         exposure = sum(p.quantity * p.current_price for p in final.positions)
         assert fills == 1
         assert exposure / final.total_value <= rs.max_position_pct * 1.01
+
+
+class TestHonestOutcomeLabels:
+    """§7.45: only an executed, unclosed entry is "still open"."""
+
+    @staticmethod
+    def _render(**fields) -> str:
+        base = {"action": "buy", "confidence": 0.8, "reasoning": "r", "risk_verdict": "approved"}
+        base.update(fields)
+        snapshot = MarketSnapshot(symbol="BTC/USDT", timeframe="1h")
+        return build_user_prompt(snapshot, [DecisionRecord(**base)])
+
+    def test_rejected_entry_is_not_open(self) -> None:
+        assert "outcome: n/a (rejected — not executed)" in self._render(risk_verdict="rejected")
+
+    def test_unfilled_order_is_not_open(self) -> None:
+        assert "outcome: n/a (order not filled)" in self._render(filled=False)
+
+    def test_filled_entry_is_still_open(self) -> None:
+        assert "outcome: still open" in self._render(filled=True)
+        assert "outcome: still open" in self._render()  # fill status unknown → benefit of doubt
+
+    def test_sell_without_outcome_is_na(self) -> None:
+        assert "outcome: n/a (no tracked position closed)" in self._render(action="sell")
+
+
+class TestBookSection:
+    """§7.45: the prompt carries the agent's own position, cash and size limit."""
+
+    @staticmethod
+    def _snapshot() -> MarketSnapshot:
+        return MarketSnapshot(symbol="BTC/USDT", timeframe="1h")
+
+    def test_flat_book(self) -> None:
+        book = BookContext(position=None, cash=10_000.0, total_value=10_000.0, max_position_pct=0.1)
+        prompt = build_user_prompt(self._snapshot(), book=book)
+        assert "YOUR BOOK" in prompt
+        assert "Position in BTC/USDT: none (flat) — a SELL has nothing to close." in prompt
+        assert "Cash: 10000.00 of total equity 10000.00" in prompt
+        assert "room to add: 1000.00" in prompt
+
+    def test_held_position_with_levels_and_limit(self) -> None:
+        pos = Position(
+            symbol="BTC/USDT",
+            quantity=10.0,
+            avg_entry_price=90.0,
+            current_price=100.0,
+            stop_loss=85.0,
+            take_profit=120.0,
+        )
+        book = BookContext(position=pos, cash=9_000.0, total_value=10_000.0, max_position_pct=0.1)
+        prompt = build_user_prompt(self._snapshot(), book=book)
+        assert "LONG 10 @ avg 90.00, mark 100.00, unrealized +100.00 (+11.11%)" in prompt
+        assert "10.0% of equity" in prompt
+        assert "active stop 85.00, take-profit 120.00" in prompt
+        assert "at the limit, a BUY will be rejected." in prompt
+
+    def test_sub_dollar_prices_keep_precision(self) -> None:
+        pos = Position(
+            symbol="BTC/USDT", quantity=1000, avg_entry_price=0.1234, current_price=0.1301
+        )
+        book = BookContext(position=pos, cash=1_000.0, total_value=1_130.1)
+        prompt = build_user_prompt(self._snapshot(), book=book)
+        assert "avg 0.1234, mark 0.1301" in prompt
+
+    async def test_pipeline_sends_the_book_to_the_llm(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV]
+    ) -> None:
+        executor = PaperExecutor(initial_cash=10_000.0)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 5.0, 100.0, stop_loss=90.0)
+        provider = AsyncMock()
+        provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=sample_candles
+        )
+        llm = AsyncMock()
+        llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT", action=Action.HOLD, confidence=0.5, reasoning="wait"
+        )
+        pipeline = DecisionPipeline(
+            provider=provider,
+            llm_client=llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+
+        await pipeline.run("BTC/USDT")
+
+        prompt = llm.ask_trade_signal.call_args.kwargs["user_prompt"]
+        assert "Position in BTC/USDT: LONG 5" in prompt
+        assert "Position limit: 10% of equity per symbol" in prompt
+
+    async def test_portfolio_read_failure_skips_the_llm_call(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV]
+    ) -> None:
+        provider = AsyncMock()
+        provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=sample_candles
+        )
+        executor = MagicMock()
+        executor.get_positions = AsyncMock(return_value=[])
+        executor.get_cash = AsyncMock(side_effect=RuntimeError("venue down"))
+        llm = AsyncMock()
+        pipeline = DecisionPipeline(
+            provider=provider,
+            llm_client=llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+
+        result = await pipeline.run("BTC/USDT")
+
+        assert result.error is not None and "Portfolio read failed" in result.error
+        llm.ask_trade_signal.assert_not_awaited()
+
+
+class TestHistoryFillLookup:
+    """§7.45: prompt history knows which approved trades actually filled."""
+
+    async def test_filled_flag_from_orders(self, tmp_path) -> None:
+        from src.core.storage import Storage
+
+        store = Storage(str(tmp_path / "h.db"), agent="crypto")
+        await store.initialize()
+        try:
+            ids = []
+            for _ in range(2):
+                ids.append(
+                    await store.save_llm_decision(
+                        symbol="BTC/USDT",
+                        action="buy",
+                        confidence=0.8,
+                        reasoning="r",
+                        stop_loss=1.0,
+                        take_profit=None,
+                        risk_verdict="approved",
+                        risk_reason=None,
+                    )
+                )
+            await store.save_order("o1", "BTC/USDT", "buy", 1.0, 10.0, "filled", decision_id=ids[0])
+            await store.save_order(
+                "o2", "BTC/USDT", "buy", 1.0, 10.0, "rejected", decision_id=ids[1]
+            )
+            assert await store.get_filled_decision_ids(ids) == {ids[0]}
+
+            pipeline = DecisionPipeline(
+                provider=AsyncMock(),
+                llm_client=AsyncMock(),
+                risk_engine=MagicMock(),
+                executor=PaperExecutor(),
+                storage=store,
+            )
+            records = await pipeline.get_recent_decisions("BTC/USDT")
+            assert [r.filled for r in records] == [False, True]  # newest first
+        finally:
+            await store.close()

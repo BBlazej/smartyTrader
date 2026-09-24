@@ -14,6 +14,7 @@ from .config import RiskSettings
 from .llm_client import LLMClient
 from .models import (
     Action,
+    BookContext,
     DecisionRecord,
     Executor,
     MarketSnapshot,
@@ -21,6 +22,7 @@ from .models import (
     OrderSide,
     PortfolioState,
     Position,
+    PositionSide,
     RiskResult,
     RiskVerdict,
     TradeSignal,
@@ -181,6 +183,18 @@ class DecisionPipeline:
             logger.warning("failed to fetch decision history", symbol=symbol, error=str(exc))
             return []
 
+        # Which approved trades actually filled (§7.45) — so the prompt can say
+        # "never traded" instead of "still open". Unknown on failure (None).
+        filled_ids: set[int] | None = None
+        candidates = [
+            r.id for r in rows if r.action != "hold" and r.risk_verdict == "approved" and r.id
+        ]
+        if candidates:
+            try:
+                filled_ids = await self._storage.get_filled_decision_ids(candidates)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("failed to look up decision fills", symbol=symbol, error=str(exc))
+
         return [
             DecisionRecord(
                 action=row.action,
@@ -190,6 +204,7 @@ class DecisionPipeline:
                 risk_reason=row.risk_reason,
                 realized_pnl=row.realized_pnl,
                 timestamp=row.timestamp,
+                filled=(row.id in filled_ids) if filled_ids is not None else None,
             )
             for row in rows
         ]
@@ -234,10 +249,21 @@ class DecisionPipeline:
                 symbol=symbol, snapshot=snapshot, error=f"Indicator computation failed: {exc}"
             )
 
-        # Step 3 — Build prompt (with the agent's own recent decisions for context)
+        # Step 3 — Build prompt: the agent's own book for this symbol (§7.45) and its
+        # recent decisions. The book is read once here and reused unchanged at the
+        # risk gate — nothing trades on this agent between prompt and gate.
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.BUILD_PROMPT)
+        try:
+            portfolio = await self.get_portfolio_state()
+        except Exception as exc:  # noqa: BLE001
+            step_logger.error("portfolio read failed", error=str(exc))
+            return PipelineResult(
+                symbol=symbol, snapshot=snapshot, error=f"Portfolio read failed: {exc}"
+            )
         prior_decisions = await self.get_recent_decisions(symbol)
-        user_prompt = build_user_prompt(snapshot, prior_decisions)
+        user_prompt = build_user_prompt(
+            snapshot, prior_decisions, book=self._book_context(symbol, portfolio)
+        )
 
         # Step 4 — Call LLM
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.CALL_LLM)
@@ -252,7 +278,6 @@ class DecisionPipeline:
         # engine can reject an oversized plan (planned_notional), and reuses it
         # unchanged at execution — what the gate approved is what gets sent.
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.RISK_CHECK)
-        portfolio = await self.get_portfolio_state()
         current_price = snapshot.candles[-1].close if snapshot.candles else None
         planned_quantity: float | None = None
         planned_notional: float | None = None
@@ -492,6 +517,23 @@ class DecisionPipeline:
         positions = await self.executor.get_positions()
         cash = await self.executor.get_cash()
         return PortfolioState(cash=cash, positions=positions)
+
+    def _book_context(self, symbol: str, portfolio: PortfolioState) -> BookContext:
+        """This symbol's slice of the book for the prompt (§7.45)."""
+        position = next(
+            (
+                p
+                for p in portfolio.positions
+                if p.symbol == symbol and p.quantity > 0 and p.side == PositionSide.LONG
+            ),
+            None,
+        )
+        return BookContext(
+            position=position,
+            cash=portfolio.cash,
+            total_value=portfolio.total_value,
+            max_position_pct=self.risk_engine.settings.max_position_pct,
+        )
 
     def _mark_positions(self, symbol: str, snapshot: MarketSnapshot) -> None:
         """Re-mark open executor positions at the snapshot's last close.

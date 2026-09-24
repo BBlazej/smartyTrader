@@ -9,16 +9,21 @@ no override is configured. Pure string building — no I/O.
 
 from __future__ import annotations
 
-from ..core.models import DecisionRecord, MarketSnapshot
+from ..core.models import BookContext, DecisionRecord, MarketSnapshot, PositionSide
 
 
 def build_user_prompt(
-    snapshot: MarketSnapshot, prior_decisions: list[DecisionRecord] | None = None
+    snapshot: MarketSnapshot,
+    prior_decisions: list[DecisionRecord] | None = None,
+    book: BookContext | None = None,
 ) -> str:
     """Build a structured prompt from the market snapshot and indicators.
 
     When ``prior_decisions`` is provided (most recent first), it is rendered under a
     ``CONTEXT`` section so the LLM can learn from the agent's own track record.
+    ``book`` adds a ``YOUR BOOK`` section — the position held in this symbol, cash
+    and the position limit (§7.45) — so the model knows whether a BUY opens or adds
+    and whether a SELL has anything to close.
     """
     lines: list[str] = []
 
@@ -45,6 +50,10 @@ def build_user_prompt(
         for key, value in snapshot.indicators.items():
             lines.append(f"  {key}: {value}")
 
+    if book is not None:
+        lines.append("")
+        lines.extend(_render_book(snapshot.symbol, book))
+
     if prior_decisions:
         lines.append("")
         lines.append("CONTEXT — your most recent decisions for this symbol (most recent first):")
@@ -58,12 +67,12 @@ def build_user_prompt(
                 parts.append(f"risk reason: {d.risk_reason}")
             if d.reasoning:
                 parts.append(f"reasoning: {d.reasoning}")
-            parts.append(_format_outcome(d.realized_pnl))
+            parts.append(_format_outcome(d))
             lines.append("  " + " | ".join(parts))
         lines.append(
-            "Each outcome is the net PnL once that position closed (or 'still open' if it "
-            "hasn't yet). Learn from it: avoid repeating the same losing pattern and lean "
-            "into setups that have paid off."
+            "Each outcome is the net PnL once that position closed ('still open' while it "
+            "hasn't; 'n/a' when the decision never traded). Learn from it: avoid repeating "
+            "the same losing pattern and lean into setups that have paid off."
         )
 
     lines.append("")
@@ -77,13 +86,62 @@ def build_user_prompt(
     return "\n".join(lines)
 
 
-def _format_outcome(realized_pnl: float | None) -> str:
+def _render_book(symbol: str, book: BookContext) -> list[str]:
+    """The ``YOUR BOOK`` section: this symbol's position, cash and the size limit (§7.45)."""
+    lines = ["YOUR BOOK (spot account — you can only hold longs; SELL closes, it never shorts):"]
+    pos = book.position
+    equity = book.total_value
+    if pos is None or pos.quantity <= 0 or pos.side != PositionSide.LONG:
+        lines.append(f"  Position in {symbol}: none (flat) — a SELL has nothing to close.")
+        held_value = 0.0
+    else:
+        held_value = pos.quantity * pos.current_price
+        share = f", {held_value / equity:.1%} of equity" if equity > 0 else ""
+        levels = []
+        if pos.stop_loss is not None:
+            levels.append(f"stop {_price(pos.stop_loss)}")
+        if pos.take_profit is not None:
+            levels.append(f"take-profit {_price(pos.take_profit)}")
+        lines.append(
+            f"  Position in {symbol}: LONG {pos.quantity:.8g} @ avg {_price(pos.avg_entry_price)}, "
+            f"mark {_price(pos.current_price)}, unrealized {pos.pnl:+.2f} ({pos.pnl_pct:+.2%})"
+            f"{share}" + (f"; active {', '.join(levels)}" if levels else "")
+        )
+    lines.append(f"  Cash: {book.cash:.2f} of total equity {equity:.2f}")
+    if book.max_position_pct is not None and equity > 0:
+        cap = book.max_position_pct * equity
+        headroom = max(0.0, cap - held_value)
+        lines.append(
+            f"  Position limit: {book.max_position_pct:.0%} of equity per symbol "
+            f"({cap:.2f}); room to add: {headroom:.2f}"
+            + (" — at the limit, a BUY will be rejected." if headroom <= 0 else "")
+        )
+    return lines
+
+
+def _price(value: float) -> str:
+    """Price with enough precision for sub-dollar assets too."""
+    return f"{value:.2f}" if abs(value) >= 1 else f"{value:.6g}"
+
+
+def _format_outcome(d: DecisionRecord) -> str:
     """Render a decision's realized outcome for the prompt.
 
-    ``None`` means the position is still open (no closed trade yet), so we say
-    so explicitly rather than implying a ``0.0`` PnL.
+    A number once a trade closed; ``still open`` only for an executed entry whose
+    position has not closed yet; ``n/a`` for decisions that never traded — HOLDs,
+    risk rejections and unfilled orders used to render as "still open" forever,
+    telling the model it held trades that never existed (§7.45).
     """
+    realized_pnl = d.realized_pnl
     if realized_pnl is None:
+        if d.action == "hold":
+            return "outcome: n/a (hold — no trade)"
+        if d.risk_verdict != "approved":
+            return "outcome: n/a (rejected — not executed)"
+        if d.filled is False:
+            return "outcome: n/a (order not filled)"
+        if d.action == "sell":
+            return "outcome: n/a (no tracked position closed)"
         return "outcome: still open"
     if realized_pnl > 0:
         return f"outcome: +{realized_pnl:.2f} (win)"

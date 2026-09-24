@@ -11,7 +11,7 @@ deterministic risk engine, and one storage layer.
 ## How it works
 
 ```
-fetch data → compute indicators → build prompt → call LLM
+fetch data → compute indicators → build prompt (market data + own book + track record) → call LLM
         → parse TradeSignal → risk check (RiskResult)
         → execute if approved → persist (decision / order / portfolio)
 ```
@@ -224,7 +224,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**571 tests passing at ~94% coverage.**
+**581 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

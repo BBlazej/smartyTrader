@@ -173,7 +173,8 @@ sequenceDiagram
     PL->>EX: update_price(symbol, last close) — marking hook (paper only)
     Note over PL: exit-level check: breach → auto-close full quantity (no LLM, no gate), cycle ends with auto_exit=True
     PL->>PL: compute indicators (RSI, MACD, Bollinger, ATR — hand-rolled, simple averages)
-    PL->>LLM: prompt = portfolio state + last-N decisions with realized PnL + market data
+    PL->>EX: read book once (positions + cash) — reused unchanged at the gate
+    PL->>LLM: prompt = market data + YOUR BOOK (symbol position, cash, limit headroom) + last-N decisions with honest outcomes
     LLM-->>PL: TradeSignal JSON (exhausted-retries HOLD flagged is_fallback, never forgeable)
     PL->>ST: persist decision immediately after risk gate (decision_id exists before any fill)
     PL->>RE: evaluate(signal, portfolio, planned_notional = quantity × price)
@@ -191,6 +192,7 @@ sequenceDiagram
 Notes:
 
 - **Marking before gating** (§7.1): paper positions are re-marked at the snapshot's last close *before* the risk check, so unrealized PnL, portfolio snapshots and the daily-loss rule track the market. Real-venue executors report live prices and skip the hook.
+- **The model sees its own book** (§7.45): the prompt's *YOUR BOOK* section carries the symbol's long position (size, entry, mark, uPnL, active SL/TP), cash vs equity and the per-symbol limit with remaining headroom; past-decision outcomes read `n/a` for HOLD/rejected/unfilled decisions and `still open` only for executed, unclosed entries (`DecisionRecord.filled` ← `Storage.get_filled_decision_ids`).
 - **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. Sells clamp to units held.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
 - Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
