@@ -88,7 +88,8 @@ def test_stopless_close_is_never_blocked_for_lacking_a_stop(cash: float):
     exposure, and blocking them strands the agent in losing positions (§7.9)."""
     engine = RiskEngine(make_settings())
     signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="r")
-    result = engine.evaluate(signal, PortfolioState(cash=cash, positions=[]))
+    held = Position(symbol="BTC/USDT", quantity=1.0, avg_entry_price=100.0, current_price=100.0)
+    result = engine.evaluate(signal, PortfolioState(cash=cash, positions=[held]))
     assert "stop-loss" not in (result.reason or "").lower()
     assert result.verdict == RiskVerdict.APPROVED
 
@@ -154,9 +155,10 @@ def test_daily_loss_limit_blocks_active_signals(cash: float, decline: float):
     assert result.verdict == RiskVerdict.REJECTED
 
 
-@given(action=st.sampled_from([Action.BUY, Action.SELL]))
+@given(action=st.sampled_from([Action.BUY]))
 def test_three_losses_trigger_cooldown(action: Action):
-    """Three consecutive losses must cool the engine down for active signals."""
+    """Three consecutive losses must cool the engine down for *entries* (exits are
+    never gated by the cooldown — §7.47, see ``test_exits_are_never_stranded``)."""
     engine = RiskEngine(make_settings())
     portfolio = make_portfolio(100_000.0, 0)
     signal = TradeSignal(
@@ -243,3 +245,42 @@ def test_repeated_buys_never_exceed_the_position_cap(prices: list[float], cash: 
                 assert held <= rs.max_position_pct * after.total_value * (1 + 1e-6)
 
     asyncio.run(run())
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    peak=st.floats(min_value=1_000.0, max_value=1e7, allow_nan=False, allow_infinity=False),
+    drop=st.floats(min_value=0.0, max_value=0.99, allow_nan=False, allow_infinity=False),
+    losses=st.integers(min_value=0, max_value=6),
+    held_value_frac=st.floats(min_value=0.01, max_value=1.0, allow_nan=False),
+)
+def test_exits_are_never_stranded(peak: float, drop: float, losses: int, held_value_frac: float):
+    """§7.47: however deep the drawdown, daily loss or losing streak, a confident SELL
+    of a held long is approved — closing only reduces exposure."""
+    engine = RiskEngine(make_settings())
+    engine.seed_peak_equity(peak)
+    engine.restore_daily_baseline(peak)
+    for _ in range(losses):
+        engine.record_outcome(was_profitable=False)
+    equity = peak * (1.0 - drop)
+    held = equity * held_value_frac
+    portfolio = PortfolioState(
+        cash=equity - held,
+        positions=[
+            Position(
+                symbol="BTC/USDT", quantity=held / 100.0, avg_entry_price=100.0, current_price=100.0
+            )
+        ],
+    )
+    signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="exit")
+    assert engine.evaluate(signal, portfolio).verdict == RiskVerdict.APPROVED
+
+
+@given(cash=positive_money)
+def test_flat_sell_is_refused(cash: float):
+    """§7.47: spot account — a SELL with no long position has nothing to close."""
+    engine = RiskEngine(make_settings())
+    signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.95, reasoning="r")
+    result = engine.evaluate(signal, PortfolioState(cash=cash))
+    assert result.verdict == RiskVerdict.REJECTED
+    assert "No open long position" in (result.reason or "")

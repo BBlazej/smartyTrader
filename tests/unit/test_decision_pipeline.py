@@ -1288,3 +1288,46 @@ class TestHistoryFillLookup:
             assert [r.filled for r in records] == [False, True]  # newest first
         finally:
             await store.close()
+
+
+class TestExitsCloseInFull:
+    """§7.47: an approved SELL closes the whole long, even deep in drawdown/cooldown."""
+
+    def test_sell_sizes_to_the_full_position(self) -> None:
+        rs = RiskSettings(max_position_pct=0.10)
+        book = PortfolioState(
+            cash=1_000.0,
+            positions=[
+                Position(
+                    symbol="BTC/USDT", quantity=50.0, avg_entry_price=90.0, current_price=100.0
+                )
+            ],
+        )  # the position is 5000 of 6000 equity — far above a 10% "slice"
+        signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="x")
+        assert calculate_quantity(signal, book, rs, 100.0) == pytest.approx(50.0)
+
+    async def test_llm_exit_goes_through_during_cooldown(
+        self, risk_settings: RiskSettings, sample_candles: list[OHLCV]
+    ) -> None:
+        engine = RiskEngine(risk_settings)
+        for _ in range(3):
+            engine.record_outcome(was_profitable=False)  # cooldown armed
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 5.0, 100.0)
+        provider = AsyncMock()
+        provider.fetch_snapshot.return_value = MarketSnapshot(
+            symbol="BTC/USDT", timeframe="1h", candles=sample_candles
+        )
+        llm = AsyncMock()
+        llm.ask_trade_signal.return_value = TradeSignal(
+            symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="get out"
+        )
+        pipeline = DecisionPipeline(
+            provider=provider, llm_client=llm, risk_engine=engine, executor=executor
+        )
+
+        result = await pipeline.run("BTC/USDT")
+
+        assert result.risk_result.verdict == RiskVerdict.APPROVED
+        assert result.executed and result.order_result.quantity == pytest.approx(5.0)
+        assert await executor.get_positions() == []

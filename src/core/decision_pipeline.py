@@ -656,7 +656,8 @@ def calculate_quantity(
 
     Used by the live pipeline *and* the decision-replay backtester so sizing rules
     stay identical between them (§7.14). A BUY only fills the *headroom* left under
-    the per-position cap — what is already held in the symbol counts (§7.42).
+    the per-position cap — what is already held in the symbol counts (§7.42). A SELL
+    closes the **whole** long position (§7.47: SELL means "close", never a slice).
     """
     max_position_value = portfolio.total_value * settings.max_position_pct
     if signal.action == Action.BUY:
@@ -673,13 +674,15 @@ def calculate_quantity(
         max_qty_by_cash = portfolio.cash / price
         quantity = min(quantity, max_qty_by_cash)
 
-    # ...and never sell more than is actually held. The notional cap above
-    # scales with *total* value (marked to market), so a sell slice can
-    # otherwise exceed the position and produce a guaranteed-rejected order
-    # loop (§7.1 side effect / §7.19 sizing nit).
+    # A SELL closes the held long in full (§7.47) — never more than is held
+    # (§7.19), and never a cap-sized slice that leaves a remainder behind.
     if signal.action == Action.SELL:
-        held = sum(p.quantity for p in portfolio.positions if p.symbol == signal.symbol)
+        held = sum(
+            p.quantity
+            for p in portfolio.positions
+            if p.symbol == signal.symbol and p.side == PositionSide.LONG
+        )
         if held > 0:
-            quantity = min(quantity, held)
+            quantity = held
 
     return round(quantity, 8)

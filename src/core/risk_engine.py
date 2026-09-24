@@ -178,6 +178,9 @@ class RiskEngine:
         if signal.action == Action.HOLD:
             return RiskResult(verdict=RiskVerdict.APPROVED)
 
+        if signal.action == Action.SELL:
+            return self._evaluate_exit(signal, portfolio)
+
         checks = [
             self._check_confidence(signal),
             self._check_max_positions(signal, portfolio),
@@ -194,6 +197,29 @@ class RiskEngine:
                 return result
 
         return RiskResult(verdict=RiskVerdict.APPROVED)
+
+    def _evaluate_exit(self, signal: TradeSignal, portfolio: PortfolioState) -> RiskResult:
+        """SELL = close a held long (spot account — never opens a short), §7.47.
+
+        Closing only *reduces* exposure, so the exposure gates (daily loss, drawdown,
+        cooldown, size, max positions) must never strand a position — the same
+        rationale as §7.9 exit levels and close-all. Only the confidence rule applies.
+        A SELL on a symbol with no long position is refused outright: there is
+        nothing to close, and it used to reach the executor as a doomed order.
+        """
+        if long_exposure(portfolio, signal.symbol) <= 0:
+            result = RiskResult(
+                verdict=RiskVerdict.REJECTED,
+                reason=(
+                    f"No open long position in {signal.symbol} to sell "
+                    "(spot account: SELL closes a position, it never opens a short)"
+                ),
+            )
+        else:
+            result = self._check_confidence(signal)
+        if result.verdict == RiskVerdict.REJECTED:
+            logger.warning("risk_rejected", symbol=signal.symbol, reason=result.reason)
+        return result
 
     def record_outcome(self, was_profitable: bool) -> None:
         """Record trade outcome for consecutive-loss tracking."""

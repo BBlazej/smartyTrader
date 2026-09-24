@@ -83,10 +83,10 @@ class TestReplayEngine:
         ]
         report = await _backtester().replay(decisions, candles, timeframe="1d")
 
-        # Buy: 10% of 10k / 100 = 10 units. The later sell is sized exactly like live:
-        # 10% of total value (9000 + 10×120 = 10200) → 1020/120 = 8.5 units (≤ held).
+        # Buy: 10% of 10k / 100 = 10 units. The later SELL closes the whole position,
+        # exactly like live (§7.47 — it used to sell a cap-sized 8.5-unit slice).
         assert report.per_symbol["X"]["trades"] == 1
-        assert report.per_symbol["X"]["realized_pnl"] == pytest.approx(170.0)  # 8.5 × (120−100)
+        assert report.per_symbol["X"]["realized_pnl"] == pytest.approx(200.0)  # 10 × (120−100)
         assert report.final_equity == pytest.approx(10_200.0)
         assert report.total_return_pct == pytest.approx(2.0)
         assert report.win_rate == pytest.approx(1.0)
@@ -173,8 +173,8 @@ class TestReplayEngine:
 
     async def test_fees_and_slippage_flow_into_pnl(self) -> None:
         # Fee 1%/side, no slippage. Buy: 10@100 + 10 fee → cash 8990.
-        # Sell slice sized like live: 10% of TV (8990 + 1200 = 10190) → qty ≈ 8.4917,
-        # sell fee ≈ 10.19, allocated buy fee ≈ 8.49 ⇒ net PnL ≈ 151.15.
+        # The SELL closes all 10 units (§7.47): sell fee 12, the whole buy fee 10
+        # ⇒ net PnL = 200 − 10 − 12 = 178.
         candles = {"X": _candles([100.0, 120.0])}
         decisions = [
             ReplayDecision(_ts(1, 12), "X", "buy", 0.8, stop_loss=90.0),
@@ -182,8 +182,8 @@ class TestReplayEngine:
         ]
         report = await _backtester(fee_pct=0.01).replay(decisions, candles, timeframe="1d")
 
-        qty = round((8_990.0 + 1_200.0) * 0.10 / 120.0, 8)
-        expected_pnl = qty * 20.0 - 10.0 * (qty / 10.0) - qty * 120.0 * 0.01
+        qty = 10.0
+        expected_pnl = qty * 20.0 - 10.0 - qty * 120.0 * 0.01
         assert report.per_symbol["X"]["realized_pnl"] == pytest.approx(expected_pnl, abs=1e-3)
         # Equity moves only by the sell-side fee at the mark (sold at current price).
         assert report.final_equity == pytest.approx(10_190.0 - qty * 120.0 * 0.01, abs=1e-3)

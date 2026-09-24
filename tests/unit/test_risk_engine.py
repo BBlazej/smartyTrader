@@ -191,7 +191,7 @@ class TestStopLossRequired:
         # §7.9: a close reduces exposure; requiring a stop on it only blocked
         # legitimate exits (and stranded losing positions during cooldowns).
         signal = TradeSignal(
-            symbol="BTC/USDT",
+            symbol="AAPL",  # held in healthy_portfolio
             action=Action.SELL,
             confidence=0.9,
             reasoning="exit the trade",
