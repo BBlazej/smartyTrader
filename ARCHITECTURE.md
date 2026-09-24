@@ -119,7 +119,8 @@ src/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
 │   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled;
-│   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28)
+│   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28;
+│   │                         #  resolved statuses re-delivered until confirm_reconciled, §7.44)
 │   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
 │   └── xtb_client.py         # real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth, instant orders, tick marks
 ├── agents/
@@ -196,6 +197,7 @@ Notes:
 - **Bars, not cycles, drive decisions** (§7.56): candle timestamps are bar open times; `analysis/candles.py` splits off the still-forming bar — indicators use closed bars, the forming bar stays the live price (marking, exits, prompt "Current price … (live)") and is labelled `[FORMING]` in the prompt. With `decide_on_new_bar_only` the LLM is asked once per newly closed bar per symbol (last decision time in memory, from storage after a restart; fallback HOLDs don't count) while every cycle still marks and enforces exits.
 - **The model sees its own book** (§7.45): the prompt's *YOUR BOOK* section carries the symbol's long position (size, entry, mark, uPnL, active SL/TP), cash vs equity and the per-symbol limit with remaining headroom; past-decision outcomes read `n/a` for HOLD/rejected/unfilled decisions and `still open` only for executed, unclosed entries (`DecisionRecord.filled` ← `Storage.get_filled_decision_ids`).
 - **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. Sells clamp to units held.
+- **Persistence after a fill is fail-soft and lossless** (§7.44): the agent contains post-processing per symbol, retries order-row writes (audit log line + alert as last resort), and confirms reconciled venue transitions to the executor only after they are stored — so a locked/full DB never aborts a cycle, skips the heartbeat or loses a fill.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
 - Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
 

@@ -55,6 +55,10 @@ class _PendingOrder:
     decision_id: int | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    # §7.44: the terminal result once the venue resolved the order. It is re-delivered
+    # on every reconcile until the agent confirms it persisted the transition, so a
+    # DB error can never lose it (and the ledger is only ever fed once).
+    resolved: OrderResult | None = None
 
 
 class ExchangeClient(Protocol):
@@ -230,13 +234,20 @@ class KrakenExecutor:
 
         The agent calls this once per cycle. Each locally tracked pending order is
         refreshed through the client's optional ``fetch_order(id, symbol)``;
-        terminal statuses (filled / cancelled / rejected) drop it from local
-        tracking, and fills flow through the same FIFO ledger (with entry-decision
-        attribution) as create_order fills. Still-open orders stay tracked; failed
-        polls are logged fail-soft and retried next cycle.
+        fills flow through the same FIFO ledger (with entry-decision attribution) as
+        create_order fills. Still-open orders stay tracked; failed polls are logged
+        fail-soft and retried next cycle.
+
+        **Two-phase (§7.44):** a terminal status (filled / cancelled / rejected) is
+        cached and re-delivered on every call until :meth:`confirm_reconciled` says
+        the agent persisted it — a storage error then delays the record instead of
+        losing it. The ledger is fed exactly once, when the status first resolves.
         """
         if not self._open_orders:
             return []
+        redelivered = [p.resolved for p in self._open_orders.values() if p.resolved is not None]
+        if len(redelivered) == len(self._open_orders):
+            return redelivered
         fetch_order = getattr(self._client, "fetch_order", None)
         if not callable(fetch_order):
             if not self._reconcile_unsupported_logged:
@@ -245,8 +256,10 @@ class KrakenExecutor:
                     "cannot reconcile pending orders: venue client provides no fetch_order"
                 )
             return []
-        results: list[OrderResult] = []
+        results: list[OrderResult] = list(redelivered)
         for order_id, pending in list(self._open_orders.items()):
+            if pending.resolved is not None:
+                continue  # already reported above; waiting for confirmation
             try:
                 raw = await fetch_order(order_id, pending.symbol) or {}
             except Exception as exc:  # noqa: BLE001 - a failed poll is retried next cycle
@@ -255,7 +268,6 @@ class KrakenExecutor:
             status = _STATUS_MAP.get(str(raw.get("status", "open")), "pending")
             if status == "pending":
                 continue
-            self._open_orders.pop(order_id, None)
             fill_price = raw.get("average") or raw.get("price")
             default_qty = pending.quantity if status == "filled" else 0.0
             filled_qty = float(raw.get("filled") or raw.get("amount") or default_qty)
@@ -283,8 +295,20 @@ class KrakenExecutor:
                         # The entry plan was captured when the order was placed;
                         # enforcement stays local (§7.9).
                         self._exit_levels[pending.symbol] = (pending.stop_loss, pending.take_profit)
+            pending.resolved = result
             results.append(result)
         return results
+
+    def confirm_reconciled(self, order_id: str) -> None:
+        """The agent persisted this order's terminal status — stop re-delivering it (§7.44)."""
+        pending = self._open_orders.get(order_id)
+        if pending is not None and pending.resolved is not None:
+            self._open_orders.pop(order_id, None)
+
+    def pending_decision_id(self, order_id: str) -> int | None:
+        """Entry decision of a tracked venue order (lets the agent re-create a lost row)."""
+        pending = self._open_orders.get(order_id)
+        return pending.decision_id if pending is not None else None
 
     async def get_positions(self) -> list[Position]:
         try:

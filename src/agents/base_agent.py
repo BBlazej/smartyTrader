@@ -12,6 +12,7 @@ pipeline + risk gate.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -27,6 +28,11 @@ from ..monitoring.alerts import AlertManager
 
 class BaseTradingAgent:
     """Runs decision cycles for a set of symbols.
+
+    Post-order persistence is fail-soft *and* lossless (§7.44): a storage error after
+    a fill never aborts the cycle or skips the heartbeat, order rows are retried and
+    dumped to an audit log line if they still can't be written, and reconciled venue
+    status changes are only confirmed to the executor once they are persisted.
 
     The heavy lifting (data → indicators → LLM → risk → execute) is delegated to
     the shared :class:`DecisionPipeline`. This class adds the per-cycle concerns:
@@ -64,6 +70,8 @@ class BaseTradingAgent:
         # the runner injects an applier closure over its own Settings/pipeline.
         self._control_agent = component
         self._overrides_applier: Callable[[str], None] | None = None
+        # §7.44: back-off between order-row write attempts (tests set zeros).
+        self._persist_retry_delays: tuple[float, ...] = (0.2, 1.0)
 
     def set_symbols(self, symbols: list[str]) -> None:
         """Replace the traded symbol list (safe config override, §7.15)."""
@@ -154,7 +162,11 @@ class BaseTradingAgent:
                 continue
             if result.error is not None:
                 cycle_error = f"{symbol}: {result.error}"
-            await self._post_process(symbol, result)
+            try:
+                await self._post_process(symbol, result)
+            except Exception as exc:  # noqa: BLE001 - last line of defense (§7.44)
+                self._logger.error("post-processing failed", symbol=symbol, error=str(exc))
+                cycle_error = f"{symbol}: post-processing failed: {exc}"
             results.append(result)
         self._logger.info("cycle end", executed=sum(1 for r in results if r.executed))
         await self._record_health(cycle_error)
@@ -252,6 +264,8 @@ class BaseTradingAgent:
             return
         if not updates:
             return
+        executor = self._pipeline.executor
+        confirm = getattr(executor, "confirm_reconciled", None)
         changed = False
         for order in updates:
             filled_at = order.filled_at
@@ -259,16 +273,36 @@ class BaseTradingAgent:
                 # Venue reported no timestamp — stamp now rather than lose the record.
                 filled_at = datetime.now(UTC)
             try:
-                await self._storage.update_order_status(
+                found = await self._storage.update_order_status(
                     order.order_id, order.status, price=order.price, filled_at=filled_at
                 )
+                if not found:
+                    # The original row was lost (e.g. a failed write at placement):
+                    # re-create it from the venue's answer rather than drop the fill.
+                    decision_of = getattr(executor, "pending_decision_id", None)
+                    await self._storage.save_order(
+                        order_id=order.order_id,
+                        symbol=order.symbol,
+                        side=order.side.value,
+                        quantity=order.quantity,
+                        price=order.price,
+                        status=order.status,
+                        decision_id=decision_of(order.order_id) if callable(decision_of) else None,
+                        filled_at=filled_at if order.status == "filled" else None,
+                    )
             except Exception as exc:  # noqa: BLE001
+                # Not confirmed → the executor re-delivers this transition next cycle.
                 self._logger.warning(
-                    "failed to persist reconciled order", order_id=order.order_id, error=str(exc)
+                    "failed to persist reconciled order; will retry next cycle",
+                    order_id=order.order_id,
+                    error=str(exc),
                 )
+                continue
             for entry in order.closed_entries:
                 if entry.entry_decision_id is not None:
                     await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
+            if callable(confirm):
+                confirm(order.order_id)
             self._logger.info(
                 "order reconciled",
                 order_id=order.order_id,
@@ -281,7 +315,11 @@ class BaseTradingAgent:
             await self._persist_portfolio()
 
     async def _post_process(self, symbol: str, result: PipelineResult) -> None:
-        """Update risk tracking and persist the decision / order / portfolio."""
+        """Update risk tracking and persist the decision / order / portfolio.
+
+        Every step is fail-soft (§7.44): the order has already executed, so a storage
+        hiccup here must neither abort the cycle nor lose the record.
+        """
         # Keep the daily-loss baseline fresh so the -2% rule stays meaningful.
         try:
             portfolio = await self._pipeline.get_portfolio_state()
@@ -295,24 +333,34 @@ class BaseTradingAgent:
 
         if result.order_result is not None:
             await self._persist_order(result, decision_id)
-            # Backfill the net realized PnL onto the decision so the LLM can see
-            # the *outcome* of each past action (the "learn from its track
-            # record" loop). A win/loss is only knowable once a position closes.
-            if (
-                decision_id is not None
-                and result.order_result.status == "filled"
-                and result.order_result.realized_pnl is not None
-            ):
-                await self._storage.set_realized_pnl(decision_id, result.order_result.realized_pnl)
+            try:
+                # Backfill the net realized PnL onto the decision so the LLM can see
+                # the *outcome* of each past action (the "learn from its track
+                # record" loop). A win/loss is only knowable once a position closes.
+                if (
+                    decision_id is not None
+                    and result.order_result.status == "filled"
+                    and result.order_result.realized_pnl is not None
+                ):
+                    await self._storage.set_realized_pnl(
+                        decision_id, result.order_result.realized_pnl
+                    )
 
-            # Attribute the closing sell's PnL back to the *entry* decisions that
-            # opened the consumed lots (§7.8 — FIFO tracker's closed_entries).
-            for entry in result.order_result.closed_entries:
-                if entry.entry_decision_id is not None:
-                    await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
+                # Attribute the closing sell's PnL back to the *entry* decisions that
+                # opened the consumed lots (§7.8 — FIFO tracker's closed_entries).
+                for entry in result.order_result.closed_entries:
+                    if entry.entry_decision_id is not None:
+                        await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "failed to backfill realized pnl", symbol=symbol, error=str(exc)
+                )
 
         await self._persist_portfolio()
-        await self._maybe_alert(symbol, result)
+        try:
+            await self._maybe_alert(symbol, result)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("alert dispatch failed", symbol=symbol, error=str(exc))
 
     async def _maybe_alert(self, symbol: str, result: PipelineResult) -> None:
         """Raise a user-facing alert for noteworthy outcomes (never for a plain HOLD)."""
@@ -352,20 +400,56 @@ class BaseTradingAgent:
     # ── Persistence ───────────────────────────────────────────
 
     async def _persist_order(self, result: PipelineResult, decision_id: int | None = None) -> None:
+        """Write the order row — retried; never raises (§7.44).
+
+        The row is the source of the §7.25 FIFO replay, so losing it silently would
+        desync book and ledger after the next restart. After the retries, the full
+        order goes to an ``order_persist_failed`` audit log line plus an alert.
+        """
         order = result.order_result
         assert order is not None
         filled_at = order.filled_at or datetime.now(UTC)
-        await self._storage.save_order(
-            order_id=order.order_id,
-            symbol=order.symbol,
-            side=order.side.value,
-            quantity=order.quantity,
-            price=order.price,
-            status=order.status,
-            decision_id=decision_id,
-            filled_at=filled_at if order.status == "filled" else None,
+        row = {
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side.value,
+            "quantity": order.quantity,
+            "price": order.price,
+            "status": order.status,
+            "decision_id": decision_id,
+            "filled_at": filled_at if order.status == "filled" else None,
+        }
+        last_error: Exception | None = None
+        for attempt, delay in enumerate((0.0, *self._persist_retry_delays), start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await self._storage.save_order(**row)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                self._logger.warning(
+                    "order persist attempt failed",
+                    order_id=order.order_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                continue
+            self._logger.info("order stored", order_id=order.order_id, status=order.status)
+            return
+        self._logger.error(
+            "order_persist_failed",
+            **{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in row.items()},
+            error=str(last_error),
         )
-        self._logger.info("order stored", order_id=order.order_id, status=order.status)
+        try:
+            await self._alerts.send(
+                "error",
+                f"order {order.order_id} executed but could not be stored: {last_error}",
+                severity="error",
+                symbol=order.symbol,
+            )
+        except Exception as exc:  # noqa: BLE001 - the audit line above is the record
+            self._logger.warning("alert dispatch failed", error=str(exc))
 
     async def _persist_portfolio(self) -> None:
         try:
@@ -374,9 +458,12 @@ class BaseTradingAgent:
             self._logger.warning("failed to read portfolio for persistence", error=str(exc))
             return
         positions_json = json.dumps([p.model_dump(mode="json") for p in portfolio.positions])
-        await self._storage.save_portfolio_snapshot(
-            cash=portfolio.cash,
-            positions_json=positions_json,
-            total_value=portfolio.total_value,
-            unrealized_pnl=portfolio.unrealized_pnl,
-        )
+        try:
+            await self._storage.save_portfolio_snapshot(
+                cash=portfolio.cash,
+                positions_json=positions_json,
+                total_value=portfolio.total_value,
+                unrealized_pnl=portfolio.unrealized_pnl,
+            )
+        except Exception as exc:  # noqa: BLE001 - next cycle writes a fresh snapshot
+            self._logger.warning("failed to persist portfolio snapshot", error=str(exc))

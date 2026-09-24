@@ -458,7 +458,15 @@ class TestReconcileOpenOrders:
         assert sell.realized_pnl == pytest.approx(8.0)
         assert sell.closed_entries[0].entry_decision_id == 7
 
-        # Terminal status ⇒ tracking dropped; nothing to reconcile anymore.
+        # Two-phase (§7.44): re-delivered until the agent confirms it persisted the
+        # transition — without feeding the ledger a second time.
+        again = await executor.reconcile_open_orders()
+        assert [o.order_id for o in again] == ["D-OPEN"]
+        assert executor._tracker.quantity("BTC/USDT") == 0.0  # the sell consumed the only lot
+        mock_client.fetch_order.assert_awaited_once()  # no re-poll of a resolved order
+
+        # Confirmed ⇒ tracking dropped; nothing to reconcile anymore.
+        executor.confirm_reconciled("D-OPEN")
         assert await executor.reconcile_open_orders() == []
 
     @pytest.mark.asyncio
@@ -471,6 +479,7 @@ class TestReconcileOpenOrders:
         updates = await executor.reconcile_open_orders()
         assert [o.status for o in updates] == ["cancelled"]
         assert executor._tracker.quantity("BTC/USDT") == 0.0
+        executor.confirm_reconciled("D-OPEN")
         assert await executor.reconcile_open_orders() == []
 
     @pytest.mark.asyncio
