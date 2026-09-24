@@ -1,0 +1,9 @@
+{# Per-agent book selector (§7.39): each agent has its own portfolio/decisions. #}
+<div class="pill-row" style="margin-bottom:1rem;">
+  {% if allow_all_agents %}
+    <a class="btn{{ ' active-pill' if selected_agent is none }}" href="?">all agents</a>
+  {% endif %}
+  {% for a in agents %}
+    <a class="btn{{ ' active-pill' if selected_agent == a }}" href="?agent={{ a }}">{{ a }}</a>
+  {% endfor %}
+</div>

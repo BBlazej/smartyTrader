@@ -30,6 +30,7 @@ class DecisionMixin:
         risk_reason: str | None,
         realized_pnl: float | None = None,
         is_fallback: bool = False,
+        agent: str | None = None,
     ) -> int:
         async with await self._session() as session:
             row = LLMDecisionRow(
@@ -43,6 +44,7 @@ class DecisionMixin:
                 risk_reason=risk_reason,
                 realized_pnl=realized_pnl,
                 is_fallback=is_fallback,
+                agent=self._agent_scope(agent),
             )
             session.add(row)
             await session.commit()
@@ -93,17 +95,21 @@ class DecisionMixin:
                 "failed to accumulate realized pnl", decision_id=decision_id, error=str(exc)
             )
 
-    async def get_closed_decisions(self, limit: int = 50) -> list[LLMDecisionRow]:
+    async def get_closed_decisions(
+        self, limit: int = 50, agent: str | None = None
+    ) -> list[LLMDecisionRow]:
         """Most recent decisions that carry a realized outcome (``realized_pnl`` set).
 
-        Used at startup to rehydrate the consecutive-loss/cooldown trackers (§7.7).
+        Used at startup to rehydrate the consecutive-loss/cooldown trackers (§7.7);
+        agent-scoped (§7.39) so one agent's losses never arm the other's cooldown.
         """
         async with await self._session() as session:
-            stmt = (
-                select(LLMDecisionRow)
-                .where(LLMDecisionRow.realized_pnl.isnot(None))
-                .order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc())
-                .limit(limit)
+            stmt = select(LLMDecisionRow).where(LLMDecisionRow.realized_pnl.isnot(None))
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            stmt = stmt.order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc()).limit(
+                limit
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
@@ -113,6 +119,7 @@ class DecisionMixin:
         symbol: str | None = None,
         limit: int = 10,
         include_fallback: bool = False,
+        agent: str | None = None,
     ) -> list[LLMDecisionRow]:
         """Return the most recent decisions, most-recent first.
 
@@ -130,6 +137,9 @@ class DecisionMixin:
             stmt = stmt.order_by(LLMDecisionRow.timestamp.desc()).limit(limit)
             if symbol:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(LLMDecisionRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
@@ -139,6 +149,7 @@ class DecisionMixin:
         end: datetime,
         symbols: list[str] | None = None,
         include_fallback: bool = False,
+        agent: str | None = None,
     ) -> list[LLMDecisionRow]:
         """Decisions within ``[start, end]`` (UTC), oldest first (§7.14 replay input).
 
@@ -157,6 +168,9 @@ class DecisionMixin:
                 stmt = stmt.where(LLMDecisionRow.symbol.in_(symbols))
             if not include_fallback:
                 stmt = stmt.where(LLMDecisionRow.is_fallback == False)
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(LLMDecisionRow.agent == scope)
             stmt = stmt.order_by(LLMDecisionRow.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())

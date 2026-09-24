@@ -85,8 +85,9 @@ def create_control_app(
                 ]
             except Exception as exc:  # noqa: BLE001 - status must degrade, not fail
                 logger.warning("control API position read failed", agent=agent, error=str(exc))
-        portfolio = await storage.get_latest_portfolio_snapshot()
-        decisions = await storage.get_recent_decisions(limit=5)
+        # Explicit agent scope (§7.39) — correct even if handed an unbound Storage.
+        portfolio = await storage.get_latest_portfolio_snapshot(agent=agent)
+        decisions = await storage.get_recent_decisions(limit=5, agent=agent)
         return {
             "agent": agent,
             "state": getattr(control, "state", "running"),
@@ -142,7 +143,7 @@ def create_control_app(
         _guard(agent)
         limit = max(1, min(limit, 500))
         # Audit view: includes LLM-fallback rows (flagged), unlike prompt context.
-        rows = await storage.get_recent_decisions(limit=limit, include_fallback=True)
+        rows = await storage.get_recent_decisions(limit=limit, include_fallback=True, agent=agent)
         return [
             _row_dict(
                 row,
@@ -167,8 +168,8 @@ def create_control_app(
     @app.get("/api/agents/{agent}/portfolio")
     async def portfolio(agent: str, limit: int = 100) -> dict[str, Any]:
         _guard(agent)
-        latest = await storage.get_latest_portfolio_snapshot()
-        history = await storage.get_portfolio_history(limit=max(1, min(limit, 1000)))
+        latest = await storage.get_latest_portfolio_snapshot(agent=agent)
+        history = await storage.get_portfolio_history(limit=max(1, min(limit, 1000)), agent=agent)
         return {
             "latest": _row_dict(latest, ("cash", "total_value", "unrealized_pnl", "timestamp"))
             if latest is not None

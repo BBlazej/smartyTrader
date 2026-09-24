@@ -219,19 +219,20 @@ with win-rate/confidence stats, agent health (heartbeat-derived — stale agents
 `offline`, not the last latch value); HTMX pause/resume/close-all controls and a
 safe-config editor — all writing the same `agent_control` latches; `scripts/run_dashboard.py`,
 §7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
-and an on-demand backtester on one shared SQLite volume; §7.15 P5), and **real XTB demo
+and an on-demand backtester on one shared SQLite volume — rows are agent-scoped, so each agent
+keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XTB demo
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**553 tests passing at ~94% coverage.**
+**564 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
 
-> **Open critical findings (external review 4, PLAN §7.39–§7.42):** the two agents share an unscoped DB
-> (don't run both until §7.39 lands), XTB sells open shorts instead of closing longs (keep `xtb_execution`
-> off), Kraken spot has no sandbox (`testnet: false` means **real funds**), and `max_position_pct` caps each
-> order rather than the position. See `AGENTS.md` → *Known open gaps*.
+> **Open critical findings (external review 4, PLAN §7.40–§7.42):** XTB sells open shorts instead of
+> closing longs (keep `xtb_execution` off), Kraken spot has no sandbox (`testnet: false` means **real
+> funds**), and `max_position_pct` caps each order rather than the position. See `AGENTS.md` → *Known open
+> gaps*. (§7.39 — per-agent storage scoping — has landed: both agents can share one DB.)
 
 ## Documentation map
 

@@ -41,7 +41,21 @@ dashboard: {agents: ["crypto", "stocks"], refresh_seconds: 5}
     return Settings(str(config))
 
 
+def _bound(storage: Storage, agent: str) -> Storage:
+    """A second handle on the same DB file, bound to ``agent`` like a runner's."""
+    return Storage(storage.database_path, agent=agent)
+
+
 async def _seed(storage: Storage) -> None:
+    # Rows as the crypto runner writes them: agent-bound storage stamps every row (§7.39).
+    bound = _bound(storage, "crypto")
+    try:
+        await _seed_rows(bound)
+    finally:
+        await bound.close()
+
+
+async def _seed_rows(storage: Storage) -> None:
     positions = [
         {
             "symbol": "BTC/USDT",
@@ -303,3 +317,51 @@ class TestConfigForm:
         resp = await env.client.post("/config/crypto", data={"llm.endpoint": "http://evil"})
         assert resp.status_code == 400
         _assert_no_secrets(resp.text)
+
+
+class TestPerAgentBooks:
+    """§7.39: the dashboard shows one agent's book at a time — never a blend."""
+
+    async def _seed_stocks(self, env) -> None:
+        stocks = _bound(env.storage, "stocks")
+        try:
+            await stocks.save_portfolio_snapshot(
+                cash=77_000.0, positions_json="[]", total_value=77_777.0
+            )
+            await stocks.save_llm_decision(
+                symbol="AAPL",
+                action="hold",
+                confidence=0.5,
+                reasoning="flat",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+            )
+        finally:
+            await stocks.close()
+
+    async def test_overview_defaults_to_first_agent_and_switches(self, env) -> None:
+        await self._seed_stocks(env)  # written last — pre-§7.39 it would win "latest"
+        default = (await env.client.get("/")).text
+        assert "10,100.00" in default and "77,777.00" not in default
+        stocks = (await env.client.get("/?agent=stocks")).text
+        assert "77,777.00" in stocks and "10,100.00" not in stocks
+        assert "/api/portfolio.json?agent=stocks" in stocks
+
+    async def test_positions_and_chart_are_scoped(self, env) -> None:
+        await self._seed_stocks(env)
+        assert "BTC/USDT" not in (await env.client.get("/positions?agent=stocks")).text
+        data = (await env.client.get("/api/portfolio.json?agent=stocks")).json()
+        assert data["total_value"] == [77_777.0]
+
+    async def test_decisions_all_or_filtered(self, env) -> None:
+        await self._seed_stocks(env)
+        everything = (await env.client.get("/decisions")).text
+        assert "AAPL" in everything and "BTC/USDT" in everything
+        only_stocks = (await env.client.get("/decisions?agent=stocks")).text
+        assert "AAPL" in only_stocks and "BTC/USDT" not in only_stocks
+
+    async def test_unknown_agent_is_404(self, env) -> None:
+        assert (await env.client.get("/?agent=forex")).status_code == 404
+        assert (await env.client.get("/api/portfolio.json?agent=forex")).status_code == 404

@@ -668,3 +668,130 @@ class TestMigrations:
         assert orders[0].created_at.year == 2026
 
         await storage.close()
+
+    async def test_agent_column_added_and_backfilled(self, tmp_db_path: str) -> None:
+        """Pre-§7.39 rows are attributed: slash symbols → crypto, tickers → stocks."""
+        import sqlite3
+
+        conn = sqlite3.connect(tmp_db_path)
+        conn.execute(
+            "CREATE TABLE llm_decisions (id INTEGER PRIMARY KEY, symbol TEXT, action TEXT, "
+            "confidence FLOAT, reasoning TEXT, stop_loss FLOAT, take_profit FLOAT, "
+            "risk_verdict TEXT, risk_reason TEXT, realized_pnl FLOAT, "
+            "is_fallback INTEGER NOT NULL DEFAULT 0, timestamp TIMESTAMP)"
+        )
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
+            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
+            "filled_at TIMESTAMP, created_at TIMESTAMP)"
+        )
+        conn.execute(
+            "CREATE TABLE portfolio_snapshots (id INTEGER PRIMARY KEY, cash FLOAT, "
+            "positions_json TEXT, total_value FLOAT, unrealized_pnl FLOAT, timestamp TIMESTAMP)"
+        )
+        for symbol in ("BTC/USDT", "AAPL"):
+            conn.execute(
+                "INSERT INTO llm_decisions (symbol, action, confidence, reasoning, risk_verdict, "
+                "timestamp) VALUES (?, 'hold', 0.5, 'r', 'approved', '2026-09-01 00:00:00')",
+                (symbol,),
+            )
+            conn.execute(
+                "INSERT INTO orders (order_id, symbol, side, quantity, price, status) "
+                "VALUES (?, ?, 'buy', 1.0, 10.0, 'filled')",
+                (f"o-{symbol}", symbol),
+            )
+        books = [
+            ([{"symbol": "AAPL"}, {"symbol": "MSFT"}], 110.0),  # all tickers → stocks
+            ([{"symbol": "BTC/USDT"}], 100.0),  # crypto
+            ([], 105.0),  # empty book is ambiguous → crypto (default-enabled agent)
+        ]
+        for positions, value in books:
+            conn.execute(
+                "INSERT INTO portfolio_snapshots (cash, positions_json, total_value, "
+                "unrealized_pnl, timestamp) VALUES (0, ?, ?, 0, '2026-09-01 00:00:00')",
+                (json.dumps(positions), value),
+            )
+        conn.commit()
+        conn.close()
+
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            decisions = {d.symbol: d.agent for d in await storage.get_recent_decisions(limit=10)}
+            assert decisions == {"BTC/USDT": "crypto", "AAPL": "stocks"}
+            orders = {o.symbol: o.agent for o in await storage.get_recent_orders()}
+            assert orders == {"BTC/USDT": "crypto", "AAPL": "stocks"}
+            assert await storage.get_max_portfolio_value(agent="stocks") == 110.0
+            assert await storage.get_max_portfolio_value(agent="crypto") == 105.0
+        finally:
+            await storage.close()
+
+        # Idempotent: a second startup neither fails nor re-attributes anything.
+        again = Storage(tmp_db_path)
+        await again.initialize()
+        try:
+            assert await again.get_max_portfolio_value(agent="stocks") == 110.0
+        finally:
+            await again.close()
+
+
+class TestAgentScoping:
+    """§7.39: one DB, two agents — a bound Storage only ever sees its own rows."""
+
+    @pytest.fixture()
+    async def pair(self, tmp_db_path: str):
+        crypto = Storage(tmp_db_path, agent="crypto")
+        stocks = Storage(tmp_db_path, agent="stocks")
+        unbound = Storage(tmp_db_path)
+        await crypto.initialize()
+        yield crypto, stocks, unbound
+        for s in (crypto, stocks, unbound):
+            await s.close()
+
+    async def _decision(self, storage: Storage, symbol: str, pnl: float | None = None) -> int:
+        return await storage.save_llm_decision(
+            symbol=symbol,
+            action="buy",
+            confidence=0.8,
+            reasoning="r",
+            stop_loss=1.0,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+            realized_pnl=pnl,
+        )
+
+    async def test_writes_are_stamped_with_the_bound_agent(self, pair) -> None:
+        crypto, stocks, unbound = pair
+        await self._decision(crypto, "BTC/USDT")
+        await self._decision(stocks, "AAPL")
+        rows = await unbound.get_recent_decisions(limit=10)
+        assert {r.symbol: r.agent for r in rows} == {"BTC/USDT": "crypto", "AAPL": "stocks"}
+
+    async def test_portfolio_reads_are_isolated(self, pair) -> None:
+        crypto, stocks, unbound = pair
+        await crypto.save_portfolio_snapshot(cash=90.0, positions_json="[]", total_value=100.0)
+        await stocks.save_portfolio_snapshot(cash=50.0, positions_json="[]", total_value=110.0)
+
+        assert (await crypto.get_latest_portfolio_snapshot()).total_value == 100.0
+        assert (await stocks.get_latest_portfolio_snapshot()).total_value == 110.0
+        assert await crypto.get_max_portfolio_value() == 100.0  # not the other agent's peak
+        assert (await crypto.get_first_portfolio_snapshot_of_day()).total_value == 100.0
+        assert [r.total_value for r in await crypto.get_portfolio_history()] == [100.0]
+        # Unbound (dashboard/tools) sees everything; an explicit agent narrows it.
+        assert await unbound.get_max_portfolio_value() == 110.0
+        assert await unbound.get_max_portfolio_value(agent="crypto") == 100.0
+
+    async def test_decision_and_order_reads_are_isolated(self, pair) -> None:
+        crypto, stocks, _ = pair
+        await self._decision(crypto, "BTC/USDT", pnl=-5.0)
+        await self._decision(stocks, "AAPL", pnl=-7.0)
+        await crypto.save_order("c1", "BTC/USDT", "buy", 1.0, 10.0, "filled")
+        await stocks.save_order("s1", "AAPL", "buy", 2.0, 20.0, "filled")
+
+        assert [r.symbol for r in await crypto.get_closed_decisions()] == ["BTC/USDT"]
+        assert [r.symbol for r in await stocks.get_recent_decisions(limit=10)] == ["AAPL"]
+        assert [o.order_id for o in await crypto.get_filled_orders()] == ["c1"]
+        assert [o.order_id for o in await stocks.get_recent_orders()] == ["s1"]
+        start, end = datetime.now(UTC) - timedelta(days=1), datetime.now(UTC) + timedelta(days=1)
+        assert [r.symbol for r in await stocks.get_decisions_in_range(start, end)] == ["AAPL"]

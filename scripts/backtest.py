@@ -65,8 +65,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     await storage.initialize()
     provider = None
     try:
+        # Decisions belong to one agent (§7.39): ccxt candles replay the crypto
+        # agent's decisions, yfinance the stocks agent's.
         rows = await storage.get_decisions_in_range(
-            start=start, end=end, symbols=(args.symbols or None)
+            start=start,
+            end=end,
+            symbols=(args.symbols or None),
+            agent="stocks" if args.provider == "yfinance" else "crypto",
         )
         decisions = [
             ReplayDecision(

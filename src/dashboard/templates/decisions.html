@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Decisions · Trading Agents{% endblock %}
 {% block content %}
-  <h1>Decisions</h1>
+  <h1>Decisions{% if selected_agent %} — {{ selected_agent }}{% endif %}</h1>
+  {% include "_agent_tabs.html" %}
 
   {% set s = stats %}
   <div class="cards">
@@ -42,13 +43,14 @@
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>Time</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th>
+        <th>Time</th><th>Agent</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th>
         <th>Realized PnL</th><th>Reasoning</th>
       </tr></thead>
       <tbody>
         {% for d in decisions %}
           <tr>
             <td class="muted" style="white-space:nowrap;">{{ d.timestamp | short }}</td>
+            <td class="muted">{{ d.agent or '—' }}</td>
             <td>{{ d.symbol }}{% if d.is_fallback %} <span class="badge b-off">fallback</span>{% endif %}</td>
             <td>{{ d.action }}</td>
             <td>{{ '%.2f' | format(d.confidence) }}</td>
@@ -59,7 +61,7 @@
               {% if d.risk_reason %}<div class="muted">↳ risk: {{ d.risk_reason }}</div>{% endif %}</td>
           </tr>
         {% else %}
-          <tr><td colspan="7" class="muted">No decisions recorded yet.</td></tr>
+          <tr><td colspan="8" class="muted">No decisions recorded yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

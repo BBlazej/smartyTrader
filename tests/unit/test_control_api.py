@@ -37,7 +37,8 @@ monitoring: {log_level: INFO}
 async def env(tmp_path):
     """Fresh storage + control app (crypto agent) with stubbed live positions."""
     settings = _settings(tmp_path)
-    storage = Storage(str(tmp_path / "api.db"))
+    # Bound like the runner's storage (§7.39): the control API serves one agent's rows.
+    storage = Storage(str(tmp_path / "api.db"), agent="crypto")
     await storage.initialize()
     position = SimpleNamespace(
         model_dump=lambda mode="json": {"symbol": "BTC/USDT", "quantity": 1.0}

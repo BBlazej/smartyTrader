@@ -63,6 +63,10 @@ class LLMDecisionRow(Base):
     # from prompt context (§7.8).
     is_fallback: Mapped[bool] = mapped_column(default=False)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    # Owning agent (§7.39): ``crypto`` / ``stocks``. Both agents share one DB, so every
+    # read that feeds an agent's own state (prompt history, loss-streak rehydration)
+    # filters on it. NULL only for rows written by an unbound Storage (tests/tools).
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
 class OrderRow(Base):
@@ -80,6 +84,8 @@ class OrderRow(Base):
     # Storage time for retention pruning (§7.12): ``filled_at`` is only set on
     # fills, so it cannot bound the age of pending/rejected/cancelled rows.
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    # Owning agent (§7.39) — the FIFO replay (§7.25) must only see this agent's fills.
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
 class PortfolioSnapshotRow(Base):
@@ -91,6 +97,9 @@ class PortfolioSnapshotRow(Base):
     total_value: Mapped[float] = mapped_column(Float)
     unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    # Owning agent (§7.39): each agent's book, daily baseline and drawdown peak are
+    # its own — mixing them restored one agent's positions into the other's executor.
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
 class AgentControlRow(Base):

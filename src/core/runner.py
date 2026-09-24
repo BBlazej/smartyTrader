@@ -99,7 +99,9 @@ async def run_agent(
         )
         return
 
-    storage = Storage(settings.storage.database_path)
+    # Agent-bound storage (§7.39): both agents share one DB file, so every write is
+    # stamped with this component and every book/decision/order read stays within it.
+    storage = Storage(settings.storage.database_path, agent=component)
     await storage.initialize()
 
     llm_client = LLMClient(settings.llm)

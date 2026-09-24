@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 553 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60 — four critical findings (unscoped shared DB, XTB sells opening shorts, Kraken keyed path, per-order-only position cap) that must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 564 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping) is done — three critical findings remain open (XTB sells opening shorts, Kraken keyed path, per-order-only position cap) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,15 +70,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.38 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7): §7.39 first — restart safety and the drawdown gate are not meaningful while two agents share an unscoped DB; then §7.42 + §7.45 + §7.56 together (they decide whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
-
-39. **Scope storage per agent** ⏳ [R4-C1] — *critical*
-    - `portfolio_snapshots`, `llm_decisions` and `orders` have no agent column, yet compose runs both agents on one DB. Restart rehydration adopts whichever agent wrote last (crypto paper book restored as the stocks book — reproduced), the drawdown peak is `MAX` over both agents (one agent's +5% permanently blocks the other's entries), daily-loss baseline, loss-streak rehydration, filled-order replay and dashboard/control-API portfolio views all mix agents.
-    - Fix: add an `agent` column (migration default `'crypto'` for existing rows) and filter every read by `component`; integration test running both runners against one DB.
+> Order of work (from `external_4.md` §7; §7.39 done): §7.42 + §7.45 + §7.56 together (they decide whether the first real paper trades mean anything); then §7.43; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
 
 40. **XTB: SELL must close, not open a short** ⏳ [R4-C2, R4-L9] — *critical*
     - `xtb_client.create_order` always sends `tradeTransaction` `type=OPEN`; `cmd=SELL, type=OPEN` opens a short. LLM sells, §7.9 auto-exits and close-all therefore open shorts while the local FIFO tracker books a fictional realized PnL (feeding the loss streak and the prompt).
@@ -143,7 +139,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - Fix: exclusive `fcntl` lock on `data/<agent>.lock` (or a PID+TTL lease row in `agent_control`) at `run_agent` startup.
 
 53. **Drawdown peak re-baseline procedure** ⏳ [R4-M4]
-    - Peak = all-time `MAX(total_value)` over never-pruned snapshots → the drawdown gate is a permanent latch with no documented exit other than hand-editing the DB (§7.39/§7.41 can trip it spuriously).
+    - Peak = all-time `MAX(total_value)` over never-pruned snapshots → the drawdown gate is a permanent latch with no documented exit other than hand-editing the DB (§7.41 can trip it spuriously).
     - Fix: explicit, audited CLI-only "re-baseline peak" action + documented procedure.
 
 54. **Validate entry SL/TP geometry and risk per trade** ⏳ [R4-M5]

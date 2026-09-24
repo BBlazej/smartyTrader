@@ -269,7 +269,7 @@ class TestEnabledSemantics:
         with (
             patch("scripts.run_crypto_agent.Settings", return_value=settings),
             patch("scripts.run_crypto_agent.setup_logging"),
-            patch("src.core.runner.Storage", return_value=storage),
+            patch("src.core.runner.Storage", return_value=storage) as storage_cls,
             patch("src.core.runner.LLMClient", return_value=MagicMock()),
             patch("src.core.runner.RiskEngine"),
             patch(
@@ -287,6 +287,8 @@ class TestEnabledSemantics:
         provider.close.assert_awaited_once()
         executor.close.assert_awaited_once()
         storage.close.assert_awaited_once()
+        # Agent-bound storage (§7.39): every row this runner writes/reads is its own.
+        assert storage_cls.call_args.kwargs["agent"] == "crypto"
         # Single-cycle mode never starts the scheduler.
         mock_manager_cls.assert_not_called()
 

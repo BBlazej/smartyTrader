@@ -175,6 +175,14 @@ def create_dashboard_app(
         if agent not in agents:
             raise HTTPException(status_code=404, detail=f"unknown agent '{agent}'")
 
+    def _book_agent(agent: str | None) -> str:
+        """Agent whose book a page shows (§7.39): explicit ``?agent=``, else the first
+        configured one. Books are per agent — never a blend of both agents' snapshots."""
+        if agent is None:
+            return agents[0]
+        _check_agent(agent)
+        return agent
+
     def _ctx(request: Request, **extra: Any) -> dict[str, Any]:
         base = {
             "request": request,
@@ -225,17 +233,19 @@ def create_dashboard_app(
     # ── Pages ─────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    async def overview(request: Request) -> HTMLResponse:
-        latest = await storage.get_latest_portfolio_snapshot()
-        history = await storage.get_portfolio_history(limit=200)
+    async def overview(request: Request, agent: str | None = None) -> HTMLResponse:
+        selected = _book_agent(agent)
+        latest = await storage.get_latest_portfolio_snapshot(agent=selected)
+        history = await storage.get_portfolio_history(limit=200, agent=selected)
         chart = portfolio_chart(history)
-        recent = await storage.get_recent_decisions(limit=8, include_fallback=True)
+        recent = await storage.get_recent_decisions(limit=8, include_fallback=True, agent=selected)
         return templates.TemplateResponse(
             request,
             "overview.html",
             _ctx(
                 request,
                 active="overview",
+                selected_agent=selected,
                 latest=latest,
                 chart=chart,
                 positions=parse_positions(latest),
@@ -245,22 +255,41 @@ def create_dashboard_app(
         )
 
     @app.get("/decisions", response_class=HTMLResponse)
-    async def decisions(request: Request, limit: int = 200) -> HTMLResponse:
+    async def decisions(
+        request: Request, limit: int = 200, agent: str | None = None
+    ) -> HTMLResponse:
         limit = max(1, min(limit, 1000))
-        rows = await storage.get_recent_decisions(limit=limit, include_fallback=True)
+        if agent is not None:
+            _check_agent(agent)
+        # No ?agent= → every agent's decisions (the table shows which agent made each).
+        rows = await storage.get_recent_decisions(limit=limit, include_fallback=True, agent=agent)
         return templates.TemplateResponse(
             request,
             "decisions.html",
-            _ctx(request, active="decisions", decisions=rows, stats=decision_stats(rows)),
+            _ctx(
+                request,
+                active="decisions",
+                selected_agent=agent,
+                allow_all_agents=True,
+                decisions=rows,
+                stats=decision_stats(rows),
+            ),
         )
 
     @app.get("/positions", response_class=HTMLResponse)
-    async def positions_page(request: Request) -> HTMLResponse:
-        latest = await storage.get_latest_portfolio_snapshot()
+    async def positions_page(request: Request, agent: str | None = None) -> HTMLResponse:
+        selected = _book_agent(agent)
+        latest = await storage.get_latest_portfolio_snapshot(agent=selected)
         return templates.TemplateResponse(
             request,
             "positions.html",
-            _ctx(request, active="positions", latest=latest, positions=parse_positions(latest)),
+            _ctx(
+                request,
+                active="positions",
+                selected_agent=selected,
+                latest=latest,
+                positions=parse_positions(latest),
+            ),
         )
 
     # ── Agent logs (tail of data/agent_<name>.out.log, §7.24 launches) ───
@@ -457,9 +486,9 @@ def create_dashboard_app(
     # ── JSON for the uPlot chart (safe fields only) ───────────
 
     @app.get("/api/portfolio.json")
-    async def portfolio_json(limit: int = 200) -> dict[str, Any]:
+    async def portfolio_json(limit: int = 200, agent: str | None = None) -> dict[str, Any]:
         limit = max(1, min(limit, 1000))
-        history = await storage.get_portfolio_history(limit=limit)
+        history = await storage.get_portfolio_history(limit=limit, agent=_book_agent(agent))
         return portfolio_chart(history)
 
     @app.get("/healthz")

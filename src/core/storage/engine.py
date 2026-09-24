@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -13,11 +14,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from .models import Base
 
+#: Tables whose rows belong to one agent (§7.39); ``agent_control`` is keyed by agent
+#: already and ``market_snapshots`` is a symbol-keyed candle cache.
+_AGENT_SCOPED_TABLES: tuple[str, ...] = ("llm_decisions", "orders", "portfolio_snapshots")
+
 
 class StorageBase:
-    """Async repository core: lifecycle + session factory for all data mixins."""
+    """Async repository core: lifecycle + session factory for all data mixins.
 
-    def __init__(self, database_path: str) -> None:
+    **Agent binding (§7.39).** Both agents share one SQLite file, so a runner builds
+    ``Storage(path, agent="crypto")``: every write is stamped with that agent and every
+    scoped read (decisions, orders, portfolio snapshots) filters on it — one agent can
+    never rehydrate, seed its drawdown peak from, or feed its prompt with the other's
+    rows. An *unbound* Storage (``agent=None`` — dashboard, backtest/prune CLIs, tests)
+    reads across all agents unless a method is given an explicit ``agent=``.
+    """
+
+    def __init__(self, database_path: str, agent: str | None = None) -> None:
         # Normalize path — use absolute if relative
         db_path = Path(database_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -25,6 +38,16 @@ class StorageBase:
         self._engine = create_async_engine(uri)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._closed = False
+        self._agent = agent
+
+    @property
+    def agent(self) -> str | None:
+        """The agent this Storage is bound to (``None`` = unbound, all agents)."""
+        return self._agent
+
+    def _agent_scope(self, agent: str | None = None) -> str | None:
+        """Effective agent for a call: an explicit ``agent`` wins, else the binding."""
+        return agent if agent is not None else self._agent
 
     @property
     def database_path(self) -> str:
@@ -88,6 +111,19 @@ class StorageBase:
                             "ADD COLUMN is_fallback INTEGER NOT NULL DEFAULT 0"
                         )
                     )
+        # agent column (§7.39): added to the per-agent tables and backfilled — see
+        # :meth:`_backfill_agent_column` for the attribution rules.
+        for table in _AGENT_SCOPED_TABLES:
+            if not inspector.has_table(table):
+                continue
+            cols = {c["name"] for c in inspector.get_columns(table)}
+            with engine.begin() as conn:
+                if "agent" not in cols:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN agent VARCHAR(20) NULL"))
+                    StorageBase._backfill_agent_column(conn, table)
+                conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS ix_{table}_agent ON {table} (agent)")
+                )
         # orders.created_at (§7.12): retention pruning needs a storage-time bound
         # for rows that never filled; backfill what we can from fills.
         if inspector.has_table("orders"):
@@ -98,6 +134,38 @@ class StorageBase:
                     conn.execute(
                         text("UPDATE orders SET created_at = filled_at WHERE created_at IS NULL")
                     )
+
+    @staticmethod
+    def _backfill_agent_column(conn, table: str) -> None:
+        """Attribute pre-§7.39 rows to an agent (one-off, at the migration that adds the column).
+
+        Decisions/orders carry a symbol: crypto pairs are ``BASE/QUOTE`` (always a
+        slash), stock tickers never are. Portfolio snapshots only carry positions —
+        a snapshot whose positions are *all* slash-free tickers is ``stocks``; every
+        other one (including empty books, which are indistinguishable) is ``crypto``,
+        the only agent enabled by default.
+        """
+        if table in ("llm_decisions", "orders"):
+            conn.execute(
+                text(
+                    f"UPDATE {table} SET agent = CASE WHEN symbol LIKE '%/%' "
+                    "THEN 'crypto' ELSE 'stocks' END WHERE agent IS NULL"
+                )
+            )
+            return
+        rows = conn.execute(
+            text("SELECT id, positions_json FROM portfolio_snapshots WHERE agent IS NULL")
+        ).fetchall()
+        for row_id, positions_json in rows:
+            try:
+                symbols = [str(p.get("symbol", "")) for p in json.loads(positions_json or "[]")]
+            except (ValueError, TypeError, AttributeError):
+                symbols = []
+            agent = "stocks" if symbols and all("/" not in s for s in symbols) else "crypto"
+            conn.execute(
+                text("UPDATE portfolio_snapshots SET agent = :agent WHERE id = :id"),
+                {"agent": agent, "id": row_id},
+            )
 
     async def close(self) -> None:
         await self._engine.dispose()

@@ -78,7 +78,7 @@ class _Env:
 
 @pytest.fixture()
 async def env(tmp_path):
-    storage = Storage(str(tmp_path / "loop.db"))
+    storage = Storage(str(tmp_path / "loop.db"), agent="crypto")  # runner-style (§7.39)
     await storage.initialize()
 
     provider = MagicMock()

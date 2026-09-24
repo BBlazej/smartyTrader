@@ -310,7 +310,8 @@ stateDiagram-v2
 ## Storage schema & retention
 
 - **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
-- Existing tables (no schema change): `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`.
+- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`.
+- **Agent scoping (§7.39):** both agents share the file, so `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
 
   | Column | Purpose |
@@ -347,6 +348,7 @@ erDiagram
         float realized_pnl "net-of-fee; backfilled FIFO onto the entry decision"
         bool is_fallback "LLM-unavailable HOLD — audit only, never re-fed into prompts"
         datetime timestamp
+        string agent "crypto / stocks — owning agent (§7.39)"
     }
     orders {
         int id PK
@@ -359,6 +361,7 @@ erDiagram
         int decision_id FK
         datetime filled_at
         datetime created_at "storage-time bound for pruning unfilled rows (§7.12 migration)"
+        string agent "owning agent — FIFO replay reads only its own fills (§7.39)"
     }
     portfolio_snapshots {
         int id PK
@@ -367,6 +370,7 @@ erDiagram
         float total_value "MAX over history seeds the drawdown high-water mark"
         float unrealized_pnl
         datetime timestamp
+        string agent "owning agent — book, baseline and peak are per agent (§7.39)"
     }
     agent_control {
         string agent PK "crypto / stocks — one row per agent"
@@ -381,7 +385,7 @@ erDiagram
 
 Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark. Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
-Rehydration (§7.7): at startup, `core/rehydration.py` restores the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing closed-decision outcomes). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing closed-decision outcomes). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
@@ -444,7 +448,7 @@ The agent process serves a small internal API (in-process with the loop, or a th
 
 Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scripts/run_dashboard.py` on `dashboard.host:port`, default loopback `127.0.0.1:8080`). Reads the shared SQLite DB (WAL) through `Storage` as a **reader** — no HTTP coupling to the agent process, so it works whether or not `control_api.enabled`.
 
-- **Monitor:** overview page (portfolio cards + uPlot portfolio-value chart refreshed from `/api/portfolio.json`, recent decisions), positions page, decisions page with win-rate / avg-confidence / confidence-histogram stats (`views.py::decision_stats`), health cards refreshed via HTMX polling of `/partials/health` every `dashboard.refresh_seconds`. The health badge shows an **effective status** (`views.py::agent_status`), not the raw latch: `disabled` → `paused` (latch) → `offline` when the heartbeat (`last_cycle_at`) is missing or older than 2× the agent's `interval_minutes` (floored at 10 min, +5 min grace) → else `running`. Agents stamp that heartbeat after every cycle *and* on market-hours skips (pause returns before it — its latch renders instead), so liveness never false-alarms in quiet windows.
+- **Monitor:** overview page (portfolio cards + uPlot portfolio-value chart refreshed from `/api/portfolio.json`, recent decisions), positions page — all per agent via `?agent=` (default: first configured agent; books are never blended, §7.39) — decisions page (all agents with an Agent column, or `?agent=`-filtered) with win-rate / avg-confidence / confidence-histogram stats (`views.py::decision_stats`), health cards refreshed via HTMX polling of `/partials/health` every `dashboard.refresh_seconds`. The health badge shows an **effective status** (`views.py::agent_status`), not the raw latch: `disabled` → `paused` (latch) → `offline` when the heartbeat (`last_cycle_at`) is missing or older than 2× the agent's `interval_minutes` (floored at 10 min, +5 min grace) → else `running`. Agents stamp that heartbeat after every cycle *and* on market-hours skips (pause returns before it — its latch renders instead), so liveness never false-alarms in quiet windows.
 - **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
 - **Log viewer:** `/logs/{agent}` tails `data/agent_<name>.out.log` (the captured output of dashboard-launched runners) — last ~64 KiB / 400 lines (`views.py::tail_lines`), HTMX-polled partial refresh, linked from health cards when a log exists. Read-only; path built only from the config agent whitelist next to the live DB (`storage.database_path`).
 - **Launch (opt-in, §7.24):** when `dashboard.allow_launch` is true, health cards gain **Start**/**Stop (pid …)** buttons (`POST /launch/{agent}/{action}`). `src/dashboard/launch.py::AgentLauncher` spawns the same entry points you'd run by hand (`python -m scripts.run_<agent>_agent`) as local subprocesses — enabled-gates, risk rules and paper-by-default execution apply unchanged; child output appends to `data/agent_<name>.out.log`, pid goes to `data/<agent>.pid`. Children outlive the dashboard (killing the UI never halts trading); a restarted dashboard re-adopts old children only when the pidfile's pid is alive AND its `/proc` cmdline still matches the runner — foreign/recycled pids are never killed, and Stop only ever targets launched/adopted processes. Start refuses (409) on fresh heartbeats (no double-trading), disabled agents, or already-managed ones; 403 wholesale when supervision is off. Off under docker-compose (services belong to compose there).

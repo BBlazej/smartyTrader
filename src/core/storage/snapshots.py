@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 
 from .models import MarketSnapshotRow, PortfolioSnapshotRow
 
@@ -50,7 +50,8 @@ class PortfolioSnapshotMixin:
     """``portfolio_snapshots`` writes/reads — **never pruned** (drawdown seed).
 
     The first snapshot of the UTC day rehydrates the daily-loss baseline; MAX over
-    full history seeds the drawdown high-water mark (§7.7).
+    full history seeds the drawdown high-water mark (§7.7). Every read is agent-scoped
+    (§7.39): each agent has its own book, baseline and peak.
     """
 
     async def save_portfolio_snapshot(
@@ -59,6 +60,7 @@ class PortfolioSnapshotMixin:
         positions_json: str,
         total_value: float,
         unrealized_pnl: float = 0.0,
+        agent: str | None = None,
     ) -> int:
         async with await self._session() as session:
             row = PortfolioSnapshotRow(
@@ -66,12 +68,15 @@ class PortfolioSnapshotMixin:
                 positions_json=positions_json,
                 total_value=total_value,
                 unrealized_pnl=unrealized_pnl,
+                agent=self._agent_scope(agent),
             )
             session.add(row)
             await session.commit()
             return row.id
 
-    async def get_first_portfolio_snapshot_of_day(self) -> PortfolioSnapshotRow | None:
+    async def get_first_portfolio_snapshot_of_day(
+        self, agent: str | None = None
+    ) -> PortfolioSnapshotRow | None:
         """Earliest portfolio snapshot of the current UTC day (or ``None``).
 
         Its ``total_value`` rehydrates today's daily-loss baseline after a
@@ -81,16 +86,15 @@ class PortfolioSnapshotMixin:
 
         day_start = datetime.combine(datetime.now(UTC).date(), dtime.min)
         async with await self._session() as session:
-            stmt = (
-                select(PortfolioSnapshotRow)
-                .where(PortfolioSnapshotRow.timestamp >= day_start)
-                .order_by(PortfolioSnapshotRow.timestamp.asc())
-                .limit(1)
+            stmt = self._scoped_snapshots(
+                select(PortfolioSnapshotRow).where(PortfolioSnapshotRow.timestamp >= day_start),
+                agent,
             )
+            stmt = stmt.order_by(PortfolioSnapshotRow.timestamp.asc()).limit(1)
             result = await session.execute(stmt)
             return result.scalars().first()
 
-    async def get_max_portfolio_value(self) -> float | None:
+    async def get_max_portfolio_value(self, agent: str | None = None) -> float | None:
         """Highest total_value ever recorded in portfolio snapshots (or ``None``).
 
         Used to seed the risk engine's drawdown high-water mark at startup so
@@ -99,20 +103,32 @@ class PortfolioSnapshotMixin:
         from sqlalchemy import func
 
         async with await self._session() as session:
-            result = await session.execute(select(func.max(PortfolioSnapshotRow.total_value)))
+            stmt = self._scoped_snapshots(select(func.max(PortfolioSnapshotRow.total_value)), agent)
+            result = await session.execute(stmt)
             value = result.scalar()
             return float(value) if value is not None else None
 
-    async def get_latest_portfolio_snapshot(self) -> PortfolioSnapshotRow | None:
+    async def get_latest_portfolio_snapshot(
+        self, agent: str | None = None
+    ) -> PortfolioSnapshotRow | None:
         async with await self._session() as session:
-            stmt = select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc()).limit(1)
+            stmt = self._scoped_snapshots(select(PortfolioSnapshotRow), agent)
+            stmt = stmt.order_by(PortfolioSnapshotRow.id.desc()).limit(1)
             result = await session.execute(stmt)
             return result.scalars().first()
 
-    async def get_portfolio_history(self, limit: int = 100) -> list[PortfolioSnapshotRow]:
+    async def get_portfolio_history(
+        self, limit: int = 100, agent: str | None = None
+    ) -> list[PortfolioSnapshotRow]:
         async with await self._session() as session:
-            stmt = (
-                select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.id.desc()).limit(limit)
-            )
+            stmt = self._scoped_snapshots(select(PortfolioSnapshotRow), agent)
+            stmt = stmt.order_by(PortfolioSnapshotRow.id.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    def _scoped_snapshots(self, stmt: Select, agent: str | None) -> Select:
+        """Restrict a ``portfolio_snapshots`` query to the effective agent (§7.39)."""
+        scope = self._agent_scope(agent)
+        if scope is not None:
+            stmt = stmt.where(PortfolioSnapshotRow.agent == scope)
+        return stmt

@@ -22,6 +22,7 @@ class OrderMixin:
         status: str,
         decision_id: int | None = None,
         filled_at: datetime | None = None,
+        agent: str | None = None,
     ) -> int:
         async with await self._session() as session:
             row = OrderRow(
@@ -33,6 +34,7 @@ class OrderMixin:
                 status=status,
                 decision_id=decision_id,
                 filled_at=filled_at,
+                agent=self._agent_scope(agent),
             )
             session.add(row)
             await session.commit()
@@ -67,25 +69,35 @@ class OrderMixin:
         self,
         symbol: str | None = None,
         limit: int = 20,
+        agent: str | None = None,
     ) -> list[OrderRow]:
         async with await self._session() as session:
             stmt = select(OrderRow).order_by(OrderRow.id.desc()).limit(limit)
             if symbol:
                 stmt = stmt.where(OrderRow.symbol == symbol)
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_filled_orders(self, symbol: str | None = None) -> list[OrderRow]:
+    async def get_filled_orders(
+        self, symbol: str | None = None, agent: str | None = None
+    ) -> list[OrderRow]:
         """All *filled* orders in chronological order (insertion order).
 
         Used at startup to replay the FIFO lot ledger into executors (§7.25):
         rows carry ``side``, ``quantity``, ``price`` and the originating
         ``decision_id``. Ids are monotonic with execution time for both paper
-        and venue paths (rows are written when the fill happens).
+        and venue paths (rows are written when the fill happens). Agent-scoped
+        (§7.39): a runner replays only its own fills.
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(OrderRow.status == "filled").order_by(OrderRow.id.asc())
             if symbol:
                 stmt = stmt.where(OrderRow.symbol == symbol)
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())

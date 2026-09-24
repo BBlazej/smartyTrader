@@ -5,7 +5,8 @@
 
   {% include "_health.html" %}
 
-  <h2>Portfolio</h2>
+  <h2>Portfolio — {{ selected_agent }}</h2>
+  {% include "_agent_tabs.html" %}
   <div class="cards">
     <div class="card"><div class="muted">Total value</div>
       <div class="stat">{{ (latest.total_value if latest else None) | money }}</div></div>
@@ -72,7 +73,7 @@
     var u = new uPlot(opts, [data.x, data.total_value, data.cash], el);
 
     function refresh() {
-      fetch('/api/portfolio.json')
+      fetch('/api/portfolio.json?agent={{ selected_agent }}')
         .then(function (r) { return r.json(); })
         .then(function (d) { if (d && d.x) u.setData([d.x, d.total_value, d.cash]); })
         .catch(function () {});
