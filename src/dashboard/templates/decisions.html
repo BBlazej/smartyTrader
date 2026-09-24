@@ -16,7 +16,7 @@
       <div class="stat">{{ s.avg_confidence | pct }}</div></div>
     <div class="card"><div class="muted">Decisions</div>
       <div class="stat">{{ s.total }}</div>
-      <div class="muted">{{ s.buys }} buy · {{ s.sells }} sell · {{ s.holds }} hold{% if s.fallback %} · {{ s.fallback }} fallback{% endif %}</div></div>
+      <div class="muted">{{ s.buys }} buy · {{ s.sells }} sell · {{ s.holds }} hold{% if s.fallback %} · <span class="neg">{{ s.fallback }} LLM fallback ({{ s.fallback_rate | pct }})</span>{% endif %}</div></div>
   </div>
 
   <h2>Confidence distribution (buy/sell)</h2>

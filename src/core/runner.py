@@ -32,7 +32,7 @@ from typing import Any
 import structlog
 
 from ..analysis.candles import timeframe_delta
-from ..monitoring.alerts import AlertManager
+from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings
 from .control_config import parse_and_apply
 from .decision_pipeline import DecisionPipeline
@@ -64,8 +64,23 @@ def load_dotenv(path: str = ".env") -> None:
 
 
 def build_alerts(settings: Settings) -> AlertManager:
-    """Build the alert manager from config (noop sink — logging only)."""
-    return AlertManager(dedup_window=float(settings.monitoring.alert_dedup_window_seconds))
+    """Build the alert manager: the log sink always, plus a webhook when configured.
+
+    The webhook (§7.51) is wired only when the ``ALERT_WEBHOOK_URL`` environment
+    variable is set — the URL carries tokens, so it never lives in the YAML.
+    """
+    monitoring = settings.monitoring
+    sinks: list[AlertSink] = [NoopAlertSink()]
+    url = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+    if url:
+        sinks.append(
+            WebhookAlertSink(
+                url,
+                fmt=getattr(monitoring, "alert_webhook_format", "json"),
+                min_severity=getattr(monitoring, "alert_min_severity", "warning"),
+            )
+        )
+    return AlertManager(sinks, dedup_window=float(monitoring.alert_dedup_window_seconds))
 
 
 async def run_agent(

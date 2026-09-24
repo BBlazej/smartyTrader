@@ -463,3 +463,28 @@ class TestBrowserSafety:
         assert resp.status_code == 303
         stored = json.loads((await env.storage.get_agent_control("crypto")).config_override_json)
         assert stored["risk"] == {"max_drawdown_pct": 0.03, "min_confidence": 0.75}
+
+
+class TestLLMFallbackVisibility:
+    """§7.51: an LLM outage shows on the health card and the decisions page."""
+
+    async def test_fallback_badge_and_rate(self, env) -> None:
+        crypto = _bound(env.storage, "crypto")
+        try:
+            await crypto.save_llm_decision(
+                symbol="BTC/USDT",
+                action="hold",
+                confidence=0.0,
+                reasoning="LLM unavailable after 3 retries",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+                is_fallback=True,
+            )
+        finally:
+            await crypto.close()
+        health = (await env.client.get("/partials/health")).text
+        assert "LLM fallbacks 1/" in health
+        decisions = (await env.client.get("/decisions?agent=crypto")).text
+        assert "1 LLM fallback" in decisions

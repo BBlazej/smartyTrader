@@ -115,9 +115,12 @@ class BaseTradingAgent:
         return self._running
 
     async def shutdown(self) -> None:
-        """Stop the agent and release the LLM client connection."""
+        """Stop the agent and release the LLM client + alert channel connections."""
         await self.stop()
         await self._llm_client.close()
+        close_alerts = getattr(self._alerts, "close", None)
+        if callable(close_alerts):
+            await close_alerts()
 
     # ── Cycle ─────────────────────────────────────────────────
 
@@ -162,6 +165,12 @@ class BaseTradingAgent:
                 continue
             if result.error is not None:
                 cycle_error = f"{symbol}: {result.error}"
+            elif result.signal is not None and result.signal.is_fallback:
+                # An LLM outage is not a quiet HOLD (§7.51): surface it on the
+                # dashboard heartbeat and as an alert instead of reading "healthy".
+                cycle_error = (
+                    f"{symbol}: LLM unavailable — fallback HOLD ({result.signal.reasoning})"
+                )
             try:
                 await self._post_process(symbol, result)
             except Exception as exc:  # noqa: BLE001 - last line of defense (§7.44)
@@ -374,6 +383,15 @@ class BaseTradingAgent:
         """Raise a user-facing alert for noteworthy outcomes (never for a plain HOLD)."""
         if result.error is not None:
             await self._alerts.send("error", result.error, severity="error", symbol=symbol)
+            return
+
+        if result.signal is not None and result.signal.is_fallback:
+            await self._alerts.send(
+                "llm_unavailable",
+                f"{symbol}: LLM unavailable, cycle fell back to HOLD — {result.signal.reasoning}",
+                severity="error",
+                symbol=symbol,
+            )
             return
 
         if result.risk_result is not None and result.risk_result.verdict.value == "rejected":

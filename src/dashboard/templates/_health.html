@@ -9,6 +9,7 @@
       <div class="pill-row">
         {% if a.close_all_requested %}<span class="badge b-warn">close-all pending</span>{% endif %}
         {% if a.has_overrides %}<span class="badge b-warn" title="safe config overrides stored">overrides active</span>{% endif %}
+        {% if a.fallbacks %}<span class="badge b-offline" title="decisions where the LLM was unreachable and the cycle fell back to HOLD">LLM fallbacks {{ a.fallbacks }}/{{ a.recent_decisions }} recent</span>{% endif %}
       </div>
       <div class="muted" style="margin-top:.6rem;">
         last cycle: {{ a.last_cycle_at | rel }}{% if a.last_cycle_at %}<br>{{ a.last_cycle_at | short }}{% endif %}

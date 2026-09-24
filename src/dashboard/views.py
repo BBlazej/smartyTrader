@@ -178,6 +178,8 @@ def decision_stats(rows: list[Any]) -> dict[str, Any]:
     return {
         "total": total,
         "fallback": fallback,
+        # §7.51: share of decisions where the LLM was unreachable (None when empty).
+        "fallback_rate": (fallback / total) if total else None,
         "buys": buys,
         "sells": sells,
         "holds": holds,

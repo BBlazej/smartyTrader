@@ -144,7 +144,7 @@ thresholds. Key sections:
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
-| `monitoring` | log level, alert dedup window |
+| `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
 | `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`; requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
@@ -225,7 +225,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**649 tests passing at ~94% coverage.**
+**659 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

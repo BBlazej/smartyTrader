@@ -248,3 +248,129 @@ class TestAgentAlerting:
         )
         await agent.run_cycle()
         assert sink.sent == []
+
+
+# ── §7.51: LLM outages are visible; a real alert channel ─────
+
+
+class TestLLMOutageVisibility:
+    @staticmethod
+    def _fallback_result() -> PipelineResult:
+        return PipelineResult(
+            symbol="BTC/USDT",
+            signal=TradeSignal(
+                symbol="BTC/USDT",
+                action="hold",
+                confidence=0.0,
+                reasoning="LLM unavailable after 3 retries: All connection attempts failed",
+                is_fallback=True,
+            ),
+            risk_result=RiskResult(verdict=RiskVerdict.APPROVED),
+        )
+
+    async def test_fallback_alerts_and_marks_the_heartbeat(self) -> None:
+        sink = RecordingSink()
+        agent, pipeline = _agent(sink)
+        agent._storage.record_cycle_health = AsyncMock()
+        agent._storage.get_agent_control = AsyncMock(return_value=None)
+        pipeline.run = AsyncMock(return_value=self._fallback_result())
+
+        await agent.run_cycle()
+
+        events = [e for e, _, _ in sink.sent]
+        assert events == ["llm_unavailable"]
+        assert sink.sent[0][2] == "error" and "BTC/USDT" in sink.sent[0][1]
+        last_error = agent._storage.record_cycle_health.await_args.kwargs["last_error"]
+        assert last_error is not None and "LLM unavailable" in last_error
+
+
+class TestWebhookSink:
+    @staticmethod
+    def _client(captured: list, status: int = 200):
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(status)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def test_json_payload_for_slack_and_discord(self) -> None:
+        import json
+
+        from src.monitoring.alerts import WebhookAlertSink
+
+        captured: list = []
+        sink = WebhookAlertSink("https://hooks.example/abc", client=self._client(captured))
+        assert await sink.send("llm_unavailable", "BTC/USDT: LLM down", "error")
+        body = json.loads(captured[0].content)
+        assert body["text"] == body["content"] == "[error] llm_unavailable: BTC/USDT: LLM down"
+        assert body["severity"] == "error" and body["event"] == "llm_unavailable"
+
+    async def test_ntfy_format(self) -> None:
+        from src.monitoring.alerts import WebhookAlertSink
+
+        captured: list = []
+        sink = WebhookAlertSink("https://ntfy.sh/topic", fmt="ntfy", client=self._client(captured))
+        await sink.send("error", "fetch failed", "error")
+        req = captured[0]
+        assert req.content == b"fetch failed"
+        assert req.headers["Title"] == "trading-agent error"
+        assert req.headers["Priority"] == "high"
+
+    async def test_below_min_severity_is_skipped(self) -> None:
+        from src.monitoring.alerts import WebhookAlertSink
+
+        captured: list = []
+        sink = WebhookAlertSink("https://x", client=self._client(captured))  # min: warning
+        assert await sink.send("order_filled", "BUY 1 BTC", "info") is True
+        assert captured == []
+
+    async def test_delivery_failure_returns_false(self) -> None:
+        from src.monitoring.alerts import WebhookAlertSink
+
+        sink = WebhookAlertSink("https://x", client=self._client([], status=500))
+        assert await sink.send("error", "boom", "error") is False
+
+    def test_invalid_format_rejected(self) -> None:
+        from src.monitoring.alerts import WebhookAlertSink
+
+        with pytest.raises(ValueError):
+            WebhookAlertSink("https://x", fmt="xml")
+
+
+class TestBuildAlerts:
+    def _settings(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            monitoring=SimpleNamespace(
+                alert_dedup_window_seconds=300,
+                alert_webhook_format="ntfy",
+                alert_min_severity="error",
+            )
+        )
+
+    def test_log_only_without_env(self, monkeypatch) -> None:
+        from src.core.runner import build_alerts
+
+        monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
+        sinks = build_alerts(self._settings()).sinks
+        assert [type(s).__name__ for s in sinks] == ["NoopAlertSink"]
+
+    def test_webhook_from_env(self, monkeypatch) -> None:
+        from src.core.runner import build_alerts
+        from src.monitoring.alerts import WebhookAlertSink
+
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://ntfy.sh/my-topic")
+        sinks = build_alerts(self._settings()).sinks
+        assert isinstance(sinks[1], WebhookAlertSink)
+        assert sinks[1]._fmt == "ntfy"
+
+    def test_config_validates_webhook_options(self) -> None:
+        from src.core.config import MonitoringSettings
+
+        with pytest.raises(ValueError):
+            MonitoringSettings(alert_webhook_format="xml")
+        with pytest.raises(ValueError):
+            MonitoringSettings(alert_min_severity="critical")

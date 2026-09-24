@@ -508,7 +508,7 @@ Metrics (CLI summary + `--report` JSON):
 ## Monitoring
 
 - Structured logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py` — console lines render as `[YYYY-MM-DD HH:MM:SS][level] message key=value …` (local wall clock; whitespace-bearing values quoted, tracebacks appended raw), so agent terminal output and `data/agent_*.out.log` stay grep-able
-- Alert dispatch on trades and risk rejections ✅ `monitoring/alerts.py`
+- Alert dispatch on trades, risk rejections, errors and **LLM outages** ✅ `monitoring/alerts.py` — structlog log sink always; `WebhookAlertSink` (JSON for Slack/Discord/generic or ntfy) when `ALERT_WEBHOOK_URL` is set (§7.51). A fallback HOLD is also the cycle's `last_error`, and the dashboard health card shows the recent LLM-fallback count.
 - LLM audit trail ✅ — full `llm_exchange` structlog event (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
 - Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker/compose packaging ✅ (`Dockerfile` + `docker-compose.yml` — §7.15 P5)
 

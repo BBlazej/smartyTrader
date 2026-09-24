@@ -205,9 +205,19 @@ class MonitoringSettings:
         self,
         log_level: str = "INFO",
         alert_dedup_window_seconds: int = 300,
+        # §7.51 webhook alert channel. The URL itself is a secret (tokens live in
+        # it) and comes ONLY from the ALERT_WEBHOOK_URL environment variable.
+        alert_webhook_format: str = "json",
+        alert_min_severity: str = "warning",
     ) -> None:
+        if alert_webhook_format not in ("json", "ntfy"):
+            raise ValueError("monitoring.alert_webhook_format must be 'json' or 'ntfy'")
+        if alert_min_severity not in ("info", "warning", "error"):
+            raise ValueError("monitoring.alert_min_severity must be info, warning or error")
         self.log_level = log_level
         self.alert_dedup_window_seconds = alert_dedup_window_seconds
+        self.alert_webhook_format = alert_webhook_format
+        self.alert_min_severity = alert_min_severity
 
 
 class ControlApiSettings:

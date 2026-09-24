@@ -19,6 +19,8 @@ x-agent-env: &agent-env
   # paper executor. The dashboard never sees any of this.
   KRAKEN_API_KEY: "${KRAKEN_API_KEY:-}"
   KRAKEN_API_SECRET: "${KRAKEN_API_SECRET:-}"
+  # Optional alert channel (§7.51); empty → alerts go to the log only.
+  ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
 
 x-shared-volumes: &agent-volumes
   - agent-data:/app/data

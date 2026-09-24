@@ -232,6 +232,14 @@ def create_dashboard_app(
             enabled = bool(getattr(agent_cfg, "enabled", False))
             state = getattr(control, "state", "running") if control else "running"
             last_cycle_at = getattr(control, "last_cycle_at", None) if control else None
+            # §7.51: LLM outages show on the card, not just in the decisions table.
+            try:
+                recent = await storage.get_recent_decisions(
+                    limit=20, include_fallback=True, agent=agent
+                )
+            except Exception:  # noqa: BLE001 - a health card must never fail the page
+                recent = []
+            fallbacks = sum(1 for d in recent if getattr(d, "is_fallback", False))
             rows.append(
                 {
                     "name": agent,
@@ -256,6 +264,8 @@ def create_dashboard_app(
                     # §7.24: pid when this dashboard launched/adopted the runner process.
                     "managed_pid": launcher.managed_pid(agent) if launcher else None,
                     "has_log": _agent_log_path(agent).exists(),
+                    "fallbacks": fallbacks,
+                    "recent_decisions": len(recent),
                 }
             )
         return rows

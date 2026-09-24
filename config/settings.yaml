@@ -83,6 +83,10 @@ storage:
 monitoring:
   log_level: INFO
   alert_dedup_window_seconds: 300
+  # §7.51 alert channel: set ALERT_WEBHOOK_URL in .env (never here — the URL is a
+  # secret) to POST alerts to Slack/Discord/any JSON webhook ("json") or ntfy ("ntfy").
+  alert_webhook_format: json
+  alert_min_severity: warning   # info | warning | error
 
 # Agent-side control API (§7.15). Off by default: nothing listens unless you enable
 # it. The dashboard shares the Docker network (or this host); binds to loopback by
