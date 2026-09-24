@@ -1,4 +1,4 @@
-"""Unit tests for the Kraken testnet executor (via CCXT)."""
+"""Unit tests for the keyed Kraken executor (via CCXT)."""
 
 from __future__ import annotations
 
@@ -539,3 +539,102 @@ class TestReconcileOpenOrders:
             "average": 100.0,
         }
         assert await executor.reconcile_open_orders() == []
+
+
+class TestSpotPositionsFromLedger:
+    """§7.41: on Kraken spot (no fetch_positions) holdings come from our own fills."""
+
+    @staticmethod
+    def _spot_client() -> AsyncMock:
+        client = AsyncMock()
+        client.fetch_positions.side_effect = Exception("kraken fetchPositions() not supported")
+        client.fetch_balance.return_value = {"total": {"BTC": 1.0, "USDT": 9_000.0}}
+        client.fetch_free_balance.return_value = {"USDT": {"free": 9_000.0}}
+        client.create_order.return_value = {
+            "id": "B1",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+        }
+        return client
+
+    async def test_filled_buy_shows_as_a_marked_position(self) -> None:
+        client = self._spot_client()
+        executor = KrakenExecutor(client)
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, stop_loss=90.0, take_profit=130.0
+        )
+        executor.update_price("BTC/USDT", 120.0)
+
+        (pos,) = await executor.get_positions()
+        assert (pos.symbol, pos.quantity, pos.avg_entry_price, pos.current_price) == (
+            "BTC/USDT",
+            1.0,
+            100.0,
+            120.0,
+        )
+        assert (pos.stop_loss, pos.take_profit) == (90.0, 130.0)
+
+    async def test_buy_no_longer_reads_as_a_loss(self) -> None:
+        from src.core.models import PortfolioState
+
+        client = self._spot_client()
+        executor = KrakenExecutor(client)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        executor.update_price("BTC/USDT", 100.0)
+        book = PortfolioState(
+            cash=await executor.get_cash(), positions=await executor.get_positions()
+        )
+        # Pre-§7.41 total value = free USDT only (9000): the buy looked like −100.
+        assert book.total_value == pytest.approx(9_100.0)
+
+    async def test_venue_balance_caps_the_ledger(self) -> None:
+        client = self._spot_client()
+        client.fetch_balance.return_value = {"total": {"BTC": 0.4}}  # e.g. partly withdrawn
+        executor = KrakenExecutor(client)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        (pos,) = await executor.get_positions()
+        assert pos.quantity == pytest.approx(0.4)
+
+    async def test_balance_failure_falls_back_to_the_ledger(self) -> None:
+        client = self._spot_client()
+        client.fetch_balance.side_effect = TimeoutError("venue slow")
+        executor = KrakenExecutor(client)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        (pos,) = await executor.get_positions()
+        assert pos.quantity == pytest.approx(1.0)
+
+    async def test_fetch_positions_is_not_retried_every_call(self) -> None:
+        client = self._spot_client()
+        executor = KrakenExecutor(client)
+        await executor.get_positions()
+        await executor.get_positions()
+        client.fetch_positions.assert_awaited_once()
+
+    async def test_close_all_now_sells_spot_holdings(self) -> None:
+        from src.core.config import RiskSettings
+        from src.core.decision_pipeline import DecisionPipeline
+        from src.core.risk_engine import RiskEngine
+
+        client = self._spot_client()
+        executor = KrakenExecutor(client)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        executor.update_price("BTC/USDT", 110.0)
+        client.create_order.return_value = {
+            "id": "S1",
+            "status": "closed",
+            "average": 110.0,
+            "filled": 1.0,
+        }
+        pipeline = DecisionPipeline(
+            provider=AsyncMock(),
+            llm_client=AsyncMock(),
+            risk_engine=RiskEngine(RiskSettings()),
+            executor=executor,
+        )
+
+        closed = await pipeline.close_all_positions()
+
+        assert [(s, o.side, o.realized_pnl) for s, o in closed] == [
+            ("BTC/USDT", OrderSide.SELL, pytest.approx(10.0))
+        ]

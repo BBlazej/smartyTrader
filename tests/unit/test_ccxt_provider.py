@@ -224,3 +224,19 @@ class TestClose:
         provider._client.close = MagicMock(return_value=None)
         await provider.close()  # must not raise
         provider._client.close.assert_called_once()
+
+
+class TestSandboxDetection:
+    """§7.41: Kraken spot has no ccxt sandbox — say so instead of a TypeError."""
+
+    def test_kraken_spot_has_no_sandbox_but_futures_does(self) -> None:
+        from src.data.ccxt_provider import exchange_has_sandbox
+
+        assert exchange_has_sandbox("kraken") is False
+        assert exchange_has_sandbox("krakenfutures") is True
+
+    def test_requesting_a_missing_sandbox_is_an_actionable_error(self) -> None:
+        from src.data.ccxt_provider import create_ccxt_provider
+
+        with pytest.raises(ValueError, match="no sandbox"):
+            create_ccxt_provider(exchange_id="kraken", testnet=True)

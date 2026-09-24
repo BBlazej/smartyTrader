@@ -11,7 +11,12 @@ fixed unless explicitly marked.
    (nested-balance parsing, closed-order fill recording, spot `fetch_positions`
    degradation) are verified against recorded-shape fixtures only. A real
    testnet smoke run (`KRAKEN_API_KEY=... python -m scripts.run_crypto_agent --once`)
-   is still outstanding before "Kraken testnet mode" is offered. **Status: open.**
+   is still outstanding before "Kraken testnet mode" is offered.
+   **Status: re-scoped by §7.41 — the premise was wrong.** Kraken spot has *no*
+   ccxt sandbox at all, so a "Kraken testnet" run can never exist; the smoke pass
+   is now either a keyed run on a sandbox-having exchange or a deliberately
+   acknowledged minimal-size live run (PLAN §7 item 28). The keyed path itself is
+   no longer offered accidentally.
 
 2. **`yfinance` is not installed in the dev venv**, so the stocks provider's real
    network path (and the §7.11 data-depth fix) can only be exercised through the

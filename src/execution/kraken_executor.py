@@ -7,16 +7,20 @@ injected so this module is testable without a network connection or real API key
 Known venue limitations (§7.6)
 ------------------------------
 * Kraken **spot** via CCXT does not serve ``fetch_positions`` (raises
-  ``NotSupported``); :meth:`KrakenExecutor.get_positions` degrades gracefully to
-  an empty list (warned once), so the max-open-positions gate and position
-  valuation see only cash on the keyed path until fills are tracked locally.
+  ``NotSupported``) and has **no sandbox** (§7.41 — keyed spot is real money). In
+  spot mode :meth:`KrakenExecutor.get_positions` reports the executor's own FIFO
+  ledger — capped by the venue's actual base-currency balance and marked at each
+  cycle's close via :meth:`update_price` — so valuation, the risk gates, exit-level
+  enforcement and close-all see real holdings (they used to see only cash: every
+  BUY looked like a loss of its own notional and tripped the daily-loss/drawdown
+  gates, while SL/TP and close-all silently did nothing).
 * The pipeline submits marketable *limit* orders (priced at the snapshot's last
   close); those usually come back ``closed`` in the ``create_order`` payload,
   which is now recorded with fill price (``average``) and ``filled_at``. Orders
   left ``open`` are remembered locally and re-polled every cycle via
   :meth:`KrakenExecutor.reconcile_open_orders` (§7.28): terminal statuses update
   the stored order row and flow through the same FIFO ledger as create_order fills.
-* A live-keyed smoke test against the Kraken testnet still needs a
+* A live-keyed smoke test (sandbox exchange or acknowledged live, §7.41) still needs a
   network-enabled environment (the dev sandbox blocks outbound HTTPS).
 """
 
@@ -86,6 +90,8 @@ class ExchangeClient(Protocol):
         self, symbols: list[str] | None = None, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]: ...
 
+    async def fetch_balance(self, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
+
 
 class KrakenExecutor:
     """Maps the shared Executor protocol to Kraken order calls via CCXT."""
@@ -101,6 +107,10 @@ class KrakenExecutor:
         self._reconcile_unsupported_logged = False
         # One-time warning guard for the Kraken-spot fetch_positions gap (§7.6).
         self._positions_unsupported_logged = False
+        # §7.41: once fetch_positions proves unsupported, positions come from the
+        # local ledger (+ venue balances), marked at each cycle's snapshot close.
+        self._spot_mode = False
+        self._marks: dict[str, float] = {}
         # Local FIFO ledger of *our* fills. Kraken spot gives no fetch_positions,
         # so this both enables realized_pnl on closing sells and attributes it to
         # entry decisions via closed_entries (§7.8). Venue fees are not in the
@@ -310,22 +320,29 @@ class KrakenExecutor:
         pending = self._open_orders.get(order_id)
         return pending.decision_id if pending is not None else None
 
+    def update_price(self, symbol: str, new_price: float) -> None:
+        """Mark hook the pipeline calls each cycle (§7.41) — spot positions are valued here."""
+        if new_price > 0:
+            self._marks[symbol] = new_price
+
     async def get_positions(self) -> list[Position]:
+        if self._spot_mode:
+            return await self._spot_positions()
         try:
             raw_positions = await self._client.fetch_positions()
         except Exception as exc:  # noqa: BLE001
-            # Kraken *spot* via CCXT does not serve fetch_positions (NotSupported),
-            # so the max-open-positions gate and portfolio valuation see nothing
-            # on the keyed path. Degrade gracefully — one warning, empty list —
-            # instead of crashing every cycle (§7.6). See the module docstring.
+            # Kraken *spot* via CCXT does not serve fetch_positions (NotSupported).
+            # From now on report our own ledger instead (§7.41) — never an empty
+            # book that hides real holdings from valuation, gates and exits.
+            self._spot_mode = True
             if not self._positions_unsupported_logged:
                 self._positions_unsupported_logged = True
                 logger.warning(
-                    "fetch_positions failed on the keyed venue; position-based "
-                    "gates will see no positions (Kraken spot does not support this call)",
+                    "fetch_positions unsupported on the keyed venue (spot); positions "
+                    "now come from the local fill ledger capped by venue balances",
                     error=str(exc),
                 )
-            return []
+            return await self._spot_positions()
         positions: list[Position] = []
         for pos in raw_positions or []:
             raw_qty = float(pos.get("contracts") or pos.get("amount") or 0.0)
@@ -347,6 +364,48 @@ class KrakenExecutor:
                     avg_entry_price=avg_entry,
                     current_price=current,
                     side=side,
+                    stop_loss=levels[0] if levels else None,
+                    take_profit=levels[1] if levels else None,
+                )
+            )
+        return positions
+
+    async def _spot_positions(self) -> list[Position]:
+        """Long positions from the FIFO ledger, capped by actual venue balances (§7.41).
+
+        The ledger knows cost basis and entry decisions; the venue knows what is really
+        held (a manual withdrawal or partial fill shrinks it). Quantity is the smaller
+        of the two; a failed balance read falls back to the ledger alone. Marks come
+        from :meth:`update_price` (the cycle's snapshot close), else the cost basis.
+        """
+        totals: dict[str, Any] | None = None
+        try:
+            balance = await self._client.fetch_balance()
+            totals = balance.get("total") if isinstance(balance, dict) else None
+        except Exception as exc:  # noqa: BLE001 - fall back to the ledger alone
+            logger.warning(
+                "fetch_balance failed; spot positions from the ledger only", error=str(exc)
+            )
+        positions: list[Position] = []
+        for symbol in self._tracker.symbols():
+            qty = self._tracker.quantity(symbol)
+            if isinstance(totals, dict):
+                held = totals.get(symbol.split("/")[0])
+                if held is not None:
+                    try:
+                        qty = min(qty, float(held))
+                    except (TypeError, ValueError):
+                        pass
+            if qty <= 1e-12:
+                continue
+            avg = self._tracker.average_price(symbol) or 0.0
+            levels = self._exit_levels.get(symbol)
+            positions.append(
+                Position(
+                    symbol=symbol,
+                    quantity=qty,
+                    avg_entry_price=avg,
+                    current_price=self._marks.get(symbol, avg),
                     stop_loss=levels[0] if levels else None,
                     take_profit=levels[1] if levels else None,
                 )

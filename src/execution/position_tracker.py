@@ -70,6 +70,18 @@ class PositionTracker:
     def quantity(self, symbol: str) -> float:
         return sum(lot.quantity for lot in self._lots.get(symbol, []))
 
+    def symbols(self) -> list[str]:
+        """Symbols with an open long ledger (§7.41 spot position view)."""
+        return [s for s, lots in self._lots.items() if lots]
+
+    def average_price(self, symbol: str) -> float | None:
+        """Quantity-weighted cost of the open long lots (``None`` when flat)."""
+        lots = self._lots.get(symbol, [])
+        qty = sum(lot.quantity for lot in lots)
+        if qty <= 0:
+            return None
+        return sum(lot.quantity * lot.price for lot in lots) / qty
+
     def on_buy(
         self,
         symbol: str,

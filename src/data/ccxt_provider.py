@@ -134,6 +134,21 @@ class CCXTProvider:
         )
 
 
+def exchange_has_sandbox(exchange_id: str) -> bool:
+    """Whether ccxt knows a sandbox/testnet endpoint for ``exchange_id`` (§7.41).
+
+    Kraken **spot** has none (``urls['test']`` is ``None``); only ``krakenfutures``
+    has a demo environment. Offline check — the exchange object is never connected.
+    """
+    import ccxt.async_support as ccxt_async  # lazy import
+
+    exchange_cls = getattr(ccxt_async, exchange_id)
+    urls = getattr(exchange_cls, "urls", None)
+    if not isinstance(urls, dict):  # instantiate only if the class attribute is unhelpful
+        urls = exchange_cls({}).urls
+    return bool(urls.get("test"))
+
+
 def create_ccxt_provider(
     exchange_id: str = "kraken",
     testnet: bool = True,
@@ -157,6 +172,12 @@ def create_ccxt_provider(
 
     client = exchange_cls(params)
     if testnet:
+        if not client.urls.get("test"):
+            # ccxt's own error here is an opaque TypeError (§7.41, external review 4).
+            raise ValueError(
+                f"exchange '{exchange_id}' has no sandbox/testnet in ccxt — Kraken spot, "
+                "for example, only offers live trading (krakenfutures has a demo)"
+            )
         client.set_sandbox_mode(True)
 
     return CCXTProvider(client, candles_limit=candles_limit)

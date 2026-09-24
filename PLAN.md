@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 683 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60. Done so far: §7.39 (per-agent storage scoping), §7.40 (XTB closes via type=CLOSE, never flips), §7.42 (per-position cap), §7.43 (browser-safe dashboard/control API, tighten-only risk overrides), §7.44 (fail-soft, lossless post-order persistence), §7.45 (book-aware prompt), §7.46 (loss streak counted once per closing fill), §7.47 (exits never gated; SELL closes in full), §7.48 (side-aware closes and exit levels), §7.49 (backtester look-ahead removed), §7.51 (LLM outages surfaced; webhook alert channel) and §7.56 (configurable timeframe, one decision per closed bar). One critical finding remains open (§7.41 Kraken keyed path — no spot sandbox; `testnet: false` is live money) and must land before any Kraken keyed run. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 696 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60. Done so far: §7.39 (per-agent storage scoping), §7.40 (XTB closes via type=CLOSE, never flips), §7.41 (no accidental live Kraken trading; honest spot valuation), §7.42 (per-position cap), §7.43 (browser-safe dashboard/control API, tighten-only risk overrides), §7.44 (fail-soft, lossless post-order persistence), §7.45 (book-aware prompt), §7.46 (loss streak counted once per closing fill), §7.47 (exits never gated; SELL closes in full), §7.48 (side-aware closes and exit levels), §7.49 (backtester look-ahead removed), §7.51 (LLM outages surfaced; webhook alert channel) and §7.56 (configurable timeframe, one decision per closed bar). All four critical findings are closed; no venue execution path can reach real money without `live_trading` + `LIVE_TRADING_ACK`. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,21 +70,16 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.40, §7.42–§7.49, §7.51 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.49, §7.51 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7; §7.39, §7.42–§7.47, §7.49, §7.51, §7.56 done — the §4.3 paper clock can start and replay numbers are look-ahead-free): §7.41/§7.58 before any venue work (§7.40, §7.48 done).
-
-41. **Kraken keyed path: no spot sandbox exists; guard live trading; honest spot valuation** ⏳ [R4-C3, R4-L7, amends §7.28 / find #1] — *critical*
-    - ccxt `kraken` has no `urls['test']`: `set_sandbox_mode(True)` raises `TypeError` at startup (fails closed). The only workaround, `testnet: false`, trades **production funds** while logging "Kraken testnet executor". Only `krakenfutures` has a demo environment.
-    - On spot, `get_positions()` is always `[]` and `get_cash()` is free quote only, so every BUY registers as a loss of its own notional (trips daily-loss + drawdown at once and poisons the persisted peak); SL/TP are never enforced, close-all is a no-op, SELL sizing is unclamped.
-    - Fix: relabel the keyed path as live and require an explicit acknowledgement (config flag + env flag) — same for `xtb_execution.account_type: real`; derive spot positions from the local FIFO ledger + `fetch_balance()` totals marked at the snapshot close; if a sandbox is required, target `krakenfutures` demo (makes the §7.38 short model load-bearing). Rewrite §7.28 accordingly.
+> Order of work (from `external_4.md` §7; §7.39, §7.42–§7.47, §7.49, §7.51, §7.56 done — the §4.3 paper clock can start and replay numbers are look-ahead-free): §7.58 before any venue work (§7.40, §7.41, §7.48 done).
 
 ### Medium severity (open)
 
-28. **Keyed Kraken smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1] — *premise corrected by §7.41*
-    - Kraken **spot has no sandbox** (ccxt `urls['test']` is `None`), so a "testnet" smoke run as originally planned cannot exist; re-scope after §7.41 (either a futures-demo target or an explicitly acknowledged minimal-size live run). The dev sandbox also blocks outbound HTTPS.
+28. **Keyed venue smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1] — *re-scoped by §7.41*
+    - Kraken **spot has no sandbox**, so the original "Kraken testnet" run cannot exist. Options now: (a) a keyed run on an exchange ccxt has a sandbox for (`testnet: true` → `<exchange>-sandbox` mode), or (b) a deliberately acknowledged minimal-size live Kraken spot run (`testnet: false` + `live_trading: true` + `LIVE_TRADING_ACK`). Either needs a network-enabled environment (the dev sandbox blocks outbound HTTPS).
     - *Done meanwhile:* per-cycle status reconciliation of orders left `open` is implemented and pinned — `KrakenExecutor.reconcile_open_orders()` re-polls pending venue orders each cycle (agent-side `_reconcile_orders`), patches the stored row via `Storage.update_order_status`, and flows late fills through the FIFO ledger with entry-decision attribution (§7.28).
 
 50. **Safe-config overrides that never apply** ⏳ [R4-M1] (same class as find #16)

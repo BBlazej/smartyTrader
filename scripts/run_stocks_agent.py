@@ -29,7 +29,12 @@ import os
 import structlog
 
 from src.agents.stocks_agent import DEFAULT_MARKET_TIMEZONE, StocksAgent
-from src.core.config import Settings
+from src.core.config import (
+    LIVE_TRADING_ACK_ENV,
+    LIVE_TRADING_ACK_PHRASE,
+    Settings,
+    live_trading_acknowledged,
+)
 from src.core.runner import build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import PaperExecutor
@@ -65,6 +70,14 @@ def _make_components(settings: Settings) -> tuple[object, object]:
             log.warning(
                 "xtb_execution.enabled but XTB_ACCOUNT_ID/XTB_ACCOUNT_PASSWORD are "
                 "unset — staying on the paper executor"
+            )
+        elif xtb_cfg.account_type == "real" and not live_trading_acknowledged():
+            # §7.41 / review L7: a one-word YAML edit must never reach a real-money
+            # account — it also needs the explicit environment acknowledgement.
+            log.warning(
+                "xtb_execution.account_type is 'real' (REAL money) but live trading is not "
+                f"acknowledged — staying on the paper executor. Set "
+                f"{LIVE_TRADING_ACK_ENV}={LIVE_TRADING_ACK_PHRASE} to trade the real account."
             )
         else:
             client = XApiClient(

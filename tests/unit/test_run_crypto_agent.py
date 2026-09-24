@@ -104,44 +104,68 @@ class TestBuildDataAndExecution:
         # No API key → the Kraken executor is never constructed.
         mock_executor.assert_not_called()
 
-    def test_api_key_selects_kraken_testnet(self) -> None:
-        from src.execution.kraken_executor import KrakenExecutor
+    # ── §7.41: keyed execution never reaches real money by accident ──────
 
-        settings = _settings(testnet=True)
-        fake_order_client = object()
-        data_provider = SimpleNamespace(client=object())
-        order_provider = SimpleNamespace(client=fake_order_client)
-
+    def _keyed(self, settings, *, has_sandbox: bool, env: dict[str, str]):
+        """Run the selector with a key set; returns (executor, mode, provider-mock)."""
+        order_provider = SimpleNamespace(client=object())
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
             patch("scripts.run_crypto_agent.create_kraken_executor") as mock_executor,
+            patch("scripts.run_crypto_agent.exchange_has_sandbox", return_value=has_sandbox),
             patch.dict(
-                os.environ, {"KRAKEN_API_KEY": "key", "KRAKEN_API_SECRET": "secret"}, clear=False
+                os.environ,
+                {"KRAKEN_API_KEY": "key", "KRAKEN_API_SECRET": "secret", **env},
+                clear=True,
             ),
         ):
-            # First call builds the public data feed; the second builds the keyed
-            # order-placement client. Return distinct stand-ins to assert roles.
-            mock_provider.side_effect = [data_provider, order_provider]
-            mock_executor.return_value = KrakenExecutor(client=None)
+            mock_provider.side_effect = [SimpleNamespace(client=object()), order_provider]
+            mock_executor.return_value = "KEYED"
+            _, executor, mode = _build_data_and_execution(settings)
+        return executor, mode, mock_provider
 
-            provider, executor, mode = _build_data_and_execution(settings)
+    def test_key_on_exchange_without_sandbox_stays_on_paper(self) -> None:
+        from src.execution.paper_executor import PaperExecutor
 
-        assert mode == "kraken-testnet"
-        assert isinstance(executor, KrakenExecutor)
-        assert provider is data_provider
-        # The Kraken executor is built on the dedicated keyed client (not the data one).
-        mock_executor.assert_called_once_with(fake_order_client)
-        calls = mock_provider.call_args_list
-        assert len(calls) == 2
-        # Public data feed: no sandbox, no keys.
-        assert calls[0].kwargs == {"exchange_id": "kraken", "testnet": False}
-        # Order feed: sandboxed per config + keyed.
-        assert calls[1].kwargs == {
-            "exchange_id": "kraken",
+        # The shipped Kraken default: testnet: true — but Kraken spot has no sandbox.
+        executor, mode, provider = self._keyed(_settings(testnet=True), has_sandbox=False, env={})
+        assert mode == "paper" and isinstance(executor, PaperExecutor)
+        assert provider.call_count == 1  # the keyed client is never even built
+
+    def test_key_with_real_sandbox_uses_it(self) -> None:
+        executor, mode, provider = self._keyed(
+            _settings(exchange="binance", testnet=True), has_sandbox=True, env={}
+        )
+        assert mode == "binance-sandbox" and executor == "KEYED"
+        assert provider.call_args_list[1].kwargs == {
+            "exchange_id": "binance",
             "testnet": True,
             "api_key": "key",
             "api_secret": "secret",
         }
+
+    def test_testnet_false_alone_never_trades_live(self) -> None:
+        from src.execution.paper_executor import PaperExecutor
+
+        executor, mode, _ = self._keyed(_settings(testnet=False), has_sandbox=False, env={})
+        assert mode == "paper" and isinstance(executor, PaperExecutor)
+
+    def test_live_flag_without_env_ack_stays_on_paper(self) -> None:
+        settings = _settings(testnet=False)
+        settings.crypto_agent.live_trading = True
+        _, mode, _ = self._keyed(settings, has_sandbox=False, env={"LIVE_TRADING_ACK": "yes"})
+        assert mode == "paper"
+
+    def test_both_opt_ins_select_the_live_venue(self) -> None:
+        settings = _settings(testnet=False)
+        settings.crypto_agent.live_trading = True
+        executor, mode, provider = self._keyed(
+            settings,
+            has_sandbox=False,
+            env={"LIVE_TRADING_ACK": "I_ACCEPT_REAL_MONEY_RISK"},
+        )
+        assert mode == "kraken-LIVE" and executor == "KEYED"
+        assert provider.call_args_list[1].kwargs["testnet"] is False
 
     def test_paper_executor_gets_configured_costs(self) -> None:
         from src.execution.paper_executor import PaperExecutor

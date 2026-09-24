@@ -1,7 +1,7 @@
 # Autonomous Trading Agent
 
 Paper-trading agents powered by a local LLM (LM Studio). Two agents — **crypto**
-(Kraken testnet) and **stocks** (XTB demo) — share one decision pipeline, one
+(Kraken) and **stocks** (XTB demo) — share one decision pipeline, one
 deterministic risk engine, and one storage layer.
 
 > **Safety-first:** the paper executor is the default and nothing executes
@@ -67,8 +67,12 @@ mode, so even the paper path generates real snapshots, indicators, and LLM
 signals. The **first cycle runs immediately at startup**, then repeats every
 `interval_minutes`. Execution stays simulated: without `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`
 in `.env` (the runner loads it for you — no `python-dotenv` needed), orders are
-filled by the fee/slippage-aware `PaperExecutor`; with those set, orders go to
-the Kraken testnet via a separate sandboxed, keyed client. The stocks runner
+filled by the fee/slippage-aware `PaperExecutor`. **Kraken spot has no sandbox
+(§7.41):** with keys set, orders only leave paper when `crypto_agent.testnet: false`,
+`crypto_agent.live_trading: true` **and** env `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`
+are all present (mode `<exchange>-LIVE`); a `testnet: true` exchange that *does* have
+a ccxt sandbox runs `<exchange>-sandbox`; anything else stays on paper and logs why.
+The stocks runner
 executes on the `PaperExecutor` by default; real **XTB demo** execution is opt-in
 (§7.16): set `xtb_execution.enabled: true` **and** `XTB_ACCOUNT_ID` +
 `XTB_ACCOUNT_PASSWORD` (the xAPI verification code from xStation) and orders go
@@ -98,7 +102,7 @@ src/
 ├── execution/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
-│   ├── kraken_executor.py    # Kraken testnet orders via CCXT
+│   ├── kraken_executor.py    # Keyed Kraken orders via CCXT (live only with §7.41 ack)
 │   ├── xtb_executor.py       # XTB demo orders via the injected xAPI client seam
 │   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth
 ├── agents/
@@ -139,7 +143,7 @@ thresholds. Key sections:
 | Section | What it controls |
 |---|---|
 | `llm` | LM Studio endpoint, model, timeout, retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` |
-| `crypto_agent` | enabled, exchange, testnet flag, interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56) |
+| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56) |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
@@ -154,7 +158,8 @@ thresholds. Key sections:
 | Variable | Effect |
 |---|---|
 | `LM_STUDIO_ENDPOINT` | Override the LLM endpoint |
-| `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Enable Kraken testnet execution (else paper); public data works in both modes with no key |
+| `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Keyed Kraken execution — never before §7.41's live-money ack; public data needs no key |
+| `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: keyed Kraken spot or `xtb_execution.account_type: real` (§7.41) |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
 | `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
 | `XTB_API_KEY` | *Deprecated* — the old placeholder for §7.16; no longer read by any code |
@@ -200,7 +205,8 @@ equity high-water mark persisted via SQLite, seeded at startup) with the
 **order-size cap enforced at the gate** (oversized plans are rejected before
 execution; sells clamp to units held), and the **keyed Kraken path hardened
 against real ccxt payloads** (nested balances, fill price/time recording,
-graceful spot `fetch_positions` degradation — live testnet smoke still pending),
+graceful spot `fetch_positions` degradation; §7.41 removed any accidental path to
+real money — keyed live smoke still pending),
 and **restart-safe paper state** (cash/positions rehydrate from the latest
 portfolio snapshot; daily-loss baseline and losing-streak/cooldown rebuild from
 persisted outcomes; `execution.initial_cash` is config-driven), and **honest
@@ -225,15 +231,15 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**683 tests passing at ~94% coverage.**
+**696 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
 
-> **Open critical finding (external review 4, PLAN §7.41):** Kraken spot has no sandbox — `testnet: true`
-> crashes a keyed run and `testnet: false` means **real funds**. See `AGENTS.md` → *Known open gaps*.
-> (Landed since the review: per-agent storage scoping, per-position cap, XTB closes via `type=CLOSE`,
-> browser-safe dashboard, side-aware closes, look-ahead-free backtests — PLAN §7 / HISTORY.)
+> **Real money is double-gated (§7.41):** Kraken spot has **no sandbox**, so a keyed Kraken spot
+> executor is only ever built with `crypto_agent.testnet: false` **and** `live_trading: true` **and**
+> `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`; anything less stays on paper and logs why (same ack for
+> `xtb_execution.account_type: real`). All four critical findings of external review 4 are closed.
 
 ## Documentation map
 

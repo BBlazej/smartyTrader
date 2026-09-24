@@ -13,7 +13,11 @@ llm:
 crypto_agent:
   enabled: true
   exchange: kraken
+  # §7.41: Kraken SPOT has no sandbox. With KRAKEN_API_KEY set, `testnet: true` on
+  # an exchange without one stays on the paper executor (warned); a keyed live run
+  # needs `testnet: false` AND `live_trading: true` AND LIVE_TRADING_ACK in the env.
   testnet: true
+  live_trading: false
   interval_minutes: 5
   pairs:
     - BTC/USDT

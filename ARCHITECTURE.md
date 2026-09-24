@@ -18,7 +18,7 @@ Two independent paper-trading agents sharing a common core:
 
 | | Crypto Agent | Stocks Agent |
 |---|---|---|
-| **Exchange** | Kraken (testnet) | XTB (demo account) |
+| **Exchange** | Kraken (public data; keyed = sandbox or ack-gated live, §7.41) | XTB (demo account) |
 | **Data** | CCXT (OHLCV); news/sentiment — *planned* | xAPI + yfinance (OHLCV); economic calendar — *planned* |
 | **LLM** | LM Studio → Qwen 3.8 27B (`qwen/qwen3.8-27b`) | Same shared LLM client |
 
@@ -29,7 +29,7 @@ Both agents use the same decision pipeline, risk engine, and storage layer — o
 ```mermaid
 flowchart TB
     LMStudio["LM Studio (local LLM, OpenAI-compatible)"]
-    Kraken["Kraken (public OHLCV / testnet)"]
+    Kraken["Kraken (public OHLCV / keyed live)"]
     StocksSrc["yfinance / xAPI (stocks data)"]
 
     subgraph agents["src/agents — market shells"]
@@ -118,7 +118,7 @@ src/
 ├── execution/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
-│   ├── kraken_executor.py    # Kraken testnet orders via ccxt (real payload parsing, spot fetch_positions degradation handled;
+│   ├── kraken_executor.py    # Keyed Kraken orders via ccxt — sandbox if the exchange has one, else ack-gated live (§7.41); real payload parsing, spot fetch_positions degradation handled;
 │   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28;
 │   │                         #  resolved statuses re-delivered until confirm_reconciled, §7.44)
 │   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
@@ -234,7 +234,7 @@ class Executor(Protocol):
     async def get_cash(self) -> float: ...
 ```
 
-- `kraken_executor.py` — Kraken testnet via ccxt; real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
+- `kraken_executor.py` — keyed Kraken via ccxt (mode `<exchange>-sandbox` where ccxt has one; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
 - `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
@@ -525,8 +525,9 @@ Metrics (CLI summary + `--report` JSON):
 
 ## API Notes
 
-### Kraken Testnet
-- Base URL: `https://demo.kraken.com` (or use CCXT's testnet flag)
+### Kraken (spot) — no sandbox
+- **Kraken spot has no testnet/sandbox** (ccxt `urls['test']` is `None`; only `krakenfutures` has `demo-futures.kraken.com`). Keyed spot trading is real money — gated by `crypto_agent.live_trading: true` + `LIVE_TRADING_ACK` (§7.41); without both, a keyed setup stays on paper.
+- Spot has no `fetch_positions`: the executor reports its FIFO ledger capped by `fetch_balance` totals, marked each cycle via `update_price` (§7.41).
 - Auth: API key + secret via HMAC-SHA256 signatures
 - Rate limits: Check current docs — implement exponential backoff
 - Order types: market, limit, stop-loss, take-profit supported
@@ -553,7 +554,11 @@ llm:
 crypto_agent:
   enabled: true
   exchange: kraken
+  # §7.41: Kraken SPOT has no sandbox. With KRAKEN_API_KEY set, `testnet: true` on
+  # an exchange without one stays on the paper executor (warned); a keyed live run
+  # needs `testnet: false` AND `live_trading: true` AND LIVE_TRADING_ACK in the env.
   testnet: true
+  live_trading: false
   interval_minutes: 5
   pairs:
     - BTC/USDT

@@ -1,10 +1,13 @@
-"""Entry point: run the crypto agent in paper or Kraken-testnet mode.
+"""Entry point: run the crypto agent — paper by default.
 
 Shared lifecycle (enabled gate, storage/LLM/risk wiring, drawdown seeding, rehydration,
 retention pruning, ``--once`` vs scheduled loop, guaranteed cleanup) lives in
 :func:`src.core.runner.run_agent` (§7.13). This script keeps only the crypto-specific
-wiring: live public CCXT data + paper execution by default, Kraken testnet execution
-when ``KRAKEN_API_KEY`` is set.
+wiring: live public CCXT data + paper execution by default. A keyed executor needs
+``KRAKEN_API_KEY`` **and** either a real sandbox (``testnet: true`` on an exchange
+ccxt has one for) or — for live money — ``crypto_agent.live_trading: true`` plus
+``LIVE_TRADING_ACK`` (§7.41: **Kraken spot has no sandbox**, so keyed Kraken spot
+is always real funds; anything short of both opt-ins stays on paper and says why).
 
 ``crypto_agent.enabled: false`` means **do nothing**: the runner exits before
 constructing any component — no cycles, LLM calls, order placement or DB writes.
@@ -21,9 +24,14 @@ import os
 import structlog
 
 from src.agents.crypto_agent import CryptoAgent
-from src.core.config import Settings
+from src.core.config import (
+    LIVE_TRADING_ACK_ENV,
+    LIVE_TRADING_ACK_PHRASE,
+    Settings,
+    live_trading_acknowledged,
+)
 from src.core.runner import build_alerts, load_dotenv, run_agent
-from src.data.ccxt_provider import create_ccxt_provider
+from src.data.ccxt_provider import create_ccxt_provider, exchange_has_sandbox
 from src.execution.kraken_executor import create_kraken_executor
 from src.execution.paper_executor import PaperExecutor
 from src.monitoring import setup_logging
@@ -35,26 +43,35 @@ def _build_data_and_execution(settings: Settings) -> tuple[object, object, str]:
     The **data feed is always live public market data** (Kraken's public OHLCV
     endpoint needs no API key and no sandbox mode). Only *execution* changes:
 
-    - no ``KRAKEN_API_KEY`` → :class:`PaperExecutor` (safe default);
-    - key set → :class:`KrakenExecutor` on a separate, keyed, sandboxed client.
+    - no ``KRAKEN_API_KEY`` → :class:`PaperExecutor` (safe default), mode ``paper``;
+    - key + ``testnet: true`` on an exchange with a ccxt sandbox → keyed executor on
+      the sandbox, mode ``<exchange>-sandbox``;
+    - key + ``testnet: false`` + ``live_trading: true`` + ``LIVE_TRADING_ACK`` →
+      keyed executor on the **live** venue, mode ``<exchange>-LIVE``;
+    - any other keyed combination → paper, with a warning saying exactly why
+      (§7.41 — e.g. Kraken spot has no sandbox, so ``testnet: true`` can't work and
+      ``testnet: false`` alone must never silently trade real funds).
     """
     exchange = settings.crypto_agent.exchange or "kraken"
     api_key = os.getenv("KRAKEN_API_KEY")
     api_secret = os.getenv("KRAKEN_API_SECRET")
+    log = structlog.get_logger().bind(component="runner")
 
     provider = create_ccxt_provider(exchange_id=exchange, testnet=False)
 
     if api_key:
-        # A dedicated, sandboxed, keyed client for order placement (public data
-        # above intentionally stays on the main endpoint).
-        order_client = create_ccxt_provider(
-            exchange_id=exchange,
-            testnet=settings.crypto_agent.testnet,
-            api_key=api_key,
-            api_secret=api_secret,
-        ).client
-        executor = create_kraken_executor(order_client)
-        return provider, executor, "kraken-testnet"
+        mode = _keyed_mode(settings, exchange, log)
+        if mode is not None:
+            # A dedicated, keyed client for order placement (public data above
+            # intentionally stays on the main endpoint).
+            order_client = create_ccxt_provider(
+                exchange_id=exchange,
+                testnet=mode.endswith("-sandbox"),
+                api_key=api_key,
+                api_secret=api_secret,
+            ).client
+            executor = create_kraken_executor(order_client)
+            return provider, executor, mode
 
     executor = PaperExecutor(
         initial_cash=settings.execution.initial_cash,
@@ -62,6 +79,29 @@ def _build_data_and_execution(settings: Settings) -> tuple[object, object, str]:
         fee_pct=settings.execution.paper_fee_pct,
     )
     return provider, executor, "paper"
+
+
+def _keyed_mode(settings: Settings, exchange: str, log: object) -> str | None:
+    """Mode for a keyed executor, or ``None`` (stay on paper) — never live by accident."""
+    cfg = settings.crypto_agent
+    if getattr(cfg, "testnet", True):
+        if exchange_has_sandbox(exchange):
+            return f"{exchange}-sandbox"
+        log.warning(  # type: ignore[attr-defined]
+            f"KRAKEN_API_KEY is set but '{exchange}' has no sandbox in ccxt — staying on the "
+            "paper executor. (Kraken spot only trades live; to do that on purpose set "
+            f"crypto_agent.testnet: false, crypto_agent.live_trading: true and "
+            f"{LIVE_TRADING_ACK_ENV}={LIVE_TRADING_ACK_PHRASE}.)"
+        )
+        return None
+    if not getattr(cfg, "live_trading", False) or not live_trading_acknowledged():
+        log.warning(  # type: ignore[attr-defined]
+            "KRAKEN_API_KEY is set with testnet: false — that is REAL money, but live trading "
+            "is not acknowledged; staying on the paper executor. Requires BOTH "
+            f"crypto_agent.live_trading: true and {LIVE_TRADING_ACK_ENV}={LIVE_TRADING_ACK_PHRASE}."
+        )
+        return None
+    return f"{exchange}-LIVE"
 
 
 def _make_components(settings: Settings) -> tuple[object, object]:
@@ -74,8 +114,13 @@ def _make_components(settings: Settings) -> tuple[object, object]:
             fee_pct=settings.execution.paper_fee_pct,
             slippage_pct=settings.execution.paper_slippage_pct,
         )
+    elif mode.endswith("-LIVE"):
+        log.warning(
+            "LIVE TRADING: keyed executor on the real venue — orders use real funds",
+            mode=mode,
+        )
     else:
-        log.info("using live public data + Kraken testnet executor")
+        log.info("using live public data + keyed sandbox executor", mode=mode)
     return provider, executor
 
 

@@ -2,10 +2,16 @@
 
 Quirks and gotchas for the two exchanges, gathered as we integrate.
 
-## Kraken Testnet
+## Kraken (spot)
 
-- **Sandbox:** use CCXT's `set_sandbox_mode(True)` (our `create_ccxt_provider`
-  does this when `testnet: true`). The demo base URL is `https://demo.kraken.com`.
+- **There is no spot sandbox** (verified against ccxt 4.5: `kraken().urls['test']`
+  is `None`, and `set_sandbox_mode(True)` raises an opaque `TypeError`; only
+  `krakenfutures` has `demo-futures.kraken.com`). `create_ccxt_provider(testnet=True)`
+  now raises an actionable `ValueError` for exchanges without one, and the crypto
+  runner keeps a keyed Kraken spot setup on **paper** unless `testnet: false`,
+  `live_trading: true` and `LIVE_TRADING_ACK` are all set — it is real money (§7.41).
+- **No `fetch_positions` on spot:** positions come from the executor's own fill ledger,
+  capped by `fetch_balance()` totals and marked each cycle (§7.41).
 - **Order types:** market, limit, stop-loss, take-profit supported.
 - **Statuses:** CCXT normalizes exchange statuses. We map `closed → filled`,
   `open/pending → pending`, `canceled/cancelled → cancelled`, `rejected → rejected`
@@ -31,8 +37,11 @@ Quirks and gotchas for the two exchanges, gathered as we integrate.
   its response; no request ids. xAPI rate-limits to ~5 req/s, so the client spaces
   commands (`request_interval_seconds`).
 - **Instant orders:** `tradeTransaction` with `type=OPEN`, `cmd=0/1`, price = current
-  mark; fill confirmed via `tradeTransactionStatus` (requestStatus 3/5 → filled,
-  2/4 → rejected). Positions: `getTrades(openedOnly)` marked via one-shot
+  mark; fill confirmed via `tradeTransactionStatus` (documented REQUEST_STATUS: 0 error,
+  1 pending, 3 accepted → filled, 4 rejected; unknown codes stay pending).
+- **Closing is a separate transaction (§7.40):** `cmd=SELL, type=OPEN` *opens a short*.
+  Close with `type=CLOSE` (2), the trade's opening `cmd` and its `order` number from
+  `getTrades` (partial volume allowed) — `XApiClient.close_trade`. Positions: `getTrades(openedOnly)` marked via one-shot
   `getTickPrices` (bid longs / ask shorts); cash: `getMarginLevel.balance`.
 - **Volume is in lots** (≈1 share per lot for XTB equities; check symbol specs).
 - **Trading hours:** Warsaw Stock Exchange schedule (09:00–16:30) — already gated

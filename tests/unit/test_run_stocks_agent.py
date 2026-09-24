@@ -243,6 +243,27 @@ class TestExecutorSelection:
         xtb_executor.assert_not_called()
         paper.assert_called_once()
 
+    async def test_real_account_needs_the_live_ack(self) -> None:
+        """§7.41 / review L7: account_type 'real' alone must never reach real money."""
+        creds = {"XTB_ACCOUNT_ID": "42", "XTB_ACCOUNT_PASSWORD": "v3r1fy"}
+        original = _run_settings
+
+        def real_settings(enabled: bool):
+            s = original(enabled)
+            s.xtb_execution.account_type = "real"
+            return s
+
+        with patch(f"{__name__}._run_settings", real_settings):
+            xtb_client, paper, _ = await self._run_with(creds, xtb_enabled=True)
+            xtb_client.assert_not_called()
+            paper.assert_called_once()
+
+            xtb_client, paper, _ = await self._run_with(
+                {**creds, "LIVE_TRADING_ACK": "I_ACCEPT_REAL_MONEY_RISK"}, xtb_enabled=True
+            )
+            assert xtb_client.call_args.kwargs["account_type"] == "real"
+            paper.assert_not_called()
+
     async def test_disabled_never_constructs_xtb_even_with_credentials(self) -> None:
         xtb_client, paper, _ = await self._run_with(
             {"XTB_ACCOUNT_ID": "42", "XTB_ACCOUNT_PASSWORD": "v3r1fy"},

@@ -8,6 +8,17 @@ from typing import Any
 
 import yaml
 
+#: Environment acknowledgement required, together with an explicit config flag,
+#: before any executor may touch a REAL-money account (§7.41): Kraken spot keyed
+#: trading (there is no spot sandbox) and ``xtb_execution.account_type: real``.
+LIVE_TRADING_ACK_ENV = "LIVE_TRADING_ACK"
+LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
+
+
+def live_trading_acknowledged() -> bool:
+    """True only when ``LIVE_TRADING_ACK`` holds the exact acknowledgement phrase."""
+    return os.getenv(LIVE_TRADING_ACK_ENV, "").strip() == LIVE_TRADING_ACK_PHRASE
+
 
 class Settings:
     """Application settings loaded from config/settings.yaml and .env."""
@@ -101,6 +112,9 @@ class AgentConfig:
         # §7.56: ask the LLM once per newly closed bar; cycles in between only mark
         # positions and enforce exit levels.
         decide_on_new_bar_only: bool = True,
+        # §7.41: explicit opt-in for a keyed executor on a venue with no sandbox
+        # (Kraken spot = real money). Also needs LIVE_TRADING_ACK in the env.
+        live_trading: bool = False,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -122,6 +136,7 @@ class AgentConfig:
         self.decision_history_limit = decision_history_limit
         self.timeframe = timeframe
         self.decide_on_new_bar_only = decide_on_new_bar_only
+        self.live_trading = bool(live_trading)
 
 
 class RiskSettings:
