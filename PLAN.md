@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 659 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60. Done so far: §7.39 (per-agent storage scoping), §7.42 (per-position cap), §7.43 (browser-safe dashboard/control API, tighten-only risk overrides), §7.44 (fail-soft, lossless post-order persistence), §7.45 (book-aware prompt), §7.46 (loss streak counted once per closing fill), §7.47 (exits never gated; SELL closes in full), §7.51 (LLM outages surfaced; webhook alert channel) and §7.56 (configurable timeframe, one decision per closed bar). Two critical findings remain open (§7.40 XTB sells opening shorts, §7.41 Kraken keyed path) and must land before any venue execution. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 662 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60. Done so far: §7.39 (per-agent storage scoping), §7.42 (per-position cap), §7.43 (browser-safe dashboard/control API, tighten-only risk overrides), §7.44 (fail-soft, lossless post-order persistence), §7.45 (book-aware prompt), §7.46 (loss streak counted once per closing fill), §7.47 (exits never gated; SELL closes in full), §7.49 (backtester look-ahead removed), §7.51 (LLM outages surfaced; webhook alert channel) and §7.56 (configurable timeframe, one decision per closed bar). Two critical findings remain open (§7.40 XTB sells opening shorts, §7.41 Kraken keyed path) and must land before any venue execution. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,11 +70,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39, §7.42–§7.47, §7.51 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39, §7.42–§7.47, §7.49, §7.51 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7; §7.39, §7.42–§7.47, §7.51, §7.56 done — the §4.3 paper clock can start): §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
+> Order of work (from `external_4.md` §7; §7.39, §7.42–§7.47, §7.49, §7.51, §7.56 done — the §4.3 paper clock can start and replay numbers are look-ahead-free): §7.40/§7.41/§7.48/§7.58 before any venue work.
 
 40. **XTB: SELL must close, not open a short** ⏳ [R4-C2, R4-L9] — *critical*
     - `xtb_client.create_order` always sends `tradeTransaction` `type=OPEN`; `cmd=SELL, type=OPEN` opens a short. LLM sells, §7.9 auto-exits and close-all therefore open shorts while the local FIFO tracker books a fictional realized PnL (feeding the loss streak and the prompt).
@@ -88,10 +88,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 48. **Side-aware closes and exit levels** ⏳ [R4-H6]
     - Since §7.38 venues report `side=SHORT`, but `close_all_positions` and `_check_exit_levels` always SELL and `exit_level_breach` is long-only — closing a short increases it. Reachable on XTB today via §7.40.
     - Fix: cover shorts with BUY and mirror breach semantics (or skip shorts with a warning while spot-only); tests with `side=SHORT`.
-
-49. **Backtester look-ahead bias** ⏳ [R4-H7]
-    - Candle timestamps are *open* times, but `_build_timeline` fires the candle event at its open and uses its close for marks, exits and decision pricing — a 10:00 decision on `1d` stocks fills at the 16:30 close. Replay PnL is systematically optimistic.
-    - Fix: candle events at `open_ts + timeframe`, or price decisions at the last completed candle; intra-candle decision test.
 
 ### Medium severity (open)
 

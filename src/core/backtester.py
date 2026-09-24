@@ -5,6 +5,12 @@ same :class:`RiskEngine` and the same fee/slippage model (:class:`PaperExecutor`
 live — deterministic, zero LLM calls. (LLM replay — feeding history to the model for
 fresh signals — is a separate, later experiment: non-deterministic + costly locally.)
 
+**No look-ahead (§7.49):** candle timestamps are bar *open* times, so each candle
+event fires at its **close** time (open + timeframe) — a decision only ever sees bars
+that had closed when it was made, and exit levels fire when the breaching bar closes.
+(Pricing a decision at the close of a bar still in progress used to fill a 10:00
+decision on daily stock bars at that day's 16:30 close.)
+
 Fidelity contract with live (§7.1/§7.5/§7.9): every candle event re-marks open
 positions at its close; exit levels are enforced on breach *without* the risk gate;
 entries are sized by the shared :func:`calculate_quantity` and gated by
@@ -34,6 +40,7 @@ from itertools import pairwise
 
 import structlog
 
+from ..analysis.candles import timeframe_delta
 from ..execution.paper_executor import PaperExecutor
 from .config import RiskSettings
 from .decision_pipeline import calculate_quantity, exit_level_breach
@@ -172,7 +179,7 @@ class DecisionReplayBacktester:
         timestamp order; each is evaluated against the book as it stands at that
         moment — after every earlier candle and trade.
         """
-        events = self._build_timeline(decisions, candles_by_symbol)
+        events = self._build_timeline(decisions, candles_by_symbol, timeframe)
         equity_curve: list[tuple[datetime, float]] = (
             [(events[0][0], self._initial_cash)] if events else []
         )
@@ -318,19 +325,32 @@ class DecisionReplayBacktester:
         self,
         decisions: list[ReplayDecision],
         candles_by_symbol: dict[str, list[OHLCV]],
+        timeframe: str = "1d",
     ) -> list[tuple[datetime, str, object]]:
         """Merge candles and decisions into one timestamp-ordered event stream.
 
-        Same-timestamp ordering puts candles *before* decisions — mirroring a live
-        cycle (fetch snapshot → decide against its last close).
+        Candle events are placed at the bar's **close** (open timestamp + timeframe,
+        §7.49) — its close price is only known then. Same-timestamp ordering puts
+        candles *before* decisions: a bar closing exactly at decision time is known.
         """
         events: list[tuple[datetime, int, str, object]] = []
         self._last_close = {}
+        bar = timeframe_delta(timeframe)
+        if bar is None:
+            logger.warning(
+                "unknown timeframe — candle events fall back to bar open times "
+                "(replay may peek one bar ahead)",
+                timeframe=timeframe,
+            )
         for symbol, candles in candles_by_symbol.items():
             for candle in candles:
                 if candle.timestamp is None or candle.close <= 0:
                     continue
-                events.append((candle.timestamp, 0, "candle", (symbol, candle)))
+                opened = candle.timestamp
+                if opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=UTC)
+                closed_at = opened + bar if bar is not None else opened
+                events.append((closed_at, 0, "candle", (symbol, candle)))
         for decision in decisions:
             ts = decision.timestamp
             if ts.tzinfo is None:  # stored naive UTC → localize for uniform ordering

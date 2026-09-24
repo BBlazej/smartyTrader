@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -21,9 +21,14 @@ def _ts(day: int, hour: int = 0) -> datetime:
 
 
 def _candles(closes: list[float], start_day: int = 1) -> list[OHLCV]:
+    """Daily bars whose ``closes[i]`` is known at day ``start_day + i`` 00:00.
+
+    Candle timestamps are bar *open* times (ccxt/yfinance), so each bar opens the day
+    before — the replay only reveals a close once the bar has closed (§7.49).
+    """
     return [
         OHLCV(
-            timestamp=_ts(start_day + i),
+            timestamp=_ts(start_day + i) - timedelta(days=1),
             open=c,
             high=c,
             low=c,
@@ -96,9 +101,10 @@ class TestReplayEngine:
         """§7.27: replay runs on market time — tomorrow gets a fresh daily-loss window."""
 
         def _c(ts_hour_closes: list[tuple[int, int, float]]) -> list[OHLCV]:
+            # 12h bars whose close is known at (day, hour): they opened 12h earlier.
             return [
                 OHLCV(
-                    timestamp=_ts(day, hour),
+                    timestamp=_ts(day, hour) - timedelta(hours=12),
                     open=c,
                     high=c,
                     low=c,
@@ -116,7 +122,7 @@ class TestReplayEngine:
             ReplayDecision(_ts(1, 13), "X", "buy", 0.8, stop_loss=50.0),  # daily cap (-20%)
             ReplayDecision(_ts(2, 9), "X", "buy", 0.8, stop_loss=50.0),  # new day → approved
         ]
-        report = await _backtester().replay(decisions, candles, timeframe="1d")
+        report = await _backtester().replay(decisions, candles, timeframe="12h")
 
         # Pre-§7.27 the whole replay was one wall-clock "today": buy #3 would also
         # have been rejected by the still-breaching cumulative cap.
@@ -235,3 +241,43 @@ class TestReplayDeterminism:
         second = await _backtester().replay(decisions, candles, timeframe="1d")
 
         assert first.to_dict() == second.to_dict()  # deterministic: zero LLM calls (§7.14)
+
+
+class TestNoLookAhead:
+    """§7.49: a decision is priced from bars that had *closed* when it was made."""
+
+    async def test_intraday_decision_uses_previous_close(self) -> None:
+        # Daily bars opening day 1 (close 100) and day 2 (close 200). A buy at day 2
+        # 10:00 must fill at 100 — day 2's 200 close is still in the future.
+        candles = {
+            "X": [
+                OHLCV(timestamp=_ts(1), open=100, high=100, low=100, close=100, volume=1),
+                OHLCV(timestamp=_ts(2), open=200, high=200, low=200, close=200, volume=1),
+            ]
+        }
+        decisions = [ReplayDecision(_ts(2, 10), "X", "buy", 0.8, stop_loss=50.0)]
+        report = await _backtester().replay(decisions, candles, timeframe="1d")
+        # 10% of 10k at 100 = 10 units; the day-2 close then marks them at 200.
+        assert report.final_equity == pytest.approx(10_000.0 + 10 * 100.0)
+
+    async def test_decision_before_any_close_is_unpriceable(self) -> None:
+        candles = {"X": [OHLCV(timestamp=_ts(1), open=100, high=100, low=100, close=100, volume=1)]}
+        decisions = [ReplayDecision(_ts(1, 12), "X", "buy", 0.8, stop_loss=50.0)]
+        report = await _backtester().replay(decisions, candles, timeframe="1d")
+        # Pre-§7.49 this filled at the day-1 close 12 hours before it happened.
+        assert report.risk_rejected == 1
+        assert report.final_equity == pytest.approx(10_000.0)
+
+    async def test_stop_fires_when_the_breaching_bar_closes(self) -> None:
+        candles = {
+            "X": [
+                OHLCV(timestamp=_ts(1), open=100, high=100, low=100, close=100, volume=1),
+                OHLCV(timestamp=_ts(2), open=90, high=90, low=90, close=90, volume=1),
+            ]
+        }
+        # Bought day 2 at 08:00 (priced at day-1 close 100); day 2's 90 close breaches
+        # the 95 stop only when that bar closes (day 3 00:00) — never before the entry.
+        decisions = [ReplayDecision(_ts(2, 8), "X", "buy", 0.8, stop_loss=95.0)]
+        report = await _backtester().replay(decisions, candles, timeframe="1d")
+        assert report.auto_exits == 1
+        assert report.per_symbol["X"]["realized_pnl"] == pytest.approx(-100.0)  # 10 × (90−100)
