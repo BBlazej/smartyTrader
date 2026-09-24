@@ -1331,3 +1331,99 @@ class TestExitsCloseInFull:
         assert result.risk_result.verdict == RiskVerdict.APPROVED
         assert result.executed and result.order_result.quantity == pytest.approx(5.0)
         assert await executor.get_positions() == []
+
+
+class TestSideAwareCloses:
+    """§7.48: closing a short is a covering BUY; its stop sits above the entry."""
+
+    @staticmethod
+    def _pos(side: str, sl: float | None = None, tp: float | None = None, symbol: str = "BTC/USDT"):
+        from src.core.models import PositionSide
+
+        return Position(
+            symbol=symbol,
+            quantity=2.0,
+            avg_entry_price=100.0,
+            current_price=100.0,
+            side=PositionSide(side),
+            stop_loss=sl,
+            take_profit=tp,
+        )
+
+    @pytest.mark.parametrize(
+        ("side", "sl", "tp", "mark", "expected"),
+        [
+            ("long", 95.0, 110.0, 94.0, "stop_loss"),
+            ("long", 95.0, 110.0, 111.0, "take_profit"),
+            ("long", 95.0, 110.0, 100.0, None),
+            ("short", 105.0, 90.0, 106.0, "stop_loss"),  # short stops out ABOVE
+            ("short", 105.0, 90.0, 89.0, "take_profit"),  # and takes profit BELOW
+            ("short", 105.0, 90.0, 94.0, None),  # a long's stop semantics would fire here
+        ],
+    )
+    def test_breach_semantics(self, side, sl, tp, mark, expected) -> None:
+        from src.core.decision_pipeline import exit_level_breach
+
+        assert exit_level_breach(self._pos(side, sl, tp), mark) == expected
+
+    class _Book:
+        """Executor stand-in: fixed positions, records every order."""
+
+        def __init__(self, positions):
+            self.positions = positions
+            self.orders: list[tuple[str, OrderSide, float]] = []
+
+        async def get_positions(self):
+            return list(self.positions)
+
+        async def get_cash(self):
+            return 1_000.0
+
+        async def place_order(self, symbol, side, quantity, price=None, **_):
+            from src.core.models import OrderResult
+
+            self.orders.append((symbol, side, quantity))
+            return OrderResult(
+                order_id="x",
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                status="filled",
+            )
+
+    def _pipeline(self, book) -> DecisionPipeline:
+        return DecisionPipeline(
+            provider=AsyncMock(),
+            llm_client=AsyncMock(),
+            risk_engine=RiskEngine(RiskSettings()),
+            executor=book,
+        )
+
+    async def test_close_all_covers_shorts_and_sells_longs(self) -> None:
+        book = self._Book([self._pos("long", symbol="A/USDT"), self._pos("short", symbol="B/USDT")])
+        await self._pipeline(book).close_all_positions()
+        assert book.orders == [("A/USDT", OrderSide.SELL, 2.0), ("B/USDT", OrderSide.BUY, 2.0)]
+
+    async def test_short_stop_is_covered_by_a_buy(self) -> None:
+        book = self._Book([self._pos("short", sl=105.0)])
+        snap = MarketSnapshot(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            candles=[OHLCV(open=106, high=106, low=106, close=106, volume=1)],
+        )
+        result = await self._pipeline(book)._check_exit_levels("BTC/USDT", snap)
+        assert result is not None and result.exit_reason == "stop_loss"
+        assert book.orders == [("BTC/USDT", OrderSide.BUY, 2.0)]
+
+    async def test_hedged_book_closes_only_the_breaching_leg(self) -> None:
+        # A long (stop 95) and a short (stop 105) in one symbol; mark 106 breaches only
+        # the short — pre-§7.48 the long-only check SOLD, adding to the short.
+        book = self._Book([self._pos("long", sl=95.0), self._pos("short", sl=105.0)])
+        snap = MarketSnapshot(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            candles=[OHLCV(open=106, high=106, low=106, close=106, volume=1)],
+        )
+        await self._pipeline(book)._check_exit_levels("BTC/USDT", snap)
+        assert book.orders == [("BTC/USDT", OrderSide.BUY, 2.0)]

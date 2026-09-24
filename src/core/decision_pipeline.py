@@ -160,6 +160,7 @@ class DecisionPipeline:
         for position in await self.executor.get_positions():
             if position.quantity <= 0:
                 continue
+            # §7.48: a short is closed by a covering BUY — selling it would *add* to it.
             price = position.current_price
             if not price or price <= 0:
                 logger.warning(
@@ -169,7 +170,7 @@ class DecisionPipeline:
                 continue
             order = await self.executor.place_order(
                 symbol=position.symbol,
-                side=OrderSide.SELL,
+                side=closing_side(position),
                 quantity=position.quantity,
                 price=price,
             )
@@ -428,13 +429,21 @@ class DecisionPipeline:
             )
             return None
 
-        position = next((p for p in positions if p.symbol == symbol and p.quantity > 0), None)
-        if position is None:
+        # Every position in the symbol is checked, long or short (§7.48) — the first
+        # breach is closed this cycle, any other on the next.
+        breached = next(
+            (
+                (p, r)
+                for p in positions
+                if p.symbol == symbol and p.quantity > 0
+                for r in (exit_level_breach(p, mark),)
+                if r is not None
+            ),
+            None,
+        )
+        if breached is None:
             return None
-
-        reason = exit_level_breach(position, mark)
-        if reason is None:
-            return None
+        position, reason = breached
 
         logger.warning(
             "exit level breached",
@@ -450,7 +459,7 @@ class DecisionPipeline:
         try:
             order_result = await self.executor.place_order(
                 symbol=symbol,
-                side=OrderSide.SELL,
+                side=closing_side(position),
                 quantity=position.quantity,
                 price=mark,
             )
@@ -637,13 +646,25 @@ def exit_level_breach(position: Position, mark: float) -> str | None:
     """Return ``"stop_loss"``/``"take_profit"`` when *mark* breaches the position's level.
 
     Single source for §7.9 semantics so the live pipeline and the backtester's replay
-    can never drift apart.
+    can never drift apart. Side-aware (§7.48): a long stops out *below* its stop and
+    takes profit above its target; a short is the mirror image (stop above entry,
+    target below).
     """
-    if position.stop_loss is not None and mark <= position.stop_loss:
+    short = position.side == PositionSide.SHORT
+    if position.stop_loss is not None and (
+        mark >= position.stop_loss if short else mark <= position.stop_loss
+    ):
         return "stop_loss"
-    if position.take_profit is not None and mark >= position.take_profit:
+    if position.take_profit is not None and (
+        mark <= position.take_profit if short else mark >= position.take_profit
+    ):
         return "take_profit"
     return None
+
+
+def closing_side(position: Position) -> OrderSide:
+    """The order side that *reduces* ``position``: SELL a long, BUY (cover) a short (§7.48)."""
+    return OrderSide.BUY if position.side == PositionSide.SHORT else OrderSide.SELL
 
 
 def calculate_quantity(
