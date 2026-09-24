@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
 import structlog
 
+from ..analysis.candles import bar_close_time, split_forming
 from ..analysis.indicators import compute_indicators
 from ..analysis.prompt_builder import DEFAULT_SYSTEM_PROMPT, build_user_prompt
 from .config import RiskSettings
 from .llm_client import LLMClient
 from .models import (
+    OHLCV,
     Action,
     BookContext,
     DecisionRecord,
@@ -71,6 +74,7 @@ class PipelineResult:
         decision_id: int | None = None,
         auto_exit: bool = False,
         exit_reason: str | None = None,
+        skip_reason: str | None = None,
     ) -> None:
         self.symbol = symbol
         self.signal = signal
@@ -86,6 +90,9 @@ class PipelineResult:
         # fired (§7.9).
         self.auto_exit = auto_exit
         self.exit_reason = exit_reason
+        # Set when the cycle deliberately asked no LLM question (§7.56: the latest
+        # closed bar was already decided on). Marking and exit checks still ran.
+        self.skip_reason = skip_reason
 
     @property
     def executed(self) -> bool:
@@ -116,6 +123,7 @@ class DecisionPipeline:
         system_prompt: str | None = None,
         storage: Storage | None = None,
         decision_history_limit: int = 10,
+        decide_on_new_bar_only: bool = False,
     ) -> None:
         self.provider = provider
         self.llm_client = llm_client
@@ -124,6 +132,11 @@ class DecisionPipeline:
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self._storage = storage
         self._decision_history_limit = decision_history_limit
+        # §7.56: cycles run more often than bars close (5-min cycles on 1h candles);
+        # when set, the LLM is asked once per newly *closed* bar per symbol, while
+        # every cycle still marks positions and enforces exit levels.
+        self.decide_on_new_bar_only = decide_on_new_bar_only
+        self._last_decision_at: dict[str, datetime] = {}
 
     @property
     def decision_history_limit(self) -> int:
@@ -239,10 +252,20 @@ class DecisionPipeline:
         if auto_exit is not None:
             return auto_exit
 
-        # Step 2 — Compute indicators
+        # Step 1d — Bar timing (§7.56). The venue's last bar is usually still forming:
+        # indicators use closed bars only; the forming bar keeps supplying the live
+        # price (marking/exits above, prompt "current price") and is labelled.
+        closed, _forming = split_forming(snapshot.candles, timeframe, snapshot.fetched_at)
+        if self.decide_on_new_bar_only:
+            waiting = await self._awaiting_new_bar(symbol, timeframe, closed)
+            if waiting is not None:
+                logger.info("no new closed bar since last decision; LLM not asked", symbol=symbol)
+                return PipelineResult(symbol=symbol, snapshot=snapshot, skip_reason=waiting)
+
+        # Step 2 — Compute indicators (closed bars only)
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.COMPUTE_INDICATORS)
         try:
-            snapshot.indicators = compute_indicators(snapshot.candles)
+            snapshot.indicators = compute_indicators(closed)
         except Exception as exc:  # noqa: BLE001
             step_logger.error("indicator computation failed", error=str(exc))
             return PipelineResult(
@@ -293,6 +316,12 @@ class DecisionPipeline:
         # placed next can link back to its decision row (§7.8: entry attribution
         # needs the id *before* the fill happens).
         decision_id = await self._persist_decision(signal, risk_result, snapshot)
+        if not signal.is_fallback:
+            # A fallback HOLD is not a decision: the next cycle retries the bar.
+            decided_at = snapshot.fetched_at
+            self._last_decision_at[symbol] = (
+                decided_at.replace(tzinfo=UTC) if decided_at.tzinfo is None else decided_at
+            )
 
         if risk_result.verdict == RiskVerdict.REJECTED:
             step_logger.warning(
@@ -517,6 +546,35 @@ class DecisionPipeline:
         positions = await self.executor.get_positions()
         cash = await self.executor.get_cash()
         return PortfolioState(cash=cash, positions=positions)
+
+    async def _awaiting_new_bar(
+        self, symbol: str, timeframe: str, closed: list[OHLCV]
+    ) -> str | None:
+        """Reason to skip the LLM when the latest closed bar was already decided on.
+
+        The last real (non-fallback) decision time comes from memory, else from
+        storage once — so a restart doesn't re-ask the same bar. ``None`` (ask) when
+        timing is unknown or nothing was decided yet: never skip on a guess.
+        """
+        if not closed:
+            return None
+        bar_closed_at = bar_close_time(closed[-1], timeframe)
+        if bar_closed_at is None:
+            return None
+        last = self._last_decision_at.get(symbol)
+        if last is None and self._storage is not None:
+            try:
+                rows = await self._storage.get_recent_decisions(symbol, limit=1)
+            except Exception as exc:  # noqa: BLE001 - unknown history → just ask
+                logger.warning("last-decision lookup failed", symbol=symbol, error=str(exc))
+                rows = []
+            if rows and rows[0].timestamp is not None:
+                ts = rows[0].timestamp
+                last = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+                self._last_decision_at[symbol] = last
+        if last is not None and last >= bar_closed_at:
+            return f"awaiting new {timeframe} bar (last decision {last:%Y-%m-%d %H:%M} UTC)"
+        return None
 
     def _book_context(self, symbol: str, portfolio: PortfolioState) -> BookContext:
         """This symbol's slice of the book for the prompt (§7.45)."""

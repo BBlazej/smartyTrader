@@ -10,6 +10,7 @@ no override is configured. Pure string building — no I/O.
 from __future__ import annotations
 
 from ..core.models import BookContext, DecisionRecord, MarketSnapshot, PositionSide
+from .candles import split_forming
 
 
 def build_user_prompt(
@@ -28,10 +29,14 @@ def build_user_prompt(
     lines: list[str] = []
 
     lines.append(f"Symbol: {snapshot.symbol} ({snapshot.timeframe})")
+    # The venue's last bar may still be forming (§7.56): it is the live price, but
+    # its OHLCV is provisional — labelled below and excluded from the indicators.
+    _, forming = split_forming(snapshot.candles, snapshot.timeframe, snapshot.fetched_at)
 
     # Current price (last close) — the reference for stop_loss / take_profit.
     if snapshot.candles:
-        lines.append(f"Current price: {snapshot.candles[-1].close:.2f}")
+        live = " (live — current bar still forming)" if forming is not None else ""
+        lines.append(f"Current price: {_price(snapshot.candles[-1].close)}{live}")
 
     # Recent candles (last 5)
     recent = snapshot.candles[-5:] if len(snapshot.candles) >= 5 else snapshot.candles
@@ -39,14 +44,20 @@ def build_user_prompt(
     lines.append("Recent candles (OHLCV):")
     for c in recent:
         ts = c.timestamp.isoformat() if c.timestamp else "N/A"
+        tag = "  [FORMING — bar not closed, values provisional]" if c is forming else ""
         lines.append(
-            f"  {ts}: O={c.open:.2f} H={c.high:.2f} L={c.low:.2f} C={c.close:.2f} V={c.volume:.0f}"
+            f"  {ts}: O={_price(c.open)} H={_price(c.high)} L={_price(c.low)} "
+            f"C={_price(c.close)} V={c.volume:.0f}{tag}"
         )
 
     # Indicators
     if snapshot.indicators:
         lines.append("")
-        lines.append("Technical indicators:")
+        lines.append(
+            "Technical indicators (closed bars only):"
+            if forming is not None
+            else "Technical indicators:"
+        )
         for key, value in snapshot.indicators.items():
             lines.append(f"  {key}: {value}")
 

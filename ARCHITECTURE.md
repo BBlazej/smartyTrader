@@ -172,7 +172,8 @@ sequenceDiagram
     PL->>PR: fetch snapshot (OHLCV candles)
     PL->>EX: update_price(symbol, last close) — marking hook (paper only)
     Note over PL: exit-level check: breach → auto-close full quantity (no LLM, no gate), cycle ends with auto_exit=True
-    PL->>PL: compute indicators (RSI, MACD, Bollinger, ATR — hand-rolled, simple averages)
+    Note over PL: bar timing (§7.56): split off the forming bar; if decide_on_new_bar_only and the latest closed bar is already decided → end cycle (skip_reason), no LLM call
+    PL->>PL: compute indicators on closed bars only (RSI, MACD, Bollinger, ATR — hand-rolled, simple averages)
     PL->>EX: read book once (positions + cash) — reused unchanged at the gate
     PL->>LLM: prompt = market data + YOUR BOOK (symbol position, cash, limit headroom) + last-N decisions with honest outcomes
     LLM-->>PL: TradeSignal JSON (exhausted-retries HOLD flagged is_fallback, never forgeable)
@@ -192,6 +193,7 @@ sequenceDiagram
 Notes:
 
 - **Marking before gating** (§7.1): paper positions are re-marked at the snapshot's last close *before* the risk check, so unrealized PnL, portfolio snapshots and the daily-loss rule track the market. Real-venue executors report live prices and skip the hook.
+- **Bars, not cycles, drive decisions** (§7.56): candle timestamps are bar open times; `analysis/candles.py` splits off the still-forming bar — indicators use closed bars, the forming bar stays the live price (marking, exits, prompt "Current price … (live)") and is labelled `[FORMING]` in the prompt. With `decide_on_new_bar_only` the LLM is asked once per newly closed bar per symbol (last decision time in memory, from storage after a restart; fallback HOLDs don't count) while every cycle still marks and enforces exits.
 - **The model sees its own book** (§7.45): the prompt's *YOUR BOOK* section carries the symbol's long position (size, entry, mark, uPnL, active SL/TP), cash vs equity and the per-symbol limit with remaining headroom; past-decision outcomes read `n/a` for HOLD/rejected/unfilled decisions and `still open` only for executed, unclosed entries (`DecisionRecord.filled` ← `Storage.get_filled_decision_ids`).
 - **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. Sells clamp to units held.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
@@ -556,6 +558,8 @@ crypto_agent:
     - BTC/USDT
     - ETH/USDT
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+  timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
+  decide_on_new_bar_only: true # one LLM decision per closed bar; cycles between only mark + exit-check
 
 stocks_agent:
   enabled: false
@@ -574,6 +578,8 @@ stocks_agent:
     - AAPL
     - MSFT
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+  timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
+  decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)
 
 risk:
   max_position_pct: 0.10

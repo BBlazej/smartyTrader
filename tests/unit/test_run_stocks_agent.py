@@ -28,6 +28,8 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             market_timezone="Europe/Warsaw",
             market_holidays=[],
             decision_history_limit=10,
+            timeframe="1d",
+            decide_on_new_bar_only=True,
         ),
         risk=SimpleNamespace(),
         execution=SimpleNamespace(

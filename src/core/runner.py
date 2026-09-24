@@ -31,6 +31,7 @@ from typing import Any
 
 import structlog
 
+from ..analysis.candles import timeframe_delta
 from ..monitoring.alerts import AlertManager
 from .config import Settings
 from .control_config import parse_and_apply
@@ -78,6 +79,8 @@ async def run_agent(
     build_components: Callable[[], tuple[Any, Any]],
     build_agent: Callable[[DecisionPipeline, Storage, RiskEngine, LLMClient], Any],
     run_once: bool = False,
+    timeframe: str | None = None,
+    decide_on_new_bar_only: bool = False,
 ) -> None:
     """Shared agent lifecycle for both runners. Returns when the loop exits.
 
@@ -132,7 +135,22 @@ async def run_agent(
         executor=executor,
         storage=storage,
         decision_history_limit=decision_history_limit,
+        decide_on_new_bar_only=decide_on_new_bar_only,
     )
+    bar = timeframe_delta(timeframe) if timeframe else None
+    if (
+        bar is not None
+        and not decide_on_new_bar_only
+        and interval_minutes * 60 < bar.total_seconds()
+    ):
+        # §7.56: the LLM would re-judge the same closed bars many times per bar.
+        log.warning(
+            "cycle interval is shorter than the candle timeframe and "
+            "decide_on_new_bar_only is off — the LLM re-evaluates each bar repeatedly",
+            interval_minutes=interval_minutes,
+            timeframe=timeframe,
+            asks_per_bar=round(bar.total_seconds() / (interval_minutes * 60), 1),
+        )
 
     agent = build_agent(pipeline, storage, risk_engine, llm_client)
 

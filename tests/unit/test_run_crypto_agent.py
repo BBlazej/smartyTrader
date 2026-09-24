@@ -195,6 +195,8 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             interval_minutes=5,
             pairs=["BTC/USDT"],
             decision_history_limit=10,
+            timeframe="1h",
+            decide_on_new_bar_only=True,
         ),
         risk=SimpleNamespace(),
         execution=SimpleNamespace(

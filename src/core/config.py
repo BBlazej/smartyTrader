@@ -91,6 +91,12 @@ class AgentConfig:
         # always closed; this list covers holidays and one-off shutdowns.
         market_holidays: list[str] | None = None,
         decision_history_limit: int = 10,
+        # Candle timeframe the agent decides on (§7.56) — was hardcoded per agent.
+        # None → the agent's default (crypto "1h", stocks "1d").
+        timeframe: str | None = None,
+        # §7.56: ask the LLM once per newly closed bar; cycles in between only mark
+        # positions and enforce exit levels.
+        decide_on_new_bar_only: bool = True,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -110,6 +116,8 @@ class AgentConfig:
         # How many of this agent's prior decisions to feed back into the prompt
         # prompt ("learn from its own track record"). 0 disables the section.
         self.decision_history_limit = decision_history_limit
+        self.timeframe = timeframe
+        self.decide_on_new_bar_only = decide_on_new_bar_only
 
 
 class RiskSettings:

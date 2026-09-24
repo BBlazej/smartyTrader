@@ -91,6 +91,8 @@ async def run(run_once: bool = False) -> None:
         interval_minutes=settings.crypto_agent.interval_minutes,
         decision_history_limit=settings.crypto_agent.decision_history_limit,
         job_id="crypto_cycle",
+        timeframe=settings.crypto_agent.timeframe or "1h",
+        decide_on_new_bar_only=settings.crypto_agent.decide_on_new_bar_only,
         build_components=lambda: _make_components(settings),
         build_agent=lambda pipeline, storage, risk_engine, llm_client: CryptoAgent(
             pipeline=pipeline,
@@ -98,6 +100,7 @@ async def run(run_once: bool = False) -> None:
             risk_engine=risk_engine,
             llm_client=llm_client,
             pairs=settings.crypto_agent.pairs,
+            timeframe=settings.crypto_agent.timeframe or "1h",
             alerts=build_alerts(settings),
         ),
         run_once=run_once,

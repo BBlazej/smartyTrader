@@ -19,6 +19,10 @@ crypto_agent:
     - BTC/USDT
     - ETH/USDT
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+  timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
+  # §7.56: ask the LLM once per newly CLOSED bar; the 5-min cycles in between only
+  # mark positions and enforce stop-loss/take-profit. false = ask every cycle.
+  decide_on_new_bar_only: true
 
 stocks_agent:
   enabled: false
@@ -37,6 +41,8 @@ stocks_agent:
     - AAPL
     - MSFT
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
+  timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
+  decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)
 
 risk:
   max_position_pct: 0.10
