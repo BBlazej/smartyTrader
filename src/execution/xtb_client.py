@@ -22,6 +22,11 @@ Design notes
 * Orders are **instant** (``type=OPEN``, cmd BUY/SELL at the current mark);
   the agent never places pending orders, which keeps ``cancel_order`` a rarely
   exercised path (it issues xAPI's DELETE transaction).
+* **Closing is its own transaction (§7.40).** ``cmd=SELL, type=OPEN`` does *not*
+  close a long — it opens a short. A position is closed with ``type=CLOSE``, the
+  *opening* ``cmd`` and the trade's ``order`` number (``getTrades``);
+  :meth:`XApiClient.close_trade` does that and the executor routes every reducing
+  order through it.
 * Fills are confirmed by polling ``tradeTransactionStatus`` briefly; an order
   still in flight returns ``pending`` and is treated like paper's accepted flow.
 * Positions carry live marks fetched via ``getTickPrices`` (bid for longs, ask
@@ -49,18 +54,18 @@ DEFAULT_HOST = "wss://ws.xapi.pro"
 _CMD_BUY = 0
 _CMD_SELL = 1
 _TYPE_OPEN = 0
+_TYPE_CLOSE = 2
 _TYPE_DELETE = 4
 
-#: ``tradeTransactionStatus.requestStatus`` → our stable order statuses.
-#: 3/5 mean the transaction executed; 2/4 are terminal failures; 6 is cancelled.
+#: ``tradeTransactionStatus.requestStatus`` → our stable order statuses — the
+#: documented REQUEST_STATUS set (ERROR 0, PENDING 1, ACCEPTED 3, REJECTED 4; §7.40
+#: re-grounding — codes 2/5/6 used to be mapped but do not exist). Unknown codes
+#: stay ``pending`` (polled until the budget runs out), never a guessed fill.
 _REQUEST_STATUS_MAP: dict[int, str] = {
-    0: "rejected",  # error
-    1: "pending",
-    2: "rejected",  # invalid
-    3: "filled",  # accepted / executed
-    4: "rejected",
-    5: "filled",  # done
-    6: "cancelled",
+    0: "rejected",  # ERROR
+    1: "pending",  # PENDING
+    3: "filled",  # ACCEPTED — executed
+    4: "rejected",  # REJECTED
 }
 
 
@@ -283,6 +288,77 @@ class XApiClient:
             "order_id": str(order_id),
             "status": status,
             "quantity": float(quantity),
+            "price": float(price),
+        }
+
+    async def get_open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Open trades (``getTrades`` openedOnly) with what closing needs (§7.40).
+
+        Each record: ``order`` (the number ``type=CLOSE`` must reference), ``symbol``,
+        ``cmd`` (0 = long / BUY-opened, 1 = short / SELL-opened), ``volume`` (lots)
+        and ``open_price``. Oldest first, so closes consume trades FIFO.
+        """
+        records = await self._command("getTrades", {"openedOnly": True}) or []
+        trades = [
+            {
+                "order": int(r.get("order", 0)),
+                "symbol": str(r.get("symbol") or ""),
+                "cmd": int(r.get("cmd", 0)),
+                "volume": float(r.get("volume", 0.0)),
+                "open_price": float(r.get("open_price", 0.0)),
+            }
+            for r in records
+            if r.get("symbol") and (symbol is None or r.get("symbol") == symbol)
+        ]
+        return sorted(trades, key=lambda t: t["order"])
+
+    async def close_trade(
+        self,
+        order: int,
+        symbol: str,
+        cmd: int,
+        volume: float,
+        price: float | None = None,
+    ) -> dict[str, Any]:
+        """Close (part of) an open trade — xAPI ``tradeTransaction`` ``type=CLOSE`` (§7.40).
+
+        ``cmd`` is the trade's *opening* command and ``order`` its number from
+        :meth:`get_open_trades`; ``volume`` below the trade's volume closes it
+        partially. Without a price, a long closes at the bid and a short at the ask.
+        Same result shape as :meth:`create_order`; venue rejections come back as
+        ``status: rejected`` rather than raising.
+        """
+        if price is None:
+            spec = await self._command("getSymbol", {"symbol": symbol}) or {}
+            price = float(spec.get("bid") if cmd == _CMD_BUY else spec.get("ask"))
+        try:
+            data = await self._command(
+                "tradeTransaction",
+                {
+                    "tradeTransInfo": {
+                        "cmd": cmd,
+                        "customComment": "trading-agent close",
+                        "expiration": 0,
+                        "offset": 0,
+                        "order": int(order),
+                        "price": float(price),
+                        "sl": 0,
+                        "symbol": symbol,
+                        "tp": 0,
+                        "type": _TYPE_CLOSE,
+                        "volume": float(volume),
+                    }
+                },
+            )
+        except XTBError as exc:
+            logger.warning("xAPI close rejected", symbol=symbol, order=order, error=str(exc))
+            return {"order_id": "", "status": "rejected", "quantity": float(volume)}
+        close_order = int(data.get("order", 0))
+        status = await self._await_fill_status(close_order)
+        return {
+            "order_id": str(close_order),
+            "status": status,
+            "quantity": float(volume),
             "price": float(price),
         }
 

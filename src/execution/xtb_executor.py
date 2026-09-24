@@ -14,6 +14,15 @@ The stocks runner wires this executor only when ``xtb_execution.enabled`` AND bo
 ``XTB_ACCOUNT_ID``/``XTB_ACCOUNT_PASSWORD`` are set; anything missing keeps the
 paper executor (still the safe default), and the block is deliberately outside the
 dashboard's safe-config whitelist.
+
+Order semantics — reduce first, never flip (§7.40)
+--------------------------------------------------
+xAPI is position-based: ``cmd=SELL, type=OPEN`` *opens a short*, it does not close a
+long. So :meth:`XTBExecutor.place_order` first looks at the symbol's open trades: an
+order opposite to open trades **closes** them (FIFO, ``type=CLOSE`` via
+:meth:`XTBClient.close_trade`, partially if needed) and never flips into a new
+opposite position with any remainder. With nothing to close, a BUY opens a long;
+a SELL is refused unless ``allow_short`` is set — this is a long-only agent.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from ..core.models import OrderResult, OrderSide, Position, PositionSide
+from ..core.models import ClosedEntry, OrderResult, OrderSide, Position, PositionSide
 from .position_tracker import PositionTracker
 
 logger = structlog.get_logger()
@@ -60,13 +69,31 @@ class XTBClient(Protocol):
 
     async def get_balance(self) -> float: ...
 
+    async def get_open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]: ...
+
+    async def close_trade(
+        self,
+        order: int,
+        symbol: str,
+        cmd: int,
+        volume: float,
+        price: float | None = None,
+    ) -> dict[str, Any]: ...
+
+
+_OPENED_LONG = 0  # xAPI cmd of a BUY-opened (long) trade
+_OPENED_SHORT = 1  # xAPI cmd of a SELL-opened (short) trade
+
 
 class XTBExecutor:
     """Maps the shared Executor protocol to XTB order calls via xAPI."""
 
-    def __init__(self, client: XTBClient) -> None:
+    def __init__(self, client: XTBClient, *, allow_short: bool = False) -> None:
         self._client = client
         self._closed = False
+        # §7.40: this agent is long-only; a SELL with nothing to close is refused
+        # instead of silently opening a short on the venue.
+        self._allow_short = allow_short
         # Local FIFO ledger of our own fills (§7.8): realized_pnl on closing
         # sells + attribution back to entry decisions via closed_entries.
         # xAPI's create_order reports no commission, so tracked PnL is gross.
@@ -109,6 +136,28 @@ class XTBExecutor:
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> OrderResult:
+        # §7.40: reduce first — an order opposite to open trades closes them.
+        closing_cmd = _OPENED_LONG if side == OrderSide.SELL else _OPENED_SHORT
+        opposite = [
+            t for t in await self._client.get_open_trades(symbol) if t.get("cmd") == closing_cmd
+        ]
+        if opposite:
+            return await self._close_trades(symbol, side, quantity, price, opposite)
+        if side == OrderSide.SELL and not self._allow_short:
+            logger.warning("refusing SELL with no open long (would open a short)", symbol=symbol)
+            return OrderResult(
+                order_id="",
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                status="rejected",
+                reason=(
+                    f"No open long in {symbol} to close — an xAPI SELL would open a short "
+                    "(long-only agent)"
+                ),
+            )
+
         raw = await self._client.create_order(symbol, side.value, quantity, price=price)
         raw = raw or {}
 
@@ -148,6 +197,80 @@ class XTBExecutor:
             if self._tracker.quantity(symbol) <= 0:
                 self._exit_levels.pop(symbol, None)
         return result
+
+    async def _close_trades(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        price: float | None,
+        trades: list[dict[str, Any]],
+    ) -> OrderResult:
+        """Close open trades FIFO up to ``quantity`` with ``type=CLOSE`` (§7.40).
+
+        Any remainder beyond the open volume is dropped (never flipped into a new
+        opposite position). Filled volume flows through the FIFO ledger — ``on_sell``
+        for closed longs, ``cover`` for closed shorts — for realized PnL + entry
+        attribution (gross of commission, booked at the requested price, find #8).
+        """
+        remaining = quantity
+        closed_volume = 0.0
+        order_ids: list[str] = []
+        fill_price = price
+        failure: str | None = None
+        for trade in trades:
+            if remaining <= 1e-12:
+                break
+            volume = min(float(trade.get("volume", 0.0)), remaining)
+            if volume <= 0:
+                continue
+            raw = (
+                await self._client.close_trade(
+                    int(trade["order"]), symbol, int(trade["cmd"]), volume, price=price
+                )
+                or {}
+            )
+            status = _STATUS_MAP.get(str(raw.get("status", "pending")), "pending")
+            if status != "filled":
+                failure = f"close of trade {trade['order']} came back {status}"
+                break
+            order_ids.append(str(raw.get("order_id") or ""))
+            if raw.get("price") is not None:
+                fill_price = float(raw["price"])
+            closed_volume += volume
+            remaining -= volume
+
+        if remaining > 1e-12 and failure is None:
+            logger.warning(
+                "close quantity exceeds open volume; remainder dropped (no flip)",
+                symbol=symbol,
+                requested=quantity,
+                closed=closed_volume,
+            )
+
+        realized: float | None = None
+        entries: list[ClosedEntry] = []
+        if closed_volume > 0 and fill_price is not None:
+            if side == OrderSide.SELL and self._tracker.quantity(symbol) > 0:
+                outcome = self._tracker.on_sell(symbol, closed_volume, fill_price)
+                realized, entries = outcome.gross_pnl, outcome.closed_entries
+            elif side == OrderSide.BUY and self._tracker.short_quantity(symbol) > 0:
+                outcome = self._tracker.cover(symbol, closed_volume, fill_price)
+                realized, entries = outcome.gross_pnl, outcome.closed_entries
+        if self._tracker.quantity(symbol) <= 0 and self._tracker.short_quantity(symbol) <= 0:
+            self._exit_levels.pop(symbol, None)
+
+        return OrderResult(
+            order_id=order_ids[0] if order_ids else "",
+            symbol=symbol,
+            side=side,
+            quantity=closed_volume if closed_volume > 0 else quantity,
+            price=fill_price,
+            status="filled" if closed_volume > 0 else "rejected",
+            reason=failure,
+            realized_pnl=realized,
+            closed_entries=entries,
+        )
 
     async def get_positions(self) -> list[Position]:
         raw_positions = await self._client.get_positions()

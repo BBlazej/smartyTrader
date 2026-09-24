@@ -108,7 +108,7 @@ class TestCreateOrder:
             [
                 LOGIN_OK,
                 {"status": True, "returnData": {"order": 7}},
-                {"status": True, "returnData": {"requestStatus": 5}},
+                {"status": True, "returnData": {"requestStatus": 3}},
             ]
         )
         result = await _client(t).create_order("AAPL", "sell", 1.0, price=200.0)
@@ -251,3 +251,61 @@ class TestConfigGuards:
     def test_url_follows_host_and_account_type(self) -> None:
         client = XApiClient("1", "x", host="wss://example.test/", account_type="demo")
         assert client.url == "wss://example.test/demo"
+
+
+class TestCloseTrade:
+    """§7.40: closing is type=CLOSE against the trade's order number."""
+
+    async def test_close_payload(self) -> None:
+        t = FakeTransport(
+            [
+                LOGIN_OK,
+                {"status": True, "returnData": {"order": 900}},
+                {"status": True, "returnData": {"requestStatus": 3}},
+            ]
+        )
+        result = await _client(t).close_trade(555, "AAPL", 0, 1.5, price=212.0)
+        info = t.sent[1]["arguments"]["tradeTransInfo"]
+        assert info["type"] == 2 and info["order"] == 555 and info["cmd"] == 0
+        assert info["volume"] == 1.5 and info["price"] == 212.0
+        assert result == {"order_id": "900", "status": "filled", "quantity": 1.5, "price": 212.0}
+
+    async def test_close_without_price_uses_bid_for_longs(self) -> None:
+        t = FakeTransport(
+            [
+                LOGIN_OK,
+                {"status": True, "returnData": {"bid": 99.5, "ask": 100.5}},
+                {"status": True, "returnData": {"order": 1}},
+                {"status": True, "returnData": {"requestStatus": 3}},
+            ]
+        )
+        await _client(t).close_trade(7, "AAPL", 0, 1.0)
+        assert t.sent[2]["arguments"]["tradeTransInfo"]["price"] == 99.5
+
+    async def test_close_rejection_is_data(self) -> None:
+        t = FakeTransport(
+            [LOGIN_OK, {"status": False, "errorCode": "BE1", "errorDescr": "market closed"}]
+        )
+        result = await _client(t).close_trade(7, "AAPL", 0, 1.0, price=1.0)
+        assert result["status"] == "rejected"
+
+    async def test_open_trades_mapping_filter_and_fifo(self) -> None:
+        records = [
+            {"order": 30, "symbol": "AAPL", "cmd": 0, "volume": 1, "open_price": 10},
+            {"order": 10, "symbol": "AAPL", "cmd": 1, "volume": 2, "open_price": 11},
+            {"order": 20, "symbol": "MSFT", "cmd": 0, "volume": 3, "open_price": 12},
+        ]
+        t = FakeTransport([LOGIN_OK, {"status": True, "returnData": records}])
+        trades = await _client(t).get_open_trades("AAPL")
+        assert [(x["order"], x["cmd"], x["volume"]) for x in trades] == [(10, 1, 2.0), (30, 0, 1.0)]
+
+    async def test_unknown_request_status_is_never_a_fill(self) -> None:
+        t = FakeTransport(
+            [
+                LOGIN_OK,
+                {"status": True, "returnData": {"order": 1}},
+                *[{"status": True, "returnData": {"requestStatus": 5}} for _ in range(5)],
+            ]
+        )
+        result = await _client(t).create_order("AAPL", "buy", 1.0, price=1.0)
+        assert result["status"] == "pending"  # 5 is not a documented REQUEST_STATUS

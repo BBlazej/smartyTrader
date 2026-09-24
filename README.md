@@ -225,15 +225,15 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**671 tests passing at ~94% coverage.**
+**683 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
 
-> **Open critical findings (external review 4, PLAN §7.40–§7.41):** XTB sells open shorts instead of
-> closing longs (keep `xtb_execution` off), and Kraken spot has no sandbox (`testnet: false` means **real
-> funds**). See `AGENTS.md` → *Known open gaps*. (Landed: §7.39 per-agent storage scoping — both agents
-> can share one DB — and §7.42 `max_position_pct` now caps the whole position, not each order.)
+> **Open critical finding (external review 4, PLAN §7.41):** Kraken spot has no sandbox — `testnet: true`
+> crashes a keyed run and `testnet: false` means **real funds**. See `AGENTS.md` → *Known open gaps*.
+> (Landed since the review: per-agent storage scoping, per-position cap, XTB closes via `type=CLOSE`,
+> browser-safe dashboard, side-aware closes, look-ahead-free backtests — PLAN §7 / HISTORY.)
 
 ## Documentation map
 

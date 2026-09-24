@@ -234,12 +234,8 @@ class Executor(Protocol):
     async def get_cash(self) -> float: ...
 ```
 
-- `kraken_executor.py` — Kraken testnet REST API. Maps signals to Kraken order types (market/limit/stop).
-- `xtb_executor.py` — xAPI demo trading. Maps signals to XTB order format (client seam injected).
-- `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state. **Default for all testing.**
-
 - `kraken_executor.py` — Kraken testnet via ccxt; real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
-- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16): WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default.
+- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
 ## Risk engine (`core/risk_engine.py`)
