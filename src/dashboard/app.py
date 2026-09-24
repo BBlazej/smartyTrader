@@ -15,6 +15,11 @@ Safety invariants (inherited from §7.15):
   :class:`SafeConfigOverrides` whitelist (``extra="forbid"``), so unknown and every
   credential-shaped key are rejected wholesale.
 * No manual order placement, no live risk override beyond the whitelist, no kill.
+* **Browser-safe (§7.43).** Every request must carry an allowed ``Host`` (DNS
+  rebinding), state-changing requests with a foreign ``Origin``/``Referer`` are
+  rejected, and every write must present the per-process CSRF token the pages embed
+  (HTMX sends it as ``X-CSRF-Token``; the config form as a hidden field). Risk
+  overrides may only tighten the YAML limits.
 """
 
 from __future__ import annotations
@@ -34,10 +39,19 @@ from ..core.config import Settings
 from ..core.control_config import (
     agent_config_view,
     parse_overrides,
+    risk_baseline,
     safe_config_view,
     validate_overrides_payload,
 )
 from ..core.storage import Storage
+from ..core.web_security import (
+    CSRF_FIELD,
+    CSRF_HEADER,
+    allowed_hosts,
+    csrf_ok,
+    install_request_guards,
+    new_csrf_token,
+)
 from .launch import AgentLauncher
 from .views import (
     agent_status,
@@ -151,6 +165,16 @@ def create_dashboard_app(
     its pid/log files next to the SQLite database.
     """
     app = FastAPI(title="trading-agent dashboard", docs_url=None, redoc_url=None)
+    # §7.43: Host allowlist (DNS rebinding) + cross-origin write rejection (CSRF).
+    install_request_guards(
+        app,
+        allowed_hosts(
+            getattr(settings.dashboard, "host", None),
+            getattr(settings.dashboard, "allowed_hosts", None),
+        ),
+    )
+    csrf_token = new_csrf_token()
+    app.state.csrf_token = csrf_token
     templates = Jinja2Templates(directory=_TEMPLATE_DIR)
     templates.env.filters["money"] = _money
     templates.env.filters["pct"] = _pct
@@ -175,6 +199,11 @@ def create_dashboard_app(
         if agent not in agents:
             raise HTTPException(status_code=404, detail=f"unknown agent '{agent}'")
 
+    def _require_csrf(request: Request, form_token: str | None = None) -> None:
+        """Every dashboard write must present the token its own pages embed (§7.43)."""
+        if not csrf_ok(csrf_token, request.headers.get(CSRF_HEADER) or form_token):
+            raise HTTPException(status_code=403, detail="missing or invalid CSRF token")
+
     def _book_agent(agent: str | None) -> str:
         """Agent whose book a page shows (§7.39): explicit ``?agent=``, else the first
         configured one. Books are per agent — never a blend of both agents' snapshots."""
@@ -190,6 +219,7 @@ def create_dashboard_app(
             "refresh_seconds": refresh_seconds,
             "allow_launch": allow_launch,
             "active": "",
+            "csrf_token": csrf_token,
         }
         base.update(extra)
         return base
@@ -380,8 +410,9 @@ def create_dashboard_app(
         # survives to be rejected wholesale by the SafeConfigOverrides whitelist.
         raw_body = (await request.body()).decode("utf-8", errors="replace")
         form = {k: v[0] for k, v in parse_qs(raw_body, keep_blank_values=True).items()}
+        _require_csrf(request, form.pop(CSRF_FIELD, None))
         payload = _form_to_payload(form)
-        model, error = validate_overrides_payload(payload)
+        model, error = validate_overrides_payload(payload, baseline=risk_baseline(settings))
         if model is None:
             # Re-render the form with the attempted values echoed back + the rejection.
             control = await storage.get_agent_control(agent)
@@ -418,6 +449,7 @@ def create_dashboard_app(
 
     @app.post("/control/{agent}/{action}", response_class=HTMLResponse)
     async def control(request: Request, agent: str, action: str) -> HTMLResponse:
+        _require_csrf(request)
         _check_agent(agent)
         if action == "pause":
             await storage.set_agent_state(agent, "paused")
@@ -443,6 +475,7 @@ def create_dashboard_app(
 
     @app.post("/launch/{agent}/{action}", response_class=HTMLResponse)
     async def launch(request: Request, agent: str, action: str) -> HTMLResponse:
+        _require_csrf(request)
         if launcher is None:  # supervision disabled wholesale
             raise HTTPException(status_code=403, detail="process launching is disabled")
         _check_agent(agent)

@@ -13,6 +13,9 @@ Safety invariants:
   absent. ``PUT /api/config`` accepts only :class:`SafeConfigOverrides` — any
   unknown key (including every credential-shaped one) is rejected wholesale.
 * No manual order placement, no live risk override beyond the whitelist, no kill.
+* **Browser-safe (§7.43).** ``Host`` must be allowlisted (DNS rebinding) and writes
+  with a foreign ``Origin``/``Referer`` are rejected (CSRF from any open web page);
+  risk overrides may only tighten the YAML limits.
 """
 
 from __future__ import annotations
@@ -28,10 +31,12 @@ from .config import Settings
 from .control_config import (
     agent_config_view,
     parse_overrides,
+    risk_baseline,
     safe_config_view,
     validate_overrides_payload,
 )
 from .storage import Storage
+from .web_security import allowed_hosts, install_request_guards
 
 logger = structlog.get_logger()
 
@@ -65,6 +70,13 @@ def create_control_app(
     control row + persisted portfolio/decisions.
     """
     app = FastAPI(title=f"trading-agent control ({agent_name})", docs_url=None, redoc_url=None)
+    control_cfg = getattr(settings, "control_api", None)
+    install_request_guards(
+        app,
+        allowed_hosts(
+            getattr(control_cfg, "host", None), getattr(control_cfg, "allowed_hosts", None)
+        ),
+    )
 
     def _guard(agent: str) -> None:
         if agent != agent_name:
@@ -223,7 +235,7 @@ def create_control_app(
     async def put_config(payload: dict[str, Any]) -> dict[str, Any]:
         # Reject anything outside the safe whitelist wholesale (unknown keys and
         # every credential-shaped key land here — extra="forbid").
-        model, error = validate_overrides_payload(payload)
+        model, error = validate_overrides_payload(payload, baseline=risk_baseline(settings))
         if model is None:
             raise HTTPException(status_code=400, detail=error)
         stored = model.model_dump_json(exclude_none=True)

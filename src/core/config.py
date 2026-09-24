@@ -25,6 +25,10 @@ class Settings:
         self.crypto_agent = AgentConfig(**raw["crypto_agent"])
         self.stocks_agent = AgentConfig(**raw["stocks_agent"])
         self.risk = RiskSettings(**raw["risk"])
+        # Untouched copy of the YAML risk limits (§7.43): safe-config overrides may
+        # only *tighten* relative to these. ``self.risk`` itself is mutated in place
+        # by applied overrides, so it cannot serve as the baseline.
+        self.risk_baseline = RiskSettings(**raw["risk"])
         self.execution = ExecutionSettings(**raw.get("execution", {}))
         self.storage = StorageSettings(**raw["storage"])
         self.monitoring = MonitoringSettings(**raw["monitoring"])
@@ -220,11 +224,15 @@ class ControlApiSettings:
         host: str = "127.0.0.1",
         crypto_port: int = 8101,
         stocks_port: int = 8102,
+        allowed_hosts: list[str] | None = None,
     ) -> None:
         self.enabled = enabled
         self.host = host
         self.crypto_port = crypto_port
         self.stocks_port = stocks_port
+        # Extra Host names accepted besides loopback + ``host`` (§7.43 DNS-rebinding
+        # guard) — e.g. the compose service name when the dashboard calls in.
+        self.allowed_hosts = list(allowed_hosts or [])
 
 
 class XTBExecutionSettings:
@@ -274,6 +282,7 @@ class DashboardSettings:
         refresh_seconds: int = 5,
         agents: list[str] | None = None,
         allow_launch: bool = False,
+        allowed_hosts: list[str] | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -285,3 +294,6 @@ class DashboardSettings:
         # local `scripts.run_<agent>_agent` runners. Off by default; pointless (and
         # confusing) inside docker-compose, where services are managed by compose.
         self.allow_launch = bool(allow_launch)
+        # Extra Host names the browser may use besides loopback + ``host`` (§7.43):
+        # every request with any other Host header is rejected (DNS rebinding).
+        self.allowed_hosts = list(allowed_hosts or [])

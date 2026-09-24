@@ -18,7 +18,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.60) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
-**Current state (2026-09-24):** 606 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping), §7.42 (per-position cap), §7.45 (book-aware prompt) and §7.56 (configurable timeframe, one decision per closed bar) are done — two critical findings remain open (XTB sells opening shorts, Kraken keyed path) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
+**Current state (2026-09-24):** 631 tests passing at ~94% coverage, zero pytest warnings. §7.1–§7.39 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60; §7.39 (per-agent storage scoping), §7.42 (per-position cap), §7.45 (book-aware prompt), §7.56 (configurable timeframe, one decision per closed bar) and §7.43 (browser-safe dashboard/control API, tighten-only risk overrides) are done — two critical findings remain open (XTB sells opening shorts, Kraken keyed path) and must land before paper-trading results are trusted. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
 ---
 
@@ -70,11 +70,11 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged in `nightly_finds.md`. Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39, §7.42, §7.45 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35 and §7.37–§7.39, §7.42, §7.43, §7.45 and §7.56 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
-> Order of work (from `external_4.md` §7; §7.39, §7.42, §7.45, §7.56 done): §7.43 next; then §7.44/§7.46/§7.47/§7.51 before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
+> Order of work (from `external_4.md` §7; §7.39, §7.42, §7.43, §7.45, §7.56 done): §7.44/§7.46/§7.47/§7.51 next before starting the §4.3 paper clock; §7.49 before trusting any replay numbers; §7.40/§7.41/§7.48/§7.58 before any venue work.
 
 40. **XTB: SELL must close, not open a short** ⏳ [R4-C2, R4-L9] — *critical*
     - `xtb_client.create_order` always sends `tradeTransaction` `type=OPEN`; `cmd=SELL, type=OPEN` opens a short. LLM sells, §7.9 auto-exits and close-all therefore open shorts while the local FIFO tracker books a fictional realized PnL (feeding the loss streak and the prompt).
@@ -84,11 +84,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
     - ccxt `kraken` has no `urls['test']`: `set_sandbox_mode(True)` raises `TypeError` at startup (fails closed). The only workaround, `testnet: false`, trades **production funds** while logging "Kraken testnet executor". Only `krakenfutures` has a demo environment.
     - On spot, `get_positions()` is always `[]` and `get_cash()` is free quote only, so every BUY registers as a loss of its own notional (trips daily-loss + drawdown at once and poisons the persisted peak); SL/TP are never enforced, close-all is a no-op, SELL sizing is unclamped.
     - Fix: relabel the keyed path as live and require an explicit acknowledgement (config flag + env flag) — same for `xtb_execution.account_type: real`; derive spot positions from the local FIFO ledger + `fetch_balance()` totals marked at the snapshot close; if a sandbox is required, target `krakenfutures` demo (makes the §7.38 short model load-bearing). Rewrite §7.28 accordingly.
-
-43. **Dashboard / control API: CSRF, DNS rebinding, tighten-only risk overrides** ⏳ [R4-H1]
-    - No auth, no CSRF token, no `Origin`/`Host` validation; urlencoded POSTs are CORS-simple, so any page in the operator's browser can loosen every risk limit via the "safe" whitelist, set `enforce_exit_levels=false`, close-all/pause, or (with `allow_launch`) start agents.
-    - Shipped `config/settings.yaml` has `dashboard.allow_launch: true` although the docs say default false (and compose mounts that YAML).
-    - Fix: reject state-changing requests with a foreign `Origin`/`Referer`, validate `Host`, CSRF token on HTMX forms; risk overrides may only *tighten* relative to YAML, `enforce_exit_levels` removed from the web surface; ship `allow_launch: false`.
 
 44. **Fail-soft, lossless post-order persistence** ⏳ [R4-H2]
     - `BaseTradingAgent._post_process` runs outside the per-symbol `try`; `save_order` / `save_portfolio_snapshot` / reconciliation `add_realized_pnl` are unwrapped. A `database is locked` after a successful fill loses the `orders` row (the §7.25 replay source), aborts the rest of the cycle and skips the heartbeat; reconciliation has already dropped the pending order.

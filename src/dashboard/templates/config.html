@@ -6,6 +6,8 @@
   <p class="muted">
     Only whitelisted fields are editable here (intervals, pairs/symbols, market hours,
     decision-history depth, <code>risk.*</code>, paper <code>execution.*</code>).
+    Risk limits can only be <strong>tightened</strong> relative to <code>settings.yaml</code>;
+    loosening a limit or disabling stop-loss/take-profit enforcement is a YAML edit.
     LLM endpoints, credentials and secrets are structurally absent and cannot be read or
     written. Changes apply on the agent's next cycle
     (<code>interval_minutes</code> applies after restart).
@@ -28,6 +30,7 @@
   {% endif %}
 
   <form method="post" action="/config/{{ agent }}" style="max-width:760px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <fieldset>
       <legend>Agent</legend>
       <div class="cols2">
@@ -83,14 +86,6 @@
         <div>
           <label for="risk.max_open_positions">Max open positions</label>
           <input type="number" step="1" id="risk.max_open_positions" name="risk.max_open_positions" value="{{ config.risk.max_open_positions }}">
-        </div>
-        <div>
-          <label for="risk.enforce_exit_levels">Enforce exit levels (SL/TP)</label>
-          <select id="risk.enforce_exit_levels" name="risk.enforce_exit_levels"
-                  style="width:100%; padding:.4rem .5rem; border-radius:6px; border:1px solid #2a2e37; background:#14161a; color:#e6e8eb;">
-            <option value="true" {{ 'selected' if config.risk.enforce_exit_levels }}>Enabled</option>
-            <option value="false" {{ 'selected' if not config.risk.enforce_exit_levels }}>Disabled</option>
-          </select>
         </div>
       </div>
     </fieldset>

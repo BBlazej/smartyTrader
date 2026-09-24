@@ -107,6 +107,15 @@ async def _seed_rows(storage: Storage) -> None:
     )
 
 
+def _client(app) -> AsyncClient:
+    """A same-origin browser session: loopback Host + the page-embedded CSRF token (§7.43)."""
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://127.0.0.1:8080",
+        headers={"X-CSRF-Token": app.state.csrf_token},
+    )
+
+
 @pytest.fixture()
 async def env(tmp_path):
     settings = _settings(tmp_path)
@@ -114,7 +123,7 @@ async def env(tmp_path):
     await storage.initialize()
     await _seed(storage)
     app = create_dashboard_app(storage=storage, settings=settings)
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://dash")
+    client = _client(app)
     yield SimpleNamespace(client=client, storage=storage, settings=settings)
     await client.aclose()
     await storage.close()
@@ -181,7 +190,7 @@ class TestLaunch:
             ],
         )
         app = create_dashboard_app(storage=storage, settings=settings, launcher=launcher)
-        client = AsyncClient(transport=ASGITransport(app=app), base_url="http://dash")
+        client = _client(app)
         yield SimpleNamespace(client=client, storage=storage, launcher=launcher)
         for agent in ("crypto", "stocks"):
             await launcher.stop(agent)  # never leave a sleep process behind
@@ -365,3 +374,90 @@ class TestPerAgentBooks:
     async def test_unknown_agent_is_404(self, env) -> None:
         assert (await env.client.get("/?agent=forex")).status_code == 404
         assert (await env.client.get("/api/portfolio.json?agent=forex")).status_code == 404
+
+
+class TestBrowserSafety:
+    """§7.43: CSRF / DNS-rebinding guards and tighten-only risk overrides."""
+
+    async def test_page_embeds_the_csrf_token(self, env) -> None:
+        body = (await env.client.get("/config/crypto")).text
+        token = env.client.headers["X-CSRF-Token"]
+        assert f'"X-CSRF-Token": "{token}"' in body  # HTMX header on <body>
+        assert f'name="csrf_token" value="{token}"' in body  # config form field
+
+    async def test_foreign_host_is_rejected_even_for_reads(self, env) -> None:
+        resp = await env.client.get("/", headers={"Host": "evil.example:8080"})
+        assert resp.status_code == 400  # DNS rebinding: attacker name in Host
+
+    async def test_cross_site_post_is_rejected(self, env) -> None:
+        resp = await env.client.post(
+            "/control/crypto/close-all", headers={"Origin": "https://evil.example"}
+        )
+        assert resp.status_code == 403
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.close_all_requested
+
+    async def test_referer_is_checked_when_origin_missing(self, env) -> None:
+        resp = await env.client.post(
+            "/control/crypto/pause", headers={"Referer": "https://evil.example/page"}
+        )
+        assert resp.status_code == 403
+
+    async def test_writes_without_token_are_rejected(self, env) -> None:
+        bare = AsyncClient(transport=env.client._transport, base_url="http://127.0.0.1:8080")
+        try:
+            for path in ("/control/crypto/pause", "/config/crypto", "/launch/crypto/start"):
+                assert (await bare.post(path)).status_code == 403, path
+            wrong = await bare.post(
+                "/control/crypto/pause", headers={"X-CSRF-Token": "not-the-token"}
+            )
+            assert wrong.status_code == 403
+            # The config form may carry the token as a hidden field instead of a header.
+            ok = await bare.post(
+                "/config/crypto",
+                data={
+                    "csrf_token": env.client.headers["X-CSRF-Token"],
+                    "risk.min_confidence": "0.7",
+                },
+            )
+            assert ok.status_code == 303
+        finally:
+            await bare.aclose()
+        row = await env.storage.get_agent_control("crypto")
+        assert row.state == "running"  # the rejected pause never landed
+
+    async def test_same_origin_post_is_allowed(self, env) -> None:
+        resp = await env.client.post(
+            "/control/crypto/pause", headers={"Origin": "http://127.0.0.1:8080"}
+        )
+        assert resp.status_code == 200
+
+    async def test_review_attack_payload_is_rejected(self, env) -> None:
+        """external_4 H1: a form that loosened every guard — now each field is refused."""
+        resp = await env.client.post(
+            "/config/crypto",
+            data={
+                "risk.max_drawdown_pct": "1",
+                "risk.daily_loss_limit_pct": "1",
+                "risk.min_confidence": "0",
+                "risk.max_position_pct": "1",
+            },
+        )
+        assert resp.status_code == 400
+        assert "may only tighten" in resp.text
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
+    async def test_exit_level_switch_is_not_on_the_web_surface(self, env) -> None:
+        resp = await env.client.post("/config/crypto", data={"risk.enforce_exit_levels": "false"})
+        assert resp.status_code == 400
+        assert "enforce_exit_levels" not in (await env.client.get("/config/crypto")).text
+
+    async def test_tightening_is_accepted(self, env) -> None:
+        resp = await env.client.post(
+            "/config/crypto",
+            data={"risk.max_drawdown_pct": "0.03", "risk.min_confidence": "0.75"},
+        )
+        assert resp.status_code == 303
+        stored = json.loads((await env.storage.get_agent_control("crypto")).config_override_json)
+        assert stored["risk"] == {"max_drawdown_pct": 0.03, "min_confidence": 0.75}

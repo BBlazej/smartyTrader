@@ -2,7 +2,9 @@
 
 The dashboard / ``PUT /api/config`` may only change what :class:`SafeConfigOverrides`
 allows — intervals, pairs/symbols, market hours, decision-history depth, and the
-``risk.*`` / paper-``execution.*`` tuning knobs. Everything else is rejected by
+``risk.*`` / paper-``execution.*`` tuning knobs. **Risk overrides may only tighten**
+the YAML limits (§7.43) — a web form must never be able to loosen or switch off a
+guard — and ``enforce_exit_levels`` is not on this surface at all. Everything else is rejected by
 ``extra="forbid"``: unknown keys **and every credential-shaped key** fail the same
 way, so secrets can neither be read nor written through this surface. ``llm.*`` and
 anything from ``.env`` are deliberately absent — never read, written, or returned.
@@ -21,6 +23,7 @@ APScheduler job is out of scope for v1 (documented).
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -39,7 +42,11 @@ class _OverrideBase(BaseModel):
 
 
 class RiskOverride(_OverrideBase):
-    """``risk.*`` — every rule threshold the dashboard may tune."""
+    """``risk.*`` — rule thresholds the dashboard may *tighten* (§7.43).
+
+    ``enforce_exit_levels`` was removed from this surface: switching stop-loss /
+    take-profit enforcement off is a YAML edit, never a web-form click.
+    """
 
     max_position_pct: float | None = Field(default=None, gt=0, le=1)
     daily_loss_limit_pct: float | None = Field(default=None, gt=0, le=1)
@@ -47,7 +54,45 @@ class RiskOverride(_OverrideBase):
     consecutive_losses_cooldown_minutes: int | None = Field(default=None, ge=0)
     max_open_positions: int | None = Field(default=None, ge=1)
     min_confidence: float | None = Field(default=None, ge=0, le=1)
-    enforce_exit_levels: bool | None = None
+
+
+#: Which direction is *stricter* for each risk override (§7.43): an override may move a
+#: limit only this way from the YAML value. "le" = at most the YAML value.
+_TIGHTER: dict[str, str] = {
+    "max_position_pct": "le",
+    "daily_loss_limit_pct": "le",
+    "max_drawdown_pct": "le",
+    "max_open_positions": "le",
+    "min_confidence": "ge",
+    "consecutive_losses_cooldown_minutes": "ge",
+}
+
+#: Keys once accepted but since removed from the surface; dropped (not rejected) when
+#: *reading* stored overrides so a legacy row doesn't disable every other override.
+_LEGACY_RISK_KEYS: tuple[str, ...] = ("enforce_exit_levels",)
+
+
+def loosened_risk_fields(risk: RiskOverride | None, baseline: Any) -> dict[str, str]:
+    """``{field: message}`` for override fields looser than the YAML ``baseline``."""
+    if risk is None or baseline is None:
+        return {}
+    problems: dict[str, str] = {}
+    for name, direction in _TIGHTER.items():
+        value = getattr(risk, name, None)
+        base = getattr(baseline, name, None)
+        if value is None or base is None:
+            continue
+        if (value > base) if direction == "le" else (value < base):
+            bound = "at most" if direction == "le" else "at least"
+            problems[name] = (
+                f"risk.{name}={value} would loosen the configured limit ({bound} {base})"
+            )
+    return problems
+
+
+def risk_baseline(settings: Any) -> Any:
+    """The YAML risk limits overrides are measured against (never the live, mutated ones)."""
+    return getattr(settings, "risk_baseline", None) or getattr(settings, "risk", None)
 
 
 class ExecutionOverride(_OverrideBase):
@@ -103,10 +148,21 @@ def agent_config_view(agent_settings: Any, overrides: SafeConfigOverrides | None
 
 
 def parse_overrides(raw: str | None) -> SafeConfigOverrides | None:
-    """Parse stored override JSON; empty → ``None``. Raises :`ValidationError` on bad content."""
+    """Parse stored override JSON; empty → ``None``. Raises :`ValidationError` on bad content.
+
+    Legacy keys removed from the surface (``risk.enforce_exit_levels``, §7.43) are
+    dropped with a warning instead of failing the whole row.
+    """
     if not raw or not isinstance(raw, str) or not raw.strip():
         return None
-    return SafeConfigOverrides.model_validate_json(raw)
+    data = json.loads(raw)
+    risk = data.get("risk") if isinstance(data, dict) else None
+    if isinstance(risk, dict):
+        for key in _LEGACY_RISK_KEYS:
+            if key in risk:
+                risk.pop(key)
+                logger.warning("ignoring legacy stored override", key=f"risk.{key}")
+    return SafeConfigOverrides.model_validate(data)
 
 
 def parse_and_apply(
@@ -151,7 +207,13 @@ def parse_and_apply(
         _set(agent_settings, "market_hours", overrides.market_hours)
         _set(agent_settings, "decision_history_limit", overrides.decision_history_limit)
 
+    # Tighten-only at apply time too (§7.43): the YAML may have been tightened after
+    # the override was stored — a now-looser stored value is skipped, not applied.
+    loose = loosened_risk_fields(overrides.risk, getattr(settings, "risk_baseline", None))
     for name in RiskOverride.model_fields:
+        if name in loose:
+            logger.warning("stored risk override would loosen YAML limit; skipped", field=name)
+            continue
         _set(settings.risk, name, getattr(overrides.risk, name, None))
 
     if pipeline is not None:
@@ -186,14 +248,20 @@ def parse_and_apply(
 
 def validate_overrides_payload(
     payload: dict[str, Any],
+    baseline: Any = None,
 ) -> tuple[SafeConfigOverrides, None] | tuple[None, str]:
     """Validate a raw dashboard/API body; returns ``(model, None)`` or ``(None, error)``.
 
     A single, obvious message for the form layer: any unknown key (including every
-    credential-shaped one) is rejected wholesale.
+    credential-shaped one) is rejected wholesale. With ``baseline`` (the YAML risk
+    limits — :func:`risk_baseline`), any risk value looser than it is rejected too.
     """
     try:
-        return SafeConfigOverrides.model_validate(payload), None
+        model = SafeConfigOverrides.model_validate(payload)
+        problems = loosened_risk_fields(model.risk, baseline)
+        if problems:
+            return None, "risk overrides may only tighten limits: " + "; ".join(problems.values())
+        return model, None
     except ValidationError as exc:  # pragma: no cover - message shape is what matters
         first = exc.errors()[0] if exc.errors() else {}
         loc = ".".join(str(p) for p in first.get("loc", ())) or "<body>"

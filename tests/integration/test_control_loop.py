@@ -119,7 +119,7 @@ async def env(tmp_path):
         settings=_settings(tmp_path),
         get_positions=executor.get_positions,
     )
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://control")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8101")
     yield _Env(storage, agent, executor, client)
     await client.aclose()
     await storage.close()

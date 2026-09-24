@@ -310,7 +310,7 @@ stateDiagram-v2
 | `GET /api/config` | safe config view: YAML defaults + stored overrides (whitelisted fields only) |
 | `PUT /api/config` | body must validate as `SafeConfigOverrides` (`extra="forbid"`); unknown/credential keys rejected wholesale with 400 |
 
-**Safety invariants:** credentials are *structurally absent* from every endpoint — responses are field-built from safe models; the LLM endpoint/model, storage path and any `.env` secret can neither appear in a response nor be written. `SafeConfigOverrides` (`core/control_config.py`) covers: `interval_minutes` (applies at restart), `pairs`, `symbols`, `market_hours`, `decision_history_limit`, `risk.*`, paper-executor fee/slippage under `execution.*`. It is deliberately *not* applied to live objects mid-flight beyond that whitelist; risk thresholds mutate the shared `RiskSettings`, paper fee/slippage land on the executor.
+**Safety invariants:** credentials are *structurally absent* from every endpoint — responses are field-built from safe models; the LLM endpoint/model, storage path and any `.env` secret can neither appear in a response nor be written. `SafeConfigOverrides` (`core/control_config.py`) covers: `interval_minutes` (applies at restart), `pairs`, `symbols`, `market_hours`, `decision_history_limit`, `risk.*` (**tighten-only** vs the YAML limits in `Settings.risk_baseline`, checked at write and apply time; `enforce_exit_levels` excluded — §7.43), paper-executor fee/slippage under `execution.*`. Both web apps run behind `core/web_security.py` guards (§7.43): `TrustedHostMiddleware` (Host allowlist: loopback + bind host + `allowed_hosts` — blocks DNS rebinding, reads included) and `OriginGuardMiddleware` (writes with a foreign `Origin`/`Referer` → 403); the dashboard also requires its per-process CSRF token on every write. It is deliberately *not* applied to live objects mid-flight beyond that whitelist; risk thresholds mutate the shared `RiskSettings`, paper fee/slippage land on the executor.
 
 ## Storage schema & retention
 
@@ -457,7 +457,8 @@ Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scrip
 - **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
 - **Log viewer:** `/logs/{agent}` tails `data/agent_<name>.out.log` (the captured output of dashboard-launched runners) — last ~64 KiB / 400 lines (`views.py::tail_lines`), HTMX-polled partial refresh, linked from health cards when a log exists. Read-only; path built only from the config agent whitelist next to the live DB (`storage.database_path`).
 - **Launch (opt-in, §7.24):** when `dashboard.allow_launch` is true, health cards gain **Start**/**Stop (pid …)** buttons (`POST /launch/{agent}/{action}`). `src/dashboard/launch.py::AgentLauncher` spawns the same entry points you'd run by hand (`python -m scripts.run_<agent>_agent`) as local subprocesses — enabled-gates, risk rules and paper-by-default execution apply unchanged; child output appends to `data/agent_<name>.out.log`, pid goes to `data/<agent>.pid`. Children outlive the dashboard (killing the UI never halts trading); a restarted dashboard re-adopts old children only when the pidfile's pid is alive AND its `/proc` cmdline still matches the runner — foreign/recycled pids are never killed, and Stop only ever targets launched/adopted processes. Start refuses (409) on fresh heartbeats (no double-trading), disabled agents, or already-managed ones; 403 wholesale when supervision is off. Off under docker-compose (services belong to compose there).
-- **Config:** server-rendered form (`GET/POST /config/{agent}`) over the safe config surface only; the urlencoded body is parsed into the nested payload and validated server-side through `validate_overrides_payload` → `SafeConfigOverrides` (`extra="forbid"` — any unknown/credential-shaped key rejects wholesale, and the form re-renders with the rejection); accepted values persist to `agent_control.config_override_json`. No credential/secret fields exist in the form.
+- **Browser safety (§7.43):** Host allowlist + cross-origin write rejection (shared with the control API) and a per-process CSRF token embedded in every page (`<body hx-headers>` for HTMX, hidden `csrf_token` field in the config form) and required by every write route.
+- **Config:** server-rendered form (`GET/POST /config/{agent}`) over the safe config surface only (risk limits tighten-only); the urlencoded body is parsed into the nested payload and validated server-side through `validate_overrides_payload` → `SafeConfigOverrides` (`extra="forbid"` — any unknown/credential-shaped key rejects wholesale, and the form re-renders with the rejection); accepted values persist to `agent_control.config_override_json`. No credential/secret fields exist in the form.
 
 ### Container / volume topology (§7.15 P5 — implemented)
 
@@ -635,7 +636,7 @@ dashboard:
   port: 8080
   refresh_seconds: 5           # HTMX polling interval for live fragments
   agents: ["crypto", "stocks"] # which control rows to show/control
-  allow_launch: true           # §7.24 Start/Stop buttons (default false; keep false under compose)
+  allow_launch: false          # §7.24 Start/Stop buttons (keep false under compose)
 
 # XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
 # When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password

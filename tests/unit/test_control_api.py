@@ -49,7 +49,7 @@ async def env(tmp_path):
         settings=settings,
         get_positions=AsyncMock(return_value=[position]),
     )
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://control")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8101")
     yield SimpleNamespace(client=client, storage=storage, settings=settings)
     await client.aclose()
     await storage.close()
@@ -182,3 +182,30 @@ class TestConfigEndpoints:
     async def test_put_llm_section_is_rejected(self, env) -> None:
         resp = await env.client.put("/api/config", json={"llm": {"endpoint": "http://evil"}})
         assert resp.status_code == 400
+
+
+class TestBrowserSafety:
+    """§7.43: the control API rejects cross-site writes and foreign Host headers."""
+
+    async def test_cross_site_close_all_is_rejected(self, env) -> None:
+        resp = await env.client.post(
+            "/api/agents/crypto/close-all", headers={"Origin": "https://evil.example"}
+        )
+        assert resp.status_code == 403
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.close_all_requested
+
+    async def test_foreign_host_is_rejected(self, env) -> None:
+        resp = await env.client.get("/api/agents", headers={"Host": "rebind.evil.example"})
+        assert resp.status_code == 400
+
+    async def test_non_browser_clients_still_work(self, env) -> None:
+        # curl/scripts send no Origin/Referer — not a cross-site vector.
+        assert (await env.client.post("/api/agents/crypto/pause")).status_code == 200
+
+    async def test_loosening_risk_override_is_rejected(self, env) -> None:
+        resp = await env.client.put("/api/config", json={"risk": {"max_position_pct": 0.5}})
+        assert resp.status_code == 400
+        assert "may only tighten" in resp.json()["detail"]
+        ok = await env.client.put("/api/config", json={"risk": {"max_position_pct": 0.05}})
+        assert ok.status_code == 200

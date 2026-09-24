@@ -88,7 +88,7 @@ class TestConfigWhitelist:
         o = SafeConfigOverrides.model_validate(
             {
                 "interval_minutes": 15,
-                "risk": {"max_position_pct": 0.05, "enforce_exit_levels": False},
+                "risk": {"max_position_pct": 0.05},
                 "execution": {"paper_fee_pct": 0.003},
             }
         )
@@ -311,3 +311,97 @@ class TestCloseAllPositions:
             executor=_NoMarkExecutor(),
         )
         assert await pipeline.close_all_positions() == []
+
+
+class TestTightenOnlyOverrides:
+    """§7.43: risk overrides may only tighten the YAML limits."""
+
+    @staticmethod
+    def _baseline():
+        from src.core.config import RiskSettings
+
+        return RiskSettings(
+            max_position_pct=0.10,
+            daily_loss_limit_pct=0.02,
+            max_drawdown_pct=0.05,
+            consecutive_losses_cooldown_minutes=60,
+            max_open_positions=5,
+            min_confidence=0.6,
+        )
+
+    @pytest.mark.parametrize(
+        "risk",
+        [
+            {"max_position_pct": 0.2},
+            {"daily_loss_limit_pct": 0.5},
+            {"max_drawdown_pct": 1.0},
+            {"max_open_positions": 10},
+            {"min_confidence": 0.1},
+            {"consecutive_losses_cooldown_minutes": 0},
+        ],
+    )
+    def test_each_loosening_is_rejected(self, risk: dict) -> None:
+        from src.core.control_config import validate_overrides_payload
+
+        model, error = validate_overrides_payload({"risk": risk}, baseline=self._baseline())
+        assert model is None and "may only tighten" in (error or "")
+
+    def test_tightening_and_equal_values_pass(self) -> None:
+        from src.core.control_config import validate_overrides_payload
+
+        payload = {
+            "risk": {
+                "max_position_pct": 0.05,
+                "max_drawdown_pct": 0.05,  # equal is not looser
+                "min_confidence": 0.8,
+                "consecutive_losses_cooldown_minutes": 120,
+            }
+        }
+        model, error = validate_overrides_payload(payload, baseline=self._baseline())
+        assert error is None and model is not None
+
+    def test_enforce_exit_levels_is_off_the_surface(self) -> None:
+        from src.core.control_config import validate_overrides_payload
+
+        model, error = validate_overrides_payload({"risk": {"enforce_exit_levels": False}})
+        assert model is None and "enforce_exit_levels" in (error or "")
+
+    def test_legacy_stored_row_keeps_its_other_overrides(self) -> None:
+        from src.core.control_config import parse_overrides
+
+        legacy = '{"risk": {"min_confidence": 0.7, "enforce_exit_levels": false}}'
+        parsed = parse_overrides(legacy)
+        assert parsed is not None and parsed.risk.min_confidence == 0.7
+
+    def test_apply_skips_stored_values_looser_than_yaml(self) -> None:
+        """The YAML may be tightened after an override was stored: never loosen live."""
+        from types import SimpleNamespace
+
+        from src.core.control_config import parse_and_apply
+
+        live = self._baseline()
+        live.max_drawdown_pct = 0.03  # YAML now says 3%
+        settings = SimpleNamespace(
+            risk=live,
+            risk_baseline=SimpleNamespace(**{**vars(self._baseline()), "max_drawdown_pct": 0.03}),
+            crypto_agent=SimpleNamespace(),
+        )
+        changed = parse_and_apply(
+            settings, "crypto", '{"risk": {"max_drawdown_pct": 0.05, "min_confidence": 0.7}}'
+        )
+        assert live.max_drawdown_pct == 0.03  # stored 5% would loosen → skipped
+        assert live.min_confidence == 0.7
+        assert "min_confidence" in changed and "max_drawdown_pct" not in changed
+
+
+def test_shipped_config_keeps_process_launch_off() -> None:
+    from src.core.config import Settings
+
+    assert Settings().dashboard.allow_launch is False
+
+
+def test_allowed_hosts_helper() -> None:
+    from src.core.web_security import allowed_hosts
+
+    assert allowed_hosts("0.0.0.0") == ["127.0.0.1", "localhost", "::1", "[::1]"]
+    assert allowed_hosts("192.168.1.5", ["dash.lan"])[-2:] == ["192.168.1.5", "dash.lan"]

@@ -64,7 +64,7 @@
     .btn.active-pill { background: #2f3441; border-color: #7aa2f7; color: #fff; }
   </style>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
   <header>
     <span class="brand">📈 Trading Agents</span>
     <nav>
