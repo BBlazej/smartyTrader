@@ -274,7 +274,11 @@ class BaseTradingAgent:
                 filled_at = datetime.now(UTC)
             try:
                 found = await self._storage.update_order_status(
-                    order.order_id, order.status, price=order.price, filled_at=filled_at
+                    order.order_id,
+                    order.status,
+                    price=order.price,
+                    filled_at=filled_at,
+                    realized_pnl=order.realized_pnl if order.status == "filled" else None,
                 )
                 if not found:
                     # The original row was lost (e.g. a failed write at placement):
@@ -289,6 +293,7 @@ class BaseTradingAgent:
                         status=order.status,
                         decision_id=decision_of(order.order_id) if callable(decision_of) else None,
                         filled_at=filled_at if order.status == "filled" else None,
+                        realized_pnl=order.realized_pnl if order.status == "filled" else None,
                     )
             except Exception as exc:  # noqa: BLE001
                 # Not confirmed → the executor re-delivers this transition next cycle.
@@ -301,6 +306,9 @@ class BaseTradingAgent:
             for entry in order.closed_entries:
                 if entry.entry_decision_id is not None:
                     await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
+            if order.status == "filled" and order.realized_pnl is not None:
+                # A late closing fill counts toward the loss streak like any other (§7.46).
+                self._risk_engine.record_outcome(was_profitable=order.realized_pnl >= 0)
             if callable(confirm):
                 confirm(order.order_id)
             self._logger.info(
@@ -418,6 +426,8 @@ class BaseTradingAgent:
             "status": order.status,
             "decision_id": decision_id,
             "filled_at": filled_at if order.status == "filled" else None,
+            # One outcome per closing fill — the loss-streak rehydration source (§7.46).
+            "realized_pnl": order.realized_pnl if order.status == "filled" else None,
         }
         last_error: Exception | None = None
         for attempt, delay in enumerate((0.0, *self._persist_retry_delays), start=1):

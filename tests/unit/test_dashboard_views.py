@@ -237,10 +237,12 @@ class TestDecisionStats:
             ),
         ]
         s = decision_stats(rows)
-        assert s["closed"] == 2
-        assert s["wins"] == 1 and s["losses"] == 1
-        assert s["win_rate"] == 0.5
-        assert s["realized_total"] == 5.0
+        # §7.46: only the entry (BUY) row is a closed trade; the SELL row's PnL is the
+        # same round trip seen from the exit and must not be counted twice.
+        assert s["closed"] == 1
+        assert s["wins"] == 1 and s["losses"] == 0
+        assert s["win_rate"] == 1.0
+        assert s["realized_total"] == 10.0
         assert s["buys"] == 1 and s["sells"] == 1 and s["holds"] == 1
         assert s["approved"] == 2 and s["rejected"] == 1
 

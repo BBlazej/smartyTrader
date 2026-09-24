@@ -136,7 +136,8 @@ def portfolio_chart(history: list[Any], limit: int | None = None) -> dict[str, l
 def decision_stats(rows: list[Any]) -> dict[str, Any]:
     """Compute win-rate / confidence / action metrics over a set of decision rows.
 
-    A *win* is a closed trade (``realized_pnl`` set, net of fees) with positive PnL;
+    A *win* is a closed trade — an entry (BUY) decision whose ``realized_pnl`` is set,
+    net of fees (the exit's SELL row repeats that PnL and is not counted again) — with positive PnL;
     the win rate is ``wins / closed`` and is ``None`` when nothing has closed yet
     (rather than a misleading 0%). LLM-unavailable fallback HOLDs are counted but
     excluded from the actionable stats so they don't dilute confidence/win-rate.
@@ -151,7 +152,13 @@ def decision_stats(rows: list[Any]) -> dict[str, Any]:
     approved = sum(1 for r in real if getattr(r, "risk_verdict", None) == "approved")
     rejected = sum(1 for r in real if getattr(r, "risk_verdict", None) == "rejected")
 
-    closed = [r for r in rows if getattr(r, "realized_pnl", None) is not None]
+    # One closed trade per *entry* decision (§7.46): an LLM round trip also stamps
+    # its PnL on the SELL row, so counting every row with an outcome double-counted.
+    closed = [
+        r
+        for r in rows
+        if getattr(r, "realized_pnl", None) is not None and getattr(r, "action", None) == "buy"
+    ]
     wins = sum(1 for r in closed if (getattr(r, "realized_pnl", 0.0) or 0.0) > 0)
     losses = len(closed) - wins
     win_rate = (wins / len(closed)) if closed else None

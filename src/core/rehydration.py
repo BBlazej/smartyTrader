@@ -92,8 +92,11 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
 
     * Baseline ← ``total_value`` of today's earliest portfolio snapshot (absent
       → left unset so it seeds lazily from the first fresh reading).
-    * Losing streak ← trailing run of *closed* decisions (newest first) with a
-      negative realized PnL; at the configured threshold
+    * Losing streak ← trailing run of **closing fills** (newest first, §7.46) with a
+      negative realized PnL — the same one-outcome-per-closing-fill the live tracker
+      counts (decision rows double-counted: an LLM round trip stamps both the SELL and
+      its entry). Databases with no recorded closing-fill outcomes yet (pre-§7.46)
+      fall back to *entry* (BUY) decisions only. At the configured threshold
       (``risk.consecutive_losses_threshold``, §7.26 — never a hardcoded 3) the
       cooldown restarts from the newest loss's timestamp +
       ``consecutive_losses_cooldown_minutes`` if it has not already elapsed.
@@ -110,13 +113,22 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
         logger.warning("failed to rehydrate daily-loss baseline", error=str(exc))
 
     try:
-        closed = await storage.get_closed_decisions(limit=50)
+        outcomes: list[tuple[float, datetime | None]] = [
+            (float(o.realized_pnl), _as_utc(o.filled_at or o.created_at))
+            for o in await storage.get_recent_closing_fills(limit=50)
+        ]
+        if not outcomes:  # pre-§7.46 history: entry decisions carry one outcome each
+            outcomes = [
+                (float(d.realized_pnl or 0.0), _as_utc(d.timestamp))
+                for d in await storage.get_closed_decisions(limit=50)
+                if d.action == "buy"
+            ]
         streak = 0
         newest_loss_ts: datetime | None = None
-        for row in closed:  # newest first
-            if (row.realized_pnl or 0.0) < 0.0:
+        for pnl, ts in outcomes:  # newest first
+            if pnl < 0.0:
                 streak += 1
-                newest_loss_ts = newest_loss_ts or _as_utc(row.timestamp)
+                newest_loss_ts = newest_loss_ts or ts
             else:
                 break
         cooldown_until = None

@@ -173,6 +173,10 @@ class DecisionPipeline:
                 quantity=position.quantity,
                 price=price,
             )
+            # A close-all fill is a real outcome for the loss streak, like every
+            # other closing fill (§7.46 — it used to be skipped).
+            if order.status == "filled" and order.realized_pnl is not None:
+                self.risk_engine.record_outcome(was_profitable=order.realized_pnl >= 0)
             closed.append((position.symbol, order))
         return closed
 

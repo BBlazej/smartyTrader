@@ -282,7 +282,7 @@ class TestCloseAllPositions:
         pipeline = DecisionPipeline(
             provider=AsyncMock(),
             llm_client=AsyncMock(),
-            risk_engine=AsyncMock(),
+            risk_engine=MagicMock(),  # record_outcome is sync (§7.46 close-all outcomes)
             executor=executor,
         )
 
@@ -307,7 +307,7 @@ class TestCloseAllPositions:
         pipeline = DecisionPipeline(
             provider=AsyncMock(),
             llm_client=AsyncMock(),
-            risk_engine=AsyncMock(),
+            risk_engine=MagicMock(),  # record_outcome is sync (§7.46 close-all outcomes)
             executor=_NoMarkExecutor(),
         )
         assert await pipeline.close_all_positions() == []

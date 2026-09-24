@@ -369,6 +369,7 @@ erDiagram
         datetime filled_at
         datetime created_at "storage-time bound for pruning unfilled rows (§7.12 migration)"
         string agent "owning agent — FIFO replay reads only its own fills (§7.39)"
+        float realized_pnl "closing fills only — one outcome per fill; loss-streak rehydration source (§7.46)"
     }
     portfolio_snapshots {
         int id PK
@@ -392,7 +393,7 @@ erDiagram
 
 Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark. Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
-Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing closed-decision outcomes). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 

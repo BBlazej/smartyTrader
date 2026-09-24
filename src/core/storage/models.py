@@ -86,6 +86,9 @@ class OrderRow(Base):
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     # Owning agent (§7.39) — the FIFO replay (§7.25) must only see this agent's fills.
     agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # Realized PnL of a *closing* fill (§7.46) — one row per closing fill, exactly
+    # what the live loss-streak tracker counts, so restart rehydration matches it.
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class PortfolioSnapshotRow(Base):

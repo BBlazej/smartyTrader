@@ -230,3 +230,57 @@ class TestReconciliationIsLossless:
 
         closed = await storage.get_closed_decisions()
         assert [(d.id, d.realized_pnl) for d in closed] == [(entry, pytest.approx(10.0))]
+
+
+class TestClosingFillOutcomes:
+    """§7.46: closing fills persist their realized PnL; reconciled fills feed the streak."""
+
+    async def test_losing_round_trip_rehydrates_as_one_loss(self, storage: Storage) -> None:
+        from src.core.rehydration import rehydrate_risk_engine
+
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        agent = _agent(storage, executor, ["BTC/USDT"])
+        await agent.run_cycle()  # BUY at 100
+        lower = [OHLCV(open=95, high=95, low=95, close=95, volume=1) for _ in range(5)]
+        agent._pipeline.provider.fetch_snapshot = AsyncMock(
+            return_value=MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=lower)
+        )
+        agent._pipeline.llm_client.ask_trade_signal = AsyncMock(
+            return_value=TradeSignal(
+                symbol="BTC/USDT", action="sell", confidence=0.9, reasoning="cut the loss"
+            )
+        )
+        await agent.run_cycle()  # SELL at 95 → loss
+
+        fills = await storage.get_recent_closing_fills()
+        assert len(fills) == 1 and fills[0].realized_pnl < 0
+        assert agent._risk_engine._loss_tracker.consecutive_losses == 1
+
+        restarted = RiskEngine(RiskSettings())
+        await rehydrate_risk_engine(restarted, storage)
+        assert restarted._loss_tracker.consecutive_losses == 1  # was 2 pre-§7.46
+
+    async def test_reconciled_closing_fill_feeds_the_streak(self, storage: Storage) -> None:
+        await storage.save_order("V-9", "BTC/USDT", "sell", 1.0, 100.0, "pending")
+        losing = OrderResult(
+            order_id="V-9",
+            symbol="BTC/USDT",
+            side=OrderSide.SELL,
+            quantity=1.0,
+            price=90.0,
+            status="filled",
+            realized_pnl=-10.0,
+        )
+        executor = MagicMock()
+        executor.reconcile_open_orders = AsyncMock(return_value=[losing])
+        executor.confirm_reconciled = MagicMock()
+        agent = _agent(storage, executor, [])
+        agent._pipeline.get_portfolio_state = AsyncMock(
+            return_value=MagicMock(cash=0.0, positions=[], total_value=0.0, unrealized_pnl=0.0)
+        )
+
+        await agent._reconcile_orders()
+
+        assert agent._risk_engine._loss_tracker.consecutive_losses == 1
+        (row,) = await storage.get_recent_closing_fills()
+        assert row.order_id == "V-9" and row.realized_pnl == pytest.approx(-10.0)

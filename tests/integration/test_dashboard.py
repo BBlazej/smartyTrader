@@ -259,7 +259,9 @@ class TestMonitorPages:
     async def test_decisions_page_shows_stats_and_rows(self, env) -> None:
         body = (await env.client.get("/decisions")).text
         assert "Win rate" in body
-        assert "50.0%" in body  # 1 win / 2 closed
+        # §7.46: one closed trade per entry decision — the SELL row repeating the
+        # exit's PnL is not a second trade (it used to read "1 win / 2 closed").
+        assert "100.0%" in body and "1W / 0L of 1 closed" in body
         assert "momentum" in body and "take profit" in body
         _assert_no_secrets(body)
 

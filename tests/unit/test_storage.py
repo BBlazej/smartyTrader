@@ -795,3 +795,47 @@ class TestAgentScoping:
         assert [o.order_id for o in await stocks.get_recent_orders()] == ["s1"]
         start, end = datetime.now(UTC) - timedelta(days=1), datetime.now(UTC) + timedelta(days=1)
         assert [r.symbol for r in await stocks.get_decisions_in_range(start, end)] == ["AAPL"]
+
+
+class TestClosingFills:
+    """§7.46: closing-fill outcomes on the orders table."""
+
+    async def test_newest_first_and_scoped(self, tmp_db_path: str) -> None:
+        crypto = Storage(tmp_db_path, agent="crypto")
+        stocks = Storage(tmp_db_path, agent="stocks")
+        await crypto.initialize()
+        try:
+            await crypto.save_order("c1", "BTC/USDT", "sell", 1, 10, "filled", realized_pnl=-1.0)
+            await crypto.save_order("c2", "BTC/USDT", "buy", 1, 10, "filled")  # no outcome
+            await crypto.save_order("c3", "BTC/USDT", "sell", 1, 10, "filled", realized_pnl=2.0)
+            await crypto.save_order("c4", "BTC/USDT", "sell", 1, 10, "rejected", realized_pnl=9.0)
+            await stocks.save_order("s1", "AAPL", "sell", 1, 10, "filled", realized_pnl=-3.0)
+            assert [o.order_id for o in await crypto.get_recent_closing_fills()] == ["c3", "c1"]
+            assert await crypto.update_order_status("c2", "filled", realized_pnl=0.5)
+            assert [o.order_id for o in await crypto.get_recent_closing_fills()] == [
+                "c3",
+                "c2",
+                "c1",
+            ]
+        finally:
+            await crypto.close()
+            await stocks.close()
+
+    async def test_legacy_orders_table_gains_the_column(self, tmp_db_path: str) -> None:
+        import sqlite3
+
+        conn = sqlite3.connect(tmp_db_path)
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
+            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
+            "filled_at TIMESTAMP, created_at TIMESTAMP)"
+        )
+        conn.commit()
+        conn.close()
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            await storage.save_order("x", "BTC/USDT", "sell", 1, 10, "filled", realized_pnl=-1.0)
+            assert (await storage.get_recent_closing_fills())[0].realized_pnl == -1.0
+        finally:
+            await storage.close()

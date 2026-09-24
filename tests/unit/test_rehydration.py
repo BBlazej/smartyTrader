@@ -204,8 +204,7 @@ class TestRiskEngineRehydration:
         await storage.initialize()
         try:
             for pnl in (-5.0, -4.0, -3.0):
-                decision_id = await _save_decision(storage, "BTC/USDT")
-                await storage.set_realized_pnl(decision_id, pnl)
+                await _save_closing_fill(storage, "BTC/USDT", pnl)
 
             engine = RiskEngine(risk_settings)
             await rehydrate_risk_engine(engine, storage)
@@ -229,8 +228,7 @@ class TestRiskEngineRehydration:
         await storage.initialize()
         try:
             for pnl in (-5.0, -4.0, -3.0):
-                decision_id = await _save_decision(storage, "BTC/USDT")
-                await storage.set_realized_pnl(decision_id, pnl)
+                await _save_closing_fill(storage, "BTC/USDT", pnl)
 
             engine = RiskEngine(risk_settings)
             await rehydrate_risk_engine(engine, storage)
@@ -250,8 +248,7 @@ class TestRiskEngineRehydration:
         await storage.initialize()
         try:
             for pnl in (-5.0, -4.0):
-                decision_id = await _save_decision(storage, "BTC/USDT")
-                await storage.set_realized_pnl(decision_id, pnl)
+                await _save_closing_fill(storage, "BTC/USDT", pnl)
 
             engine = RiskEngine(risk_settings)
             await rehydrate_risk_engine(engine, storage)
@@ -269,8 +266,7 @@ class TestRiskEngineRehydration:
         try:
             outcomes = [-5.0, -4.0, 2.0]  # newest last in save order → first when sorted desc
             for pnl in outcomes:
-                decision_id = await _save_decision(storage, "BTC/USDT")
-                await storage.set_realized_pnl(decision_id, pnl)
+                await _save_closing_fill(storage, "BTC/USDT", pnl)
 
             engine = RiskEngine(risk_settings)
             await rehydrate_risk_engine(engine, storage)
@@ -293,8 +289,7 @@ class TestRehydrateFromStorage:
             await storage.save_portfolio_snapshot(
                 cash=500.0, positions_json=_positions_json(held), total_value=527.0
             )
-            decision_id = await _save_decision(storage, "ETH/USDT")
-            await storage.set_realized_pnl(decision_id, -1.0)
+            await _save_closing_fill(storage, "ETH/USDT", -1.0)
 
             executor = PaperExecutor(initial_cash=1_000.0)
             engine = RiskEngine(risk_settings)
@@ -307,10 +302,27 @@ class TestRehydrateFromStorage:
             await storage.close()
 
 
-async def _save_decision(storage: Storage, symbol: str) -> int:
+async def _save_closing_fill(storage: Storage, symbol: str, pnl: float) -> None:
+    """A closing sell fill that realized ``pnl`` — what the live streak counts (§7.46)."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    await storage.save_order(
+        order_id=f"close-{uuid4().hex[:8]}",
+        symbol=symbol,
+        side="sell",
+        quantity=1.0,
+        price=100.0,
+        status="filled",
+        filled_at=datetime.now(UTC),
+        realized_pnl=pnl,
+    )
+
+
+async def _save_decision(storage: Storage, symbol: str, action: str = "sell") -> int:
     return await storage.save_llm_decision(
         symbol=symbol,
-        action="sell",
+        action=action,
         confidence=0.9,
         reasoning="closing",
         stop_loss=None,
@@ -332,3 +344,69 @@ def _portfolio(cash: float):
     from src.core.models import PortfolioState
 
     return PortfolioState(cash=cash, positions=[])
+
+
+class TestStreakMatchesLiveCounting:
+    """§7.46: restart rebuilds the streak from closing fills — one per closing fill,
+    exactly what the live tracker counts — never from decision rows."""
+
+    async def test_round_trip_counts_once(
+        self, risk_settings: RiskSettings, tmp_db_path: str
+    ) -> None:
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            for _ in range(2):  # two losing LLM round trips, as the agent records them
+                entry = await _save_decision(storage, "BTC/USDT", action="buy")
+                exit_ = await _save_decision(storage, "BTC/USDT", action="sell")
+                await storage.set_realized_pnl(exit_, -5.0)  # the SELL decision's own row
+                await storage.add_realized_pnl(entry, -5.0)  # FIFO share on the entry
+                await _save_closing_fill(storage, "BTC/USDT", -5.0)
+
+            engine = RiskEngine(risk_settings)
+            await rehydrate_risk_engine(engine, storage)
+
+            # Pre-§7.46: 4 rows with PnL → streak 4 ≥ 3 → phantom cooldown.
+            assert engine._loss_tracker.consecutive_losses == 2
+            assert not engine._loss_tracker.in_cooldown
+        finally:
+            await storage.close()
+
+    async def test_legacy_history_falls_back_to_entry_decisions(
+        self, risk_settings: RiskSettings, tmp_db_path: str
+    ) -> None:
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            for _ in range(3):  # pre-§7.46: no closing-fill outcomes were stored
+                entry = await _save_decision(storage, "BTC/USDT", action="buy")
+                await storage.add_realized_pnl(entry, -2.0)
+                exit_ = await _save_decision(storage, "BTC/USDT", action="sell")
+                await storage.set_realized_pnl(exit_, -2.0)
+
+            engine = RiskEngine(risk_settings)
+            await rehydrate_risk_engine(engine, storage)
+            assert engine._loss_tracker.consecutive_losses == 3  # entries only, not 6
+        finally:
+            await storage.close()
+
+
+class TestLiveOutcomeCoverage:
+    """§7.46: every closing path feeds the loss streak — close-all included."""
+
+    async def test_close_all_records_the_outcome(self, risk_settings: RiskSettings) -> None:
+        from unittest.mock import AsyncMock
+
+        from src.core.decision_pipeline import DecisionPipeline
+
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, 100.0)
+        executor.update_price("BTC/USDT", 90.0)
+        engine = RiskEngine(risk_settings)
+        pipeline = DecisionPipeline(
+            provider=AsyncMock(), llm_client=AsyncMock(), risk_engine=engine, executor=executor
+        )
+
+        await pipeline.close_all_positions()
+
+        assert engine._loss_tracker.consecutive_losses == 1

@@ -128,6 +128,9 @@ class StorageBase:
         # for rows that never filled; backfill what we can from fills.
         if inspector.has_table("orders"):
             order_cols = {c["name"] for c in inspector.get_columns("orders")}
+            if "realized_pnl" not in order_cols:  # §7.46 closing-fill outcomes
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN realized_pnl FLOAT NULL"))
             if "created_at" not in order_cols:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE orders ADD COLUMN created_at DATETIME NULL"))

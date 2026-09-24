@@ -23,6 +23,7 @@ class OrderMixin:
         decision_id: int | None = None,
         filled_at: datetime | None = None,
         agent: str | None = None,
+        realized_pnl: float | None = None,
     ) -> int:
         async with await self._session() as session:
             row = OrderRow(
@@ -35,6 +36,7 @@ class OrderMixin:
                 decision_id=decision_id,
                 filled_at=filled_at,
                 agent=self._agent_scope(agent),
+                realized_pnl=realized_pnl,
             )
             session.add(row)
             await session.commit()
@@ -46,18 +48,21 @@ class OrderMixin:
         status: str,
         price: float | None = None,
         filled_at: datetime | None = None,
+        realized_pnl: float | None = None,
     ) -> bool:
         """Patch a stored order after venue reconciliation (§7.28).
 
-        Returns ``True`` when a row with ``order_id`` existed. ``price`` and
-        ``filled_at`` are only written when supplied, so a later ``canceled``
-        transition never blanks an earlier fill record.
+        Returns ``True`` when a row with ``order_id`` existed. ``price``,
+        ``filled_at`` and ``realized_pnl`` are only written when supplied, so a later
+        ``canceled`` transition never blanks an earlier fill record.
         """
         values: dict[str, object] = {"status": status}
         if price is not None:
             values["price"] = price
         if filled_at is not None:
             values["filled_at"] = filled_at
+        if realized_pnl is not None:
+            values["realized_pnl"] = realized_pnl
         async with await self._session() as session:
             result = await session.execute(
                 update(OrderRow).where(OrderRow.order_id == order_id).values(**values)
@@ -78,6 +83,26 @@ class OrderMixin:
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_recent_closing_fills(
+        self, limit: int = 50, agent: str | None = None
+    ) -> list[OrderRow]:
+        """Newest-first filled orders that realized PnL — one row per closing fill (§7.46).
+
+        The live loss-streak tracker counts exactly these, so restart rehydration
+        reads them instead of decision rows (an LLM round trip stamps PnL on both
+        the SELL and the entry decision, which double-counted every loss).
+        """
+        async with await self._session() as session:
+            stmt = select(OrderRow).where(
+                OrderRow.status == "filled", OrderRow.realized_pnl.isnot(None)
+            )
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = stmt.order_by(OrderRow.id.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
