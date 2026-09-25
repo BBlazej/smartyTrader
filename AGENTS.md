@@ -78,7 +78,8 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - **One runner process per agent (§7.52):** `run_agent` takes an exclusive non-blocking `flock` on `<db-dir>/<component>.runner.lock` right after the enabled gate (skipped for `:memory:` DBs) and refuses to start otherwise — `RunnerAlreadyRunning` → scripts exit 2, nothing else is constructed and the DB is never touched. The kernel releases the lock even if the holder dies; the pid inside is diagnostics only.
 - **`enabled: false` means nothing runs:** both runners check `<agent>.enabled` right after loading config and exit *before constructing any component* — no cycles, LLM calls, order placement or DB writes. Single-cycle runs are the explicit `--once` CLI flag, never a side effect of disabling an agent.
 - **One lifecycle implementation (§7.13):** the enabled-gate, wiring, rehydration/pruning startup passes, `--once` and scheduled loops live in `core/runner.py::run_agent`; scripts pass only market-specific `build_components`/`build_agent` callbacks. Agent behavior (cycle loop, persistence, alerts) lives in `agents/base_agent.py::BaseTradingAgent`; market quirks hook via `_skip_cycle_reason()`.
-- Paper executor (`paper_executor.py`) is the default. Never assume live trading.
+- **No price, no trade (§7.55):** if the provider returns an empty candle series `DecisionPipeline.run` aborts before the LLM — no decision row, no order; and post-approval the execute step still refuses to place when there is no usable mark/quantity (an order sent with `price=None` becomes an unbounded market order venue-side).
+- **Paper executor (`paper_executor.py`) is the default. Never assume live trading.**
 - Risk engine runs before every order. Nothing executes without approval.
 - API keys live in `.env` — never commit them, never log them.
 - **Risk rules are hard-coded deterministic guards**, not LLM decisions.

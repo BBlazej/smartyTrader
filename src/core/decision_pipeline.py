@@ -242,6 +242,14 @@ class DecisionPipeline:
             step_logger.error("fetch failed", error=str(exc))
             return PipelineResult(symbol=symbol, error=f"Fetch failed: {exc}")
 
+        # §7.55: no candles → no price → nothing to decide or trade. Everything
+        # downstream (marking, exit levels, indicators, prompt, sizing) reads the
+        # candle series, and an order sent without a price becomes an *unchecked
+        # market order* on the venue — past every notional cap.
+        if not snapshot.candles:
+            step_logger.error("provider returned zero candles; no LLM call, no order")
+            return PipelineResult(symbol=symbol, error="No market data (empty candle series)")
+
         # Step 1b — Mark open positions to this cycle's close (paper mode).
         # Done before the risk check so the portfolio handed to the risk engine
         # — and the daily-loss baseline the agent updates afterwards — reflects
@@ -357,8 +365,19 @@ class DecisionPipeline:
         try:
             order_side = OrderSide.BUY if signal.action == Action.BUY else OrderSide.SELL
             quantity = planned_quantity
-            if quantity is None:  # no usable price → let the executor reject the market order
-                quantity = self._calculate_quantity(signal, portfolio, current_price=None)
+            if quantity is None or not current_price:
+                # §7.55 belt: a plan without a usable price never reaches the
+                # executor — sized-at-stop orders with ``price=None`` used to turn
+                # into unpriced market orders venue-side.
+                step_logger.error("refusing to place order without a usable price")
+                return PipelineResult(
+                    symbol=symbol,
+                    signal=signal,
+                    risk_result=risk_result,
+                    snapshot=snapshot,
+                    decision_id=decision_id,
+                    error="Refused order without price (no usable market data)",
+                )
             order_result = await self.executor.place_order(
                 symbol=symbol,
                 side=order_side,

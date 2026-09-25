@@ -887,6 +887,77 @@ class TestDecisionPersistence:
         assert result.decision_id is None
 
 
+class TestNoPriceRefusal:
+    """§7.55: without usable market data there is no decision and no order."""
+
+    @staticmethod
+    def _buy() -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="enter",
+            stop_loss=95.0,
+        )
+
+    def _pipeline(
+        self, risk_settings: RiskSettings, snapshot: MarketSnapshot
+    ) -> tuple[DecisionPipeline, AsyncMock, PaperExecutor]:
+        from src.core.risk_engine import RiskEngine
+
+        provider = AsyncMock()
+        provider.fetch_snapshot = AsyncMock(return_value=snapshot)
+        llm = AsyncMock()
+        llm.ask_trade_signal = AsyncMock(return_value=self._buy())
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        real_place = executor.place_order
+        attempted: list[dict] = []
+
+        async def spy(**kwargs):
+            attempted.append(kwargs)
+            return await real_place(**kwargs)
+
+        executor.place_order = spy  # type: ignore[method-assign]
+        pipeline = DecisionPipeline(
+            provider=provider,
+            llm_client=llm,
+            risk_engine=RiskEngine(risk_settings),
+            executor=executor,
+        )
+        pipeline._attempted_orders = attempted
+        return pipeline, llm, executor
+
+    async def test_empty_candles_skip_the_llm_entirely(self, risk_settings: RiskSettings) -> None:
+        pipeline, llm, _exec = self._pipeline(
+            risk_settings, MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=[])
+        )
+
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert not result.executed
+        assert "No market data" in (result.error or "")
+        llm.ask_trade_signal.assert_not_awaited()  # no LLM call, no decision row
+        assert pipeline._attempted_orders == []
+
+    async def test_unpriceable_plan_never_reaches_the_executor(
+        self, risk_settings: RiskSettings
+    ) -> None:
+        # Candles exist but the last close is unusable (0): sizing yields nothing,
+        # and the execution belt refuses instead of sending price=None market orders.
+        zero = OHLCV(open=0.0, high=0.0, low=0.0, close=0.0, volume=1_000.0)
+        pipeline, _llm, executor = self._pipeline(
+            risk_settings,
+            MarketSnapshot(symbol="BTC/USDT", timeframe="1h", candles=[zero, zero, zero]),
+        )
+
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert not result.executed
+        assert "without price" in (result.error or "")
+        assert pipeline._attempted_orders == []
+        assert await executor.get_positions() == []
+
+
 class TestExitLevelEnforcement:
     """§7.9: when a position's mark price breaches the stop-loss / take-profit
     carried from its entry signal, the pipeline closes it on the next cycle —
