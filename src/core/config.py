@@ -158,6 +158,13 @@ class RiskSettings:
         consecutive_losses_threshold: int = 3,
         max_open_positions: int = 5,
         min_confidence: float = 0.6,
+        # §7.54 entry geometry: a BUY's stop must sit BELOW the current price and
+        # within this fraction of it — an SL at 0.01 means unbounded risk, and stops
+        # beyond the bar would auto-close next cycle for double fees.
+        max_stop_distance_pct: float = 0.25,
+        # §7.54 optional risk-per-trade sizing: cap a BUY so that
+        # (entry − stop) × quantity ≤ this fraction of total value. 0 disables it.
+        risk_per_trade_pct: float = 0.0,
         # Deterministic stop-loss / take-profit enforcement (§7.9): when enabled,
         # the pipeline closes a position as soon as its mark price breaches the
         # levels carried from the entry signal, without asking the LLM.
@@ -170,6 +177,8 @@ class RiskSettings:
         self.consecutive_losses_threshold = consecutive_losses_threshold
         self.max_open_positions = max_open_positions
         self.min_confidence = min_confidence
+        self.max_stop_distance_pct = max_stop_distance_pct
+        self.risk_per_trade_pct = risk_per_trade_pct
         self.enforce_exit_levels = enforce_exit_levels
 
 

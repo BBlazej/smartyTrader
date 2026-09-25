@@ -948,6 +948,27 @@ class TestExitLevelEnforcement:
             symbol="BTC/USDT", action=Action.HOLD, confidence=0.5, reasoning="sit out"
         )
 
+    async def test_inverted_stop_geometry_rejected_end_to_end(
+        self, risk_settings: RiskSettings
+    ) -> None:
+        # §7.54: the pipeline hands the cycle's mark to the gate — a BUY whose stop
+        # sits above price must die at the gate, not become an instant auto-exit.
+        executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
+        pipeline, _llm = self._pipeline(
+            risk_settings,
+            executor,
+            prices=[100.0],
+            signals=[self._entry(stop_loss=110.0, take_profit=None)],
+        )
+
+        result = await pipeline.run(symbol="BTC/USDT")
+
+        assert not result.executed
+        assert result.risk_result is not None
+        assert result.risk_result.verdict == RiskVerdict.REJECTED
+        assert "not below the current price" in (result.risk_result.reason or "")
+        assert await executor.get_positions() == []
+
     async def test_stop_loss_breach_closes_without_llm(self, risk_settings: RiskSettings) -> None:
         executor = PaperExecutor(initial_cash=10_000.0, slippage_pct=0.0)
         pipeline, llm = self._pipeline(
@@ -1105,6 +1126,21 @@ class TestPositionHeadroomSizing:
         assert calculate_quantity(signal, book, rs, 100.0) == pytest.approx(4.0)
         full = signal.model_copy(update={"symbol": "ETH/USDT"})
         assert calculate_quantity(full, book, rs, 100.0) == pytest.approx(10.0)
+
+    def test_risk_per_trade_cap_shrinks_the_buy(self) -> None:
+        # §7.54 optional sizing: (entry − stop) × qty ≤ risk_per_trade_pct × total.
+        rs = RiskSettings(max_position_pct=0.20, risk_per_trade_pct=0.01)
+        book = PortfolioState(cash=10_000.0)
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+        )
+        # Uncapped this would be 2_000 / 100 = 20 units; the 1%-risk budget (100 /
+        # 10-per-unit) holds it to 10.
+        assert calculate_quantity(signal, book, rs, 100.0) == pytest.approx(10.0)
+
+        # Disabled by default: identical inputs without the cap give the full size.
+        plain = RiskSettings(max_position_pct=0.20)
+        assert calculate_quantity(signal, book, plain, 100.0) == pytest.approx(20.0)
 
     async def test_twelve_repeated_buys_stay_at_the_cap(self) -> None:
         """The review's reproduction (external_4 C4): 12 approved BUYs used to reach

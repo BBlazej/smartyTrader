@@ -202,6 +202,67 @@ class TestStopLossRequired:
         assert result.verdict == RiskVerdict.APPROVED
 
 
+class TestEntryGeometry:
+    """§7.54: entries need sane levels — stop_loss < price < take_profit, and the
+    stop may not sit absurdly below price (unbounded per-trade risk)."""
+
+    @staticmethod
+    def _buy(stop_loss: float | None = 95.0, take_profit: float | None = None) -> TradeSignal:
+        return TradeSignal(
+            symbol="BTC/USDT",
+            action=Action.BUY,
+            confidence=0.9,
+            reasoning="entry",
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+
+    def test_stop_above_or_at_price_is_rejected(
+        self, engine: RiskEngine, healthy_portfolio
+    ) -> None:
+        for bad_stop in (105.0, 100.0):
+            result = engine.evaluate(
+                self._buy(stop_loss=bad_stop), healthy_portfolio, current_price=100.0
+            )
+            assert result.verdict == RiskVerdict.REJECTED, bad_stop
+            assert "not below the current price" in (result.reason or "")
+
+    def test_take_profit_at_or_below_price_is_rejected(
+        self, engine: RiskEngine, healthy_portfolio
+    ) -> None:
+        for bad_tp in (100.0, 98.0):
+            result = engine.evaluate(
+                self._buy(stop_loss=95.0, take_profit=bad_tp),
+                healthy_portfolio,
+                current_price=100.0,
+            )
+            assert result.verdict == RiskVerdict.REJECTED, bad_tp
+            assert "not above the current price" in (result.reason or "")
+
+    def test_stop_further_than_max_distance_is_rejected(
+        self, engine: RiskEngine, healthy_portfolio
+    ) -> None:
+        # Default max_stop_distance_pct = 25%: an SL at 0.01 is unbounded risk.
+        result = engine.evaluate(self._buy(stop_loss=0.01), healthy_portfolio, current_price=100.0)
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "max_stop_distance_pct" in (result.reason or "")
+
+    def test_boundary_distance_and_sane_levels_approved(
+        self, engine: RiskEngine, healthy_portfolio
+    ) -> None:
+        sane = engine.evaluate(
+            self._buy(stop_loss=75.0, take_profit=110.0), healthy_portfolio, current_price=100.0
+        )
+        assert sane.verdict == RiskVerdict.APPROVED  # exactly 25% under price → allowed
+
+    def test_geometry_only_applies_when_the_mark_is_known(
+        self, engine: RiskEngine, healthy_portfolio
+    ) -> None:
+        # Legacy callers without current_price keep the old stop-required behavior.
+        result = engine.evaluate(self._buy(stop_loss=105.0), healthy_portfolio)
+        assert result.verdict == RiskVerdict.APPROVED
+
+
 class TestDailyLossLimit:
     def test_rejects_on_daily_loss(self, engine: RiskEngine) -> None:
         # Simulate a portfolio that lost >2% today

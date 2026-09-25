@@ -597,6 +597,12 @@ risk:
   consecutive_losses_threshold: 3   # streak that arms the cooldown (§7.19)
   max_open_positions: 5
   min_confidence: 0.6
+  # Entry geometry (§7.54): a BUY's stop must sit BELOW the current price and within
+  # this fraction of it; take_profit, when given, must be ABOVE the price.
+  max_stop_distance_pct: 0.25
+  # Optional risk-per-trade sizing (§7.54): > 0 caps each BUY so
+  # (entry − stop) × quantity ≤ this fraction of total value. 0 = disabled.
+  risk_per_trade_pct: 0.0
   # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's
   # mark price breaches the levels carried from its entry signal, the pipeline
   # closes it on the next cycle without asking the LLM or the risk gate.

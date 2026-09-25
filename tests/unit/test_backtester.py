@@ -118,9 +118,11 @@ class TestReplayEngine:
             "X": _c([(1, 0, 100.0), (1, 12, 80.0), (2, 0, 80.0)]),
         }
         decisions = [
-            ReplayDecision(_ts(1, 6), "X", "buy", 0.8, stop_loss=50.0),  # approved
-            ReplayDecision(_ts(1, 13), "X", "buy", 0.8, stop_loss=50.0),  # daily cap (-20%)
-            ReplayDecision(_ts(2, 9), "X", "buy", 0.8, stop_loss=50.0),  # new day → approved
+            # Stops at exactly the §7.54 max distance (25% under 100) and below the
+            # 80 mark so no exit level ever breaches during the test.
+            ReplayDecision(_ts(1, 6), "X", "buy", 0.8, stop_loss=75.0),  # approved
+            ReplayDecision(_ts(1, 13), "X", "buy", 0.8, stop_loss=75.0),  # daily cap (-20%)
+            ReplayDecision(_ts(2, 9), "X", "buy", 0.8, stop_loss=75.0),  # new day → approved
         ]
         report = await _backtester().replay(decisions, candles, timeframe="12h")
 
@@ -255,7 +257,7 @@ class TestNoLookAhead:
                 OHLCV(timestamp=_ts(2), open=200, high=200, low=200, close=200, volume=1),
             ]
         }
-        decisions = [ReplayDecision(_ts(2, 10), "X", "buy", 0.8, stop_loss=50.0)]
+        decisions = [ReplayDecision(_ts(2, 10), "X", "buy", 0.8, stop_loss=80.0)]
         report = await _backtester().replay(decisions, candles, timeframe="1d")
         # 10% of 10k at 100 = 10 units; the day-2 close then marks them at 200.
         assert report.final_equity == pytest.approx(10_000.0 + 10 * 100.0)

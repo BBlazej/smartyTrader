@@ -261,7 +261,9 @@ class DecisionReplayBacktester:
         quantity = calculate_quantity(signal, portfolio, self._settings, price)
         planned_notional = quantity * price
 
-        risk = self._risk_engine.evaluate(signal, portfolio, planned_notional=planned_notional)
+        risk = self._risk_engine.evaluate(
+            signal, portfolio, planned_notional=planned_notional, current_price=price
+        )
         if risk.verdict.value == "rejected":
             self._risk_rejected += 1
             return

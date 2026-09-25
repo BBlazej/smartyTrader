@@ -313,7 +313,7 @@ class DecisionPipeline:
             planned_quantity = self._calculate_quantity(signal, portfolio, current_price)
             planned_notional = planned_quantity * current_price
         risk_result = self.risk_engine.evaluate(
-            signal, portfolio, planned_notional=planned_notional
+            signal, portfolio, planned_notional=planned_notional, current_price=current_price
         )
 
         # Persist the decision (+ market snapshot) right after the gate so every
@@ -689,6 +689,18 @@ def calculate_quantity(
         price = 1.0
 
     quantity = max_position_value / price
+
+    # Optional risk-per-trade sizing (§7.54): cap the BUY so the distance to the
+    # stop can never lose more than ``risk_per_trade_pct`` of total value. Only a
+    # sane stop below price shrinks the trade; geometry gates reject the rest.
+    if (
+        signal.action == Action.BUY
+        and settings.risk_per_trade_pct > 0
+        and signal.stop_loss is not None
+        and signal.stop_loss < price
+    ):
+        risk_budget = portfolio.total_value * settings.risk_per_trade_pct
+        quantity = min(quantity, risk_budget / (price - signal.stop_loss))
 
     # Ensure we don't spend more cash than available for buys
     if signal.action == Action.BUY:

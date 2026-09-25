@@ -164,13 +164,18 @@ class RiskEngine:
         signal: TradeSignal,
         portfolio: PortfolioState,
         planned_notional: float | None = None,
+        current_price: float | None = None,
     ) -> RiskResult:
         """Check a trade signal against all risk rules.
 
         ``planned_notional`` is the *proposed* order size in quote currency
         (quantity × price) as computed by the pipeline; when provided, the
         position-size rule caps it at ``max_position_pct`` of portfolio value —
-        so a sizing regression is caught *at the gate*, before execution.
+        so a sizing regression is caught *at* the gate, before execution.
+
+        ``current_price`` (the cycle's mark) enables entry-geometry validation
+        (§7.54): stops below/above the wrong side of price, absurdly wide stops,
+        and inverted take-profits are rejected instead of auto-closing next cycle.
 
         Returns ``RiskVerdict.APPROVED`` only if every rule passes.
         """
@@ -188,7 +193,7 @@ class RiskEngine:
             self._check_daily_loss(portfolio),
             self._check_drawdown(portfolio),
             self._check_cooldown(),
-            self._check_stop_loss(signal),
+            self._check_stop_loss(signal, current_price),
         ]
 
         for result in checks:
@@ -391,13 +396,47 @@ class RiskEngine:
             )
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
-    def _check_stop_loss(self, signal: TradeSignal) -> RiskResult:
+    def _check_stop_loss(
+        self, signal: TradeSignal, current_price: float | None = None
+    ) -> RiskResult:
         # Entries only. A *close* reduces exposure and the position's own exit
         # levels (§7.9) govern it, so demanding a stop on a sell was nonsense —
         # it blocked legitimate exits while adding no protection.
-        if signal.action == Action.BUY and signal.stop_loss is None:
+        if signal.action != Action.BUY:
+            return RiskResult(verdict=RiskVerdict.APPROVED)
+        if signal.stop_loss is None:
             return RiskResult(
                 verdict=RiskVerdict.REJECTED,
                 reason="Opening a position requires a stop-loss",
             )
+
+        # Geometry (§7.54): require stop_loss < price < take_profit when the mark
+        # is known, and cap how far the stop may sit below price.
+        if current_price is not None and current_price > 0:
+            if signal.stop_loss >= current_price:
+                return RiskResult(
+                    verdict=RiskVerdict.REJECTED,
+                    reason=(
+                        f"Stop-loss {signal.stop_loss:g} is not below the current price "
+                        f"{current_price:g} — the entry would breach its own stop immediately"
+                    ),
+                )
+            if signal.take_profit is not None and signal.take_profit <= current_price:
+                return RiskResult(
+                    verdict=RiskVerdict.REJECTED,
+                    reason=(
+                        f"Take-profit {signal.take_profit:g} is not above the current price "
+                        f"{current_price:g} — it would 'take profit' at a loss on the next tick"
+                    ),
+                )
+            stop_distance_pct = (current_price - signal.stop_loss) / current_price
+            if stop_distance_pct > self.settings.max_stop_distance_pct:
+                return RiskResult(
+                    verdict=RiskVerdict.REJECTED,
+                    reason=(
+                        f"Stop distance {stop_distance_pct:.1%} exceeds "
+                        f"risk.max_stop_distance_pct ({self.settings.max_stop_distance_pct:.1%}) "
+                        "— such a stop carries unbounded per-trade risk"
+                    ),
+                )
         return RiskResult(verdict=RiskVerdict.APPROVED)
