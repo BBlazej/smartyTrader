@@ -316,6 +316,28 @@ class TestConfigForm:
         merged = (await env.client.get("/config/crypto")).text
         assert "Active overrides" in merged
 
+    async def test_saving_yaml_defaults_stores_nothing(self, env) -> None:
+        # §7.50: the form is pre-filled with merged values; re-saving unchanged
+        # defaults must not persist them as overrides (which would pin defaults
+        # against later, stricter YAML edits).
+        resp = await env.client.post(
+            "/config/crypto",
+            data={"interval_minutes": "5", "risk.min_confidence": "0.6", "pairs": "BTC/USDT"},
+        )
+        assert resp.status_code == 303
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
+    async def test_saving_back_to_yaml_clears_existing_override(self, env) -> None:
+        await env.client.post("/config/crypto", data={"interval_minutes": "7"})
+        row = await env.storage.get_agent_control("crypto")
+        assert row is not None and "interval_minutes" in (row.config_override_json or "")
+
+        resp = await env.client.post("/config/crypto", data={"interval_minutes": "5"})
+        assert resp.status_code == 303
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
     async def test_credential_key_is_rejected_wholesale(self, env) -> None:
         resp = await env.client.post("/config/crypto", data={"api_key": "hunter2"})
         assert resp.status_code == 400

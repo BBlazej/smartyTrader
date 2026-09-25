@@ -152,28 +152,57 @@ async def run_agent(
         decision_history_limit=decision_history_limit,
         decide_on_new_bar_only=decide_on_new_bar_only,
     )
+    agent = build_agent(pipeline, storage, risk_engine, llm_client)
+
+    # Control plane (§7.15): the agent re-reads its ``agent_control`` row each cycle;
+    # stored safe-config overrides land on *these* live objects via the closure below.
+    # §7.50: an ``interval_minutes`` change also re-arms the live scheduler job —
+    # writing it into settings alone was a silent no-op before.
+    scheduler_manager = None  # created below on the scheduled path; closure reads late
+
+    def _apply_overrides(raw: str | None) -> None:
+        changed = parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
+        if "interval_minutes" in changed and scheduler_manager is not None:
+            live_settings = getattr(settings, f"{component}_agent", None)
+            new_interval = getattr(live_settings, "interval_minutes", None)
+            if new_interval:
+                scheduler_manager.reschedule_cycle(int(new_interval), job_id=job_id)
+
+    if hasattr(agent, "set_control_overrides_applier"):
+        agent.set_control_overrides_applier(_apply_overrides)
+
+    # §7.50: apply stored overrides *before* scheduling so a persisted
+    # ``interval_minutes`` (or pairs/market-hours override) governs this run from its
+    # first scheduled tick — not only after some later cycle. Fail-soft.
+    try:
+        control_row = await storage.get_agent_control(component)
+        stored_raw = getattr(control_row, "config_override_json", None) if control_row else None
+        if stored_raw:
+            _apply_overrides(stored_raw)
+    except Exception as exc:  # noqa: BLE001 - a broken override must not stop startup
+        log.warning(
+            "stored config overrides not applied at startup; running on YAML defaults",
+            error=str(exc),
+        )
+
+    effective_interval = interval_minutes
+    live_agent_settings = getattr(settings, f"{component}_agent", None)
+    if live_agent_settings is not None and getattr(live_agent_settings, "interval_minutes", None):
+        effective_interval = int(live_agent_settings.interval_minutes)
+
     bar = timeframe_delta(timeframe) if timeframe else None
     if (
         bar is not None
         and not decide_on_new_bar_only
-        and interval_minutes * 60 < bar.total_seconds()
+        and effective_interval * 60 < bar.total_seconds()
     ):
         # §7.56: the LLM would re-judge the same closed bars many times per bar.
         log.warning(
             "cycle interval is shorter than the candle timeframe and "
             "decide_on_new_bar_only is off — the LLM re-evaluates each bar repeatedly",
-            interval_minutes=interval_minutes,
+            interval_minutes=effective_interval,
             timeframe=timeframe,
-            asks_per_bar=round(bar.total_seconds() / (interval_minutes * 60), 1),
-        )
-
-    agent = build_agent(pipeline, storage, risk_engine, llm_client)
-
-    # Control plane (§7.15): the agent re-reads its ``agent_control`` row each cycle;
-    # stored safe-config overrides land on *these* live objects via the closure below.
-    if hasattr(agent, "set_control_overrides_applier"):
-        agent.set_control_overrides_applier(
-            lambda raw: parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
+            asks_per_bar=round(bar.total_seconds() / (effective_interval * 60), 1),
         )
 
     if run_once:
@@ -193,7 +222,8 @@ async def run_agent(
     from .scheduler import AsyncSchedulerManager, create_async_scheduler
 
     manager = AsyncSchedulerManager(create_async_scheduler())
-    manager.schedule_cycle(agent.run_cycle, interval_minutes, job_id=job_id)
+    scheduler_manager = manager
+    manager.schedule_cycle(agent.run_cycle, effective_interval, job_id=job_id)
     if settings.storage.prune_interval_minutes > 0:
         manager.schedule_cycle(
             lambda: prune_storage(storage, settings.storage),

@@ -17,8 +17,13 @@ The same model serves both sides:
 
 Deliberate exclusions: ``execution.initial_cash`` (re-seeding a bankroll mid-run is
 misleading — restart to re-seed) and anything under ``llm``/``storage.database_path``.
-``interval_minutes`` lands in settings for the *next* restart; rescheduling the live
-APScheduler job is out of scope for v1 (documented).
+
+**§7.50 semantics:** every field resolves as *YAML baseline + override*, re-derived on
+every apply — removing an override reverts the live object to its YAML value instead of
+leaving a stale one pinned forever. The dashboard/API persist only fields that differ
+from the YAML (:func:`strip_noop_overrides`), so saving the form never freezes defaults.
+``interval_minutes`` applies immediately: the runner re-arms its APScheduler job when an
+apply reports the change, and applies stored overrides *before* scheduling at startup.
 """
 
 from __future__ import annotations
@@ -181,13 +186,23 @@ def parse_and_apply(
     when a pipeline is given, its executor's paper fee/slippage attributes. Raises
     :class:`pydantic.ValidationError` when the stored JSON no longer validates — the
     caller (agent) treats it fail-soft and keeps running on the previous config.
+
+    §7.50: each field resolves as *override if present, else the YAML baseline*
+    (``settings.agent_baselines`` / ``risk_baseline`` / ``execution_baseline``), so an
+    apply with the override removed (``raw_json`` empty) reverts live objects to YAML.
     """
-    overrides = parse_overrides(raw_json)
-    if overrides is None:
-        return []
+    overrides = parse_overrides(raw_json) or SafeConfigOverrides()
 
     changed: list[str] = []
     agent_settings = getattr(settings, f"{agent_key}_agent", None)
+    baseline_agent = (getattr(settings, "agent_baselines", None) or {}).get(agent_key)
+
+    def _effective(field: str) -> Any:
+        """Override value if present, else the YAML baseline value (§7.50)."""
+        value = getattr(overrides, field, None)
+        if value is None and baseline_agent is not None:
+            value = getattr(baseline_agent, field, None)
+        return value
 
     def _set(obj: Any, attr: str, value: Any) -> None:
         if value is None or obj is None:
@@ -197,42 +212,53 @@ def parse_and_apply(
             changed.append(attr)
 
     if agent_settings is not None:
-        _set(agent_settings, "interval_minutes", overrides.interval_minutes)
-        if overrides.pairs is not None:
-            agent_settings.pairs = list(overrides.pairs)
-            changed.append("pairs")
-        if overrides.symbols is not None:
-            agent_settings.symbols = list(overrides.symbols)
-            changed.append("symbols")
-        _set(agent_settings, "market_hours", overrides.market_hours)
-        _set(agent_settings, "decision_history_limit", overrides.decision_history_limit)
+        for field in ("interval_minutes", "market_hours", "decision_history_limit"):
+            _set(agent_settings, field, _effective(field))
+        for field in ("pairs", "symbols"):
+            value = _effective(field)
+            if value is not None and list(getattr(agent_settings, field, []) or []) != list(value):
+                setattr(agent_settings, field, list(value))
+                changed.append(field)
 
     # Tighten-only at apply time too (§7.43): the YAML may have been tightened after
     # the override was stored — a now-looser stored value is skipped, not applied.
-    loose = loosened_risk_fields(overrides.risk, getattr(settings, "risk_baseline", None))
+    base_risk = risk_baseline(settings)
+    loose = loosened_risk_fields(overrides.risk, base_risk)
     for name in RiskOverride.model_fields:
         if name in loose:
             logger.warning("stored risk override would loosen YAML limit; skipped", field=name)
             continue
-        _set(settings.risk, name, getattr(overrides.risk, name, None))
+        value = getattr(overrides.risk, name, None) if overrides.risk is not None else None
+        if value is None and base_risk is not None:
+            value = getattr(base_risk, name, None)
+        _set(settings.risk, name, value)
 
     if pipeline is not None:
         executor = pipeline.executor
-        fee = overrides.execution.paper_fee_pct if overrides.execution else None
-        slip = overrides.execution.paper_slippage_pct if overrides.execution else None
-        for attr, value in (("fee_pct", fee), ("slippage_pct", slip)):
+        base_exec = getattr(settings, "execution_baseline", None) or getattr(
+            settings, "execution", None
+        )
+        for attr, field in (("fee_pct", "paper_fee_pct"), ("slippage_pct", "paper_slippage_pct")):
+            value = getattr(overrides.execution, field, None) if overrides.execution else None
+            if value is None and base_exec is not None:
+                value = getattr(base_exec, field, None)
             if value is not None and hasattr(executor, attr) and getattr(executor, attr) != value:
                 setattr(executor, attr, value)
                 changed.append(attr)
-        if (
-            overrides.decision_history_limit is not None
-            and pipeline.decision_history_limit != overrides.decision_history_limit
-        ):
-            pipeline.decision_history_limit = overrides.decision_history_limit
+        history_limit = _effective("decision_history_limit")
+        if history_limit is not None and pipeline.decision_history_limit != history_limit:
+            pipeline.decision_history_limit = history_limit
             changed.append("decision_history_limit")
 
-    # The agent captured its symbol list at construction; follow the override.
-    if agent is not None:
+    # The agent captured its symbol list at construction; follow the *effective* list
+    # so removing a pairs/symbols override reverts it to YAML (§7.50).
+    if agent is not None and agent_settings is not None:
+        field = "pairs" if agent_key == "crypto" else "symbols"
+        effective_symbols = list(getattr(agent_settings, field, []) or [])
+        if effective_symbols:
+            agent.set_symbols(effective_symbols)
+    elif agent is not None:
+        # Untyped settings source (tests): legacy override-only path.
         new_symbols = (
             overrides.symbols
             if overrides.symbols is not None
@@ -244,6 +270,64 @@ def parse_and_apply(
     if changed:
         logger.info("config overrides applied", agent=agent_key, changed=changed)
     return changed
+
+
+def strip_noop_overrides(
+    overrides: SafeConfigOverrides,
+    settings: Settings,
+    agent_key: str,
+) -> SafeConfigOverrides:
+    """Drop override fields equal to their YAML baseline before persisting (§7.50).
+
+    The dashboard form displays merged (YAML ∘ override) values, so a naive save would
+    re-persist every field as an override — pinning defaults and silently overriding
+    later, stricter YAML edits. Persisting only genuine diffs keeps overrides meaning
+    what they say: "differs from the config file".
+    """
+    data = overrides.model_dump()
+
+    baseline_agent = (getattr(settings, "agent_baselines", None) or {}).get(agent_key)
+    if baseline_agent is not None:
+        for field in (
+            "interval_minutes",
+            "market_hours",
+            "decision_history_limit",
+            "pairs",
+            "symbols",
+        ):
+            value = data.get(field)
+            base = getattr(baseline_agent, field, _SENTINEL)
+            if value is not None and base is not _SENTINEL and _same(value, base):
+                data[field] = None
+
+    base_risk = risk_baseline(settings)
+    if base_risk is not None and data.get("risk") is not None:
+        kept = {
+            name: value
+            for name, value in data["risk"].items()
+            if value is not None and not _same(value, getattr(base_risk, name, _SENTINEL))
+        }
+        data["risk"] = kept or None
+
+    base_exec = getattr(settings, "execution_baseline", None)
+    if base_exec is not None and data.get("execution") is not None:
+        kept = {
+            name: value
+            for name, value in data["execution"].items()
+            if value is not None and not _same(value, getattr(base_exec, name, _SENTINEL))
+        }
+        data["execution"] = kept or None
+
+    return SafeConfigOverrides(**data)
+
+
+def _same(value: Any, base: Any) -> bool:
+    """Equality that treats lists order-sensitively but type-normalised."""
+    if base is _SENTINEL:
+        return False
+    if isinstance(value, list) or isinstance(base, list):
+        return list(value) == list(base)
+    return value == base
 
 
 def validate_overrides_payload(

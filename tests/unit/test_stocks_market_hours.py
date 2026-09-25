@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -208,3 +209,44 @@ class TestLocalNowTimezone:
 
         assert local_now.time() == time(0, 0)
         assert is_market_open(local_now, "09:00-16:30") is False
+
+
+class TestLiveMarketHoursOverride:
+    """§7.50: the guard reads its window from the *live* settings object each cycle.
+
+    Before §7.50 a ``market_hours`` safe-config override was written into settings and
+    never read again — the agent guarded with its construction-time copy forever.
+    """
+
+    def _make_agent(self, live_hours: str | None) -> StocksAgent:
+        return StocksAgent(
+            pipeline=MagicMock(),
+            storage=MagicMock(),
+            risk_engine=MagicMock(),
+            llm_client=MagicMock(),
+            symbols=["AAPL"],
+            market_hours="09:00-16:30",
+            market_timezone="UTC",  # keep local == UTC so fixtures stay simple
+            agent_settings=SimpleNamespace(market_hours=live_hours),
+        )
+
+    def _skip_at(self, agent: StocksAgent, when: datetime) -> str | None:
+        with patch.object(stocks_agent_module, "datetime") as patched:
+            patched.now.return_value = when
+            return agent._skip_cycle_reason()
+
+    def test_window_follows_the_live_settings_object(self) -> None:
+        wed_0700 = datetime(2026, 1, 14, 7, 0, tzinfo=UTC)  # Wednesday morning
+        agent = self._make_agent(live_hours="06:00-08:00")
+        assert self._skip_at(agent, wed_0700) is None  # live window covers 07:00
+
+        agent._agent_settings.market_hours = "13:00-14:00"  # override changes…
+        assert self._skip_at(agent, wed_0700) == "outside trading window"
+
+    def test_cleared_override_falls_back_to_constructor_window(self) -> None:
+        agent = self._make_agent(live_hours=None)
+        # No live value → the constructor's 09:00-16:30 governs, not silence.
+        assert self._skip_at(agent, datetime(2026, 1, 14, 10, 0, tzinfo=UTC)) is None
+        assert self._skip_at(agent, datetime(2026, 1, 14, 7, 0, tzinfo=UTC)) == (
+            "outside trading window"
+        )

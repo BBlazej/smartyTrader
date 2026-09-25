@@ -69,7 +69,11 @@ class BaseTradingAgent:
         # Control plane (§7.15): the component name keys the ``agent_control`` row;
         # the runner injects an applier closure over its own Settings/pipeline.
         self._control_agent = component
-        self._overrides_applier: Callable[[str], None] | None = None
+        self._overrides_applier: Callable[[str | None], None] | None = None
+        # §7.50: the applier must also run when stored overrides are *removed*, so the
+        # live objects revert to YAML. Track what was last applied and fire on any
+        # transition (including → empty), not only when a non-empty blob is present.
+        self._applied_overrides_raw: str | None = None
         # §7.44: back-off between order-row write attempts (tests set zeros).
         self._persist_retry_delays: tuple[float, ...] = (0.2, 1.0)
 
@@ -81,8 +85,9 @@ class BaseTradingAgent:
             )
             self._symbols = symbols
 
-    def set_control_overrides_applier(self, applier: Callable[[str], None] | None) -> None:
-        """Install a hook applying stored safe-config overrides (raw JSON) each cycle."""
+    def set_control_overrides_applier(self, applier: Callable[[str | None], None] | None) -> None:
+        """Install a hook applying stored safe-config overrides (raw JSON, ``None`` when
+        cleared — the hook reverts live objects to YAML, §7.50). Runs on every change."""
         self._overrides_applier = applier
 
     # ── Market-specific hooks ─────────────────────────────────
@@ -203,17 +208,21 @@ class BaseTradingAgent:
         Strict ``is True`` / equality checks — an un-configured or stubbed row must
         never accidentally trigger actions.
         """
-        raw_overrides = getattr(control, "config_override_json", None)
-        if raw_overrides:
-            if self._overrides_applier is not None:
-                try:
-                    self._overrides_applier(raw_overrides)
-                except Exception as exc:  # noqa: BLE001 - bad override must not kill the cycle
-                    self._logger.warning(
-                        "config overrides rejected; keeping previous config", error=str(exc)
-                    )
+        raw_overrides = getattr(control, "config_override_json", None) or None
+        if raw_overrides != self._applied_overrides_raw and self._overrides_applier is not None:
+            # Fires on any transition — stored blob changed *or* cleared (None reverts
+            # the live objects to their YAML baseline, §7.50).
+            try:
+                self._overrides_applier(raw_overrides)
+            except Exception as exc:  # noqa: BLE001 - bad override must not kill the cycle
+                self._logger.warning(
+                    "config overrides rejected; keeping previous config", error=str(exc)
+                )
             else:
-                self._logger.debug("stored config overrides ignored (no applier installed)")
+                # Only mark applied on success; a rejected blob retries next cycle.
+                self._applied_overrides_raw = raw_overrides
+        elif raw_overrides and self._overrides_applier is None:
+            self._logger.debug("stored config overrides ignored (no applier installed)")
 
         if getattr(control, "close_all_requested", False) is True:
             await self._close_all_positions()

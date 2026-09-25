@@ -24,6 +24,7 @@ class Scheduler(Protocol):
     """The subset of APScheduler the agent relies on (all sync)."""
 
     def add_job(self, func: JobFunc, trigger: str, **kwargs: Any) -> Any: ...
+    def reschedule_job(self, job_id: str, **kwargs: Any) -> Any: ...
     def start(self, wait: bool = False) -> None: ...
     def shutdown(self, wait: bool = True) -> None: ...
 
@@ -49,6 +50,27 @@ class AsyncSchedulerManager:
             coalesce=True,
         )
         logger.info("scheduled job", job_id=job_id, interval_minutes=interval_minutes)
+
+    def reschedule_cycle(self, interval_minutes: int, job_id: str) -> bool:
+        """Re-arm an existing interval job with a new period (§7.50).
+
+        Applied safe-config changes to ``interval_minutes`` must take effect without a
+        restart — otherwise the override lands in settings and is silently ignored.
+        Fail-soft: a missing job (or any scheduler hiccup) warns and returns False;
+        the running loop keeps its current cadence rather than dying.
+        """
+        try:
+            self._scheduler.reschedule_job(job_id, trigger="interval", minutes=interval_minutes)
+        except Exception as exc:  # noqa: BLE001 - never kill the loop over a re-arm
+            logger.warning(
+                "could not reschedule job; keeping current cadence",
+                job_id=job_id,
+                interval_minutes=interval_minutes,
+                error=str(exc),
+            )
+            return False
+        logger.info("rescheduled job", job_id=job_id, interval_minutes=interval_minutes)
+        return True
 
     def start(self) -> None:
         self._scheduler.start()

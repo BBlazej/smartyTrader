@@ -39,6 +39,48 @@ class TestScheduleCycle:
         assert kwargs["coalesce"] is True
 
 
+class TestRescheduleCycle:
+    """§7.50: an ``interval_minutes`` override must re-arm the live job, not just
+    write to settings nobody reads."""
+
+    def test_reschedules_with_new_interval(
+        self, manager: AsyncSchedulerManager, mock_scheduler: MagicMock
+    ) -> None:
+        ok = manager.reschedule_cycle(12, job_id="crypto_cycle")
+
+        assert ok is True
+        mock_scheduler.reschedule_job.assert_called_once_with(
+            "crypto_cycle", trigger="interval", minutes=12
+        )
+
+    def test_missing_job_is_fail_soft(
+        self, manager: AsyncSchedulerManager, mock_scheduler: MagicMock
+    ) -> None:
+        mock_scheduler.reschedule_job.side_effect = RuntimeError("JobLookupError")
+
+        assert manager.reschedule_cycle(12, job_id="crypto_cycle") is False  # never raises
+
+    async def test_real_apscheduler_honours_the_rearmed_trigger(self) -> None:
+        """Pin the real APScheduler contract behind :meth:`reschedule_cycle`."""
+        from src.core.scheduler import create_async_scheduler
+
+        scheduler = create_async_scheduler()
+        scheduler.add_job(
+            AsyncMock(),
+            trigger="interval",
+            minutes=5,
+            id="crypto_cycle",
+            max_instances=1,
+            coalesce=True,
+        )
+        manager = AsyncSchedulerManager(scheduler)
+
+        assert manager.reschedule_cycle(12, job_id="crypto_cycle") is True
+        job = scheduler.get_job("crypto_cycle")
+        assert job is not None
+        assert job.trigger.interval.total_seconds() == 12 * 60
+
+
 class TestStart:
     def test_starts_scheduler(
         self, manager: AsyncSchedulerManager, mock_scheduler: MagicMock

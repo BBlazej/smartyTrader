@@ -41,6 +41,7 @@ from ..core.control_config import (
     parse_overrides,
     risk_baseline,
     safe_config_view,
+    strip_noop_overrides,
     validate_overrides_payload,
 )
 from ..core.storage import Storage
@@ -450,9 +451,14 @@ def create_dashboard_app(
                 ),
                 status_code=400,
             )
+        # §7.50: the form shows merged (YAML ∘ override) values, so strip fields that
+        # merely echo the YAML baseline — a save then persists only genuine overrides
+        # and never pins defaults against later, stricter YAML edits.
+        model = strip_noop_overrides(model, settings, agent)
+        dumped = model.model_dump(exclude_none=True)
         stored = model.model_dump_json(exclude_none=True)
-        await storage.set_config_override(agent, stored if stored != "{}" else None)
-        logger.info("dashboard config saved", agent=agent)
+        await storage.set_config_override(agent, stored if dumped else None)
+        logger.info("dashboard config saved", agent=agent, fields=list(dumped))
         return RedirectResponse(url=f"/config/{agent}?saved=1", status_code=303)
 
     # ── Control (writes the DB latch; agent acts next cycle) ───

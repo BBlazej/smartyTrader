@@ -9,8 +9,10 @@
     Risk limits can only be <strong>tightened</strong> relative to <code>settings.yaml</code>;
     loosening a limit or disabling stop-loss/take-profit enforcement is a YAML edit.
     LLM endpoints, credentials and secrets are structurally absent and cannot be read or
-    written. Changes apply on the agent's next cycle
-    (<code>interval_minutes</code> applies after restart).
+    written. Changes apply on the agent's next cycle; an <code>interval_minutes</code>
+    change re-arms the schedule immediately (no restart). Only fields that differ from
+    <code>settings.yaml</code> are stored as overrides — saving unchanged values stores
+    nothing, and clearing a field back to its YAML value removes its override.
   </p>
 
   <div class="pill-row">
@@ -26,7 +28,8 @@
   {% if ov %}
     <p class="muted" style="margin-top:1rem;">Active overrides:
       <code>{{ ov | tojson }}</code>
-      — clear the field(s) and save to revert a value to its YAML default.</p>
+      — clear the field(s) (or set them back to the YAML value) and save to revert; the
+      agent re-applies <code>settings.yaml</code> on its next cycle.</p>
   {% endif %}
 
   <form method="post" action="/config/{{ agent }}" style="max-width:760px;">

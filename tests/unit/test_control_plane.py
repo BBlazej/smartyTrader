@@ -11,7 +11,12 @@ from pydantic import ValidationError
 
 from src.agents.base_agent import BaseTradingAgent
 from src.core.config import Settings
-from src.core.control_config import SafeConfigOverrides, parse_and_apply, parse_overrides
+from src.core.control_config import (
+    SafeConfigOverrides,
+    parse_and_apply,
+    parse_overrides,
+    strip_noop_overrides,
+)
 from src.core.decision_pipeline import PipelineResult
 from src.core.models import ClosedEntry, OrderResult, Position
 from src.core.storage import Storage
@@ -154,6 +159,106 @@ class TestApplyOverrides:
         assert parse_and_apply(settings, "crypto", None) == []
 
 
+class TestRevertOnOverrideRemoval:
+    """§7.50: every apply resolves as *YAML baseline + override*, so removing an
+    override reverts the live objects instead of leaving stale values pinned."""
+
+    def test_removal_reverts_settings_risk_and_pipeline_to_yaml(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+
+        class _Pipeline:
+            executor = SimpleNamespace(fee_pct=0.0026, slippage_pct=0.001)
+            decision_history_limit = 10
+
+        pipeline = _Pipeline()
+
+        parse_and_apply(
+            settings,
+            "crypto",
+            '{"interval_minutes": 30, "decision_history_limit": 3, '
+            '"risk": {"min_confidence": 0.75}, "execution": {"paper_fee_pct": 0.005}}',
+            pipeline=pipeline,
+        )
+        assert settings.crypto_agent.interval_minutes == 30
+        assert settings.risk.min_confidence == 0.75
+        assert pipeline.executor.fee_pct == 0.005
+
+        changed = parse_and_apply(settings, "crypto", None, pipeline=pipeline)
+
+        assert settings.crypto_agent.interval_minutes == 5  # back to YAML
+        assert settings.crypto_agent.decision_history_limit == 10
+        assert settings.risk.min_confidence == 0.6
+        assert pipeline.decision_history_limit == 10
+        assert set(changed) >= {"interval_minutes", "decision_history_limit", "min_confidence"}
+
+    def test_partial_override_keeps_yaml_for_every_other_field(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        parse_and_apply(settings, "crypto", '{"interval_minutes": 30}')
+        # A later save that only changes pairs must not leave the old interval override
+        # alive — the stored blob is now the *complete* override set.
+        parse_and_apply(settings, "crypto", '{"pairs": ["ETH/USDT"]}')
+        assert settings.crypto_agent.interval_minutes == 5
+        assert settings.crypto_agent.pairs == ["ETH/USDT"]
+
+    def test_market_hours_override_reverts_to_yaml_window(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        parse_and_apply(settings, "stocks", '{"market_hours": "06:00-07:00"}')
+        assert settings.stocks_agent.market_hours == "06:00-07:00"
+        parse_and_apply(settings, "stocks", None)
+        assert settings.stocks_agent.market_hours == "08:00-22:00"
+
+    def test_symbols_revert_to_yaml_on_removal(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        seen: list[list[str]] = []
+        agent = SimpleNamespace(set_symbols=lambda s: seen.append(s))
+
+        parse_and_apply(settings, "stocks", '{"symbols": ["MSFT"]}', agent=agent)
+        parse_and_apply(settings, "stocks", None, agent=agent)
+
+        assert settings.stocks_agent.symbols == ["AAPL"]  # YAML baseline restored
+        assert seen == [["MSFT"], ["AAPL"]]  # the agent follows both ways
+
+
+class TestStripNoopOverrides:
+    """§7.50: persisting only genuine diffs — a form pre-filled with defaults must
+    not pin them and silently defeat later, stricter YAML edits."""
+
+    def test_fields_equal_to_yaml_are_dropped_others_kept(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        model = SafeConfigOverrides.model_validate(
+            {
+                "interval_minutes": 5,  # == YAML → dropped
+                "decision_history_limit": 3,
+                "risk": {"min_confidence": 0.6, "max_position_pct": 0.05},
+                "execution": {"paper_fee_pct": 0.0},
+            }
+        )
+        stripped = strip_noop_overrides(model, settings, "crypto")
+        dumped = stripped.model_dump(exclude_none=True)
+        assert dumped == {
+            "decision_history_limit": 3,
+            "risk": {"max_position_pct": 0.05},
+        }
+
+    def test_all_defaults_strip_to_empty(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        model = SafeConfigOverrides.model_validate(
+            {
+                "interval_minutes": 5,
+                "pairs": ["BTC/USDT"],
+                "risk": {"min_confidence": 0.6},
+            }
+        )
+        assert strip_noop_overrides(model, settings, "crypto").model_dump(exclude_none=True) == {}
+
+    def test_stocks_fields_strip_against_their_own_baseline(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        model = SafeConfigOverrides.model_validate(
+            {"interval_minutes": 60, "market_hours": "08:00-22:00", "symbols": ["AAPL"]}
+        )
+        assert strip_noop_overrides(model, settings, "stocks").model_dump(exclude_none=True) == {}
+
+
 def _agent_with(pipeline, stor):
     risk_engine = AsyncMock()
     # ``RiskEngine.update_daily_value`` is synchronous in the real class; an
@@ -254,6 +359,52 @@ class TestAgentControlIntegration:
 
         assert len(results) == 1
         pipeline.run.assert_awaited_once()
+
+    async def test_applier_fires_once_per_distinct_blob_then_on_clear(self) -> None:
+        # §7.50: no re-apply of an unchanged blob (waste), but a *cleared* blob must
+        # still reach the applier as None — that call is what reverts live objects.
+        pipeline = AsyncMock()
+        pipeline.run.return_value = PipelineResult(symbol="BTC/USDT")
+        stor = AsyncMock()
+        blob = '{"interval_minutes": 30}'
+        stor.get_agent_control.return_value = SimpleNamespace(
+            state="running", close_all_requested=False, config_override_json=blob
+        )
+        applied: list[str | None] = []
+        agent = _agent_with(pipeline, stor)
+        agent.set_control_overrides_applier(applied.append)
+
+        await agent.run_cycle()
+        await agent.run_cycle()  # unchanged blob → not re-applied
+        assert applied == [blob]
+
+        stor.get_agent_control.return_value = SimpleNamespace(
+            state="running", close_all_requested=False, config_override_json=None
+        )
+        await agent.run_cycle()
+        assert applied == [blob, None]  # removal → revert call lands
+
+    async def test_failed_apply_is_retried_next_cycle(self) -> None:
+        pipeline = AsyncMock()
+        pipeline.run.return_value = PipelineResult(symbol="BTC/USDT")
+        stor = AsyncMock()
+        stor.get_agent_control.return_value = SimpleNamespace(
+            state="running", close_all_requested=False, config_override_json="{}"
+        )
+        attempts: list[str] = []
+
+        def flaky(raw: str | None) -> None:
+            attempts.append(raw)
+            if len(attempts) == 1:
+                raise ValueError("transient")
+
+        agent = _agent_with(pipeline, stor)
+        agent.set_control_overrides_applier(flaky)
+
+        await agent.run_cycle()
+        assert attempts == ["{}"]  # failed → not marked applied
+        await agent.run_cycle()
+        assert attempts == ["{}", "{}"]  # retried, now sticks
 
     async def test_unconfigured_mock_storage_never_triggers_actions(self) -> None:
         # Regression: AsyncMock's auto-created attributes must not look like a

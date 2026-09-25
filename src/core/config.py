@@ -40,7 +40,15 @@ class Settings:
         # only *tighten* relative to these. ``self.risk`` itself is mutated in place
         # by applied overrides, so it cannot serve as the baseline.
         self.risk_baseline = RiskSettings(**raw["risk"])
+        # Untouched YAML copies for the same reason (§7.50): safe-config overrides are
+        # applied as *baseline + override* every time, so removing an override reverts
+        # the live object instead of leaving a stale value pinned forever.
+        self.agent_baselines: dict[str, AgentConfig] = {
+            "crypto": AgentConfig(**raw["crypto_agent"]),
+            "stocks": AgentConfig(**raw["stocks_agent"]),
+        }
         self.execution = ExecutionSettings(**raw.get("execution", {}))
+        self.execution_baseline = ExecutionSettings(**raw.get("execution", {}))
         self.storage = StorageSettings(**raw["storage"])
         self.monitoring = MonitoringSettings(**raw["monitoring"])
         self.control_api = ControlApiSettings(**raw.get("control_api", {}))

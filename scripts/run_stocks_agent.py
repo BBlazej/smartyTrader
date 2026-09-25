@@ -125,7 +125,9 @@ async def run(run_once: bool = False) -> None:
             llm_client=llm_client,
             symbols=settings.stocks_agent.symbols,
             timeframe=settings.stocks_agent.timeframe or "1d",
-            market_hours=settings.stocks_agent.market_hours or "09:00-16:30",
+            # §7.50: hand the agent the live settings object (the control plane mutates
+            # it) instead of a constructor copy — market-hours overrides then apply.
+            agent_settings=settings.stocks_agent,
             market_timezone=settings.stocks_agent.market_timezone or DEFAULT_MARKET_TIMEZONE,
             market_holidays=settings.stocks_agent.market_holidays,
             alerts=build_alerts(settings),

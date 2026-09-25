@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..core.decision_pipeline import DecisionPipeline
@@ -126,6 +127,7 @@ class StocksAgent(BaseTradingAgent):
         market_timezone: str = DEFAULT_MARKET_TIMEZONE,
         market_holidays: Iterable[str] | None = None,
         alerts: AlertManager | None = None,
+        agent_settings: Any | None = None,
     ) -> None:
         super().__init__(
             pipeline=pipeline,
@@ -143,15 +145,28 @@ class StocksAgent(BaseTradingAgent):
         self._market_timezone = market_timezone
         # Validated eagerly: a malformed holiday raises here (startup), not per cycle.
         self._holidays = parse_holidays(market_holidays)
+        # §7.50 single reader: the runner passes its live ``settings.stocks_agent`` —
+        # the very object the control plane mutates with safe-config overrides — so a
+        # market-hours override takes effect on the next cycle instead of being lost
+        # against this constructor copy. Without it (tests, standalone use) the
+        # constructor value is the source of truth.
+        self._agent_settings = agent_settings
 
     # ── Market-hours guard ────────────────────────────────────
 
+    @property
+    def _effective_market_hours(self) -> str:
+        """The live market-hours window — settings object first (§7.50)."""
+        if self._agent_settings is not None:
+            return getattr(self._agent_settings, "market_hours", None) or self._market_hours
+        return self._market_hours
+
     def _start_log_fields(self) -> dict[str, object]:
-        return {"market_hours": self._market_hours}
+        return {"market_hours": self._effective_market_hours}
 
     def _skip_cycle_reason(self) -> str | None:
         """Weekend / holiday / outside-window reason, or ``None`` when tradable."""
-        return market_closed_reason(self._local_now(), self._market_hours, self._holidays)
+        return market_closed_reason(self._local_now(), self._effective_market_hours, self._holidays)
 
     def _local_now(self) -> datetime:
         """Current time in the market's local zone (falls back to UTC).

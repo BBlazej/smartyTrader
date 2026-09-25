@@ -223,7 +223,9 @@ engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest
 and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
 with win-rate/confidence stats, agent health (heartbeat-derived — stale agents show
 `offline`, not the last latch value); HTMX pause/resume/close-all controls and a
-safe-config editor (risk limits can only be tightened) — all writing the same `agent_control` latches, behind
+safe-config editor (risk limits can only be tightened; overrides apply immediately —
+including re-arming the cycle interval — are stored only as diffs against
+`settings.yaml`, and removing one reverts the live value; §7.50) — all writing the same `agent_control` latches, behind
 Host-allowlist, cross-origin and CSRF-token guards (§7.43); `scripts/run_dashboard.py`,
 §7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
 and an on-demand backtester on one shared SQLite volume — rows are agent-scoped, so each agent

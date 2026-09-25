@@ -171,6 +171,27 @@ class TestConfigEndpoints:
         assert merged["config"]["overrides"]["risk"]["min_confidence"] == 0.75
         assert merged["agent_config"]["decision_history_limit"] == 3
 
+    async def test_put_defaults_only_stores_nothing(self, env) -> None:
+        # §7.50: a body that merely echoes the YAML baseline persists no override.
+        resp = await env.client.put(
+            "/api/config", json={"interval_minutes": 5, "risk": {"min_confidence": 0.6}}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == {}
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
+    async def test_put_back_to_defaults_clears_the_override(self, env) -> None:
+        # §7.50: setting a field back to its YAML value removes the override rather
+        # than pinning the value forever.
+        await env.client.put("/api/config", json={"interval_minutes": 30})
+        row = await env.storage.get_agent_control("crypto")
+        assert row is not None and "interval_minutes" in (row.config_override_json or "")
+
+        await env.client.put("/api/config", json={"interval_minutes": 5})
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
     async def test_put_credential_key_is_rejected(self, env) -> None:
         resp = await env.client.put("/api/config", json={"api_key": "hunter2"})
         assert resp.status_code == 400

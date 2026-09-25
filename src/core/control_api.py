@@ -33,6 +33,7 @@ from .control_config import (
     parse_overrides,
     risk_baseline,
     safe_config_view,
+    strip_noop_overrides,
     validate_overrides_payload,
 )
 from .storage import Storage
@@ -238,13 +239,17 @@ def create_control_app(
         model, error = validate_overrides_payload(payload, baseline=risk_baseline(settings))
         if model is None:
             raise HTTPException(status_code=400, detail=error)
+        # §7.50: persist only fields that genuinely differ from YAML — saving a form
+        # pre-filled with defaults must not pin them against later YAML edits.
+        model = strip_noop_overrides(model, settings, agent_name)
+        dumped = model.model_dump(exclude_none=True)
         stored = model.model_dump_json(exclude_none=True)
-        await storage.set_config_override(agent_name, stored if stored != "{}" else None)
-        logger.info("control API: config overrides saved", agent=agent_name)
+        await storage.set_config_override(agent_name, stored if dumped else None)
+        logger.info("control API: config overrides saved", agent=agent_name, fields=list(dumped))
         return {
             "agent": agent_name,
-            "saved": model.model_dump(exclude_none=True),
-            "applies": "next cycle (interval_minutes applies after restart)",
+            "saved": dumped,
+            "applies": "next cycle (interval_minutes re-arms the schedule immediately)",
         }
 
     return app
