@@ -42,6 +42,13 @@ class FillRecord:
     quantity: float
     price: float
     decision_id: int | None = None
+    # The entry decision's SL/TP (buys only) — venue executors re-arm local exit
+    # levels from these after a restart (§7.58).
+    stop_loss: float | None = None
+    take_profit: float | None = None
+
+
+ExitLevels = tuple[float | None, float | None]
 
 
 @dataclass
@@ -191,3 +198,30 @@ class PositionTracker:
             for decision_id, pnl in per_entry.items()
         ]
         return outcome
+
+
+def replay_fills(
+    tracker: PositionTracker, fills: list[FillRecord]
+) -> tuple[int, dict[str, ExitLevels]]:
+    """Replay chronological historical fills into ``tracker`` (§7.25 / §7.58).
+
+    Long book only, like every executor's live path: a sell consumes lots FIFO
+    (its historical outcome was already backfilled then — only the ledger state
+    after it matters). Returns ``(replayed, exit_levels)`` where ``exit_levels``
+    mirrors the live rule — the latest buy's SL/TP per symbol, dropped once the
+    symbol is flat.
+    """
+    replayed = 0
+    levels: dict[str, ExitLevels] = {}
+    for f in fills:
+        if f.side == "buy":
+            tracker.on_buy(f.symbol, f.quantity, f.price, decision_id=f.decision_id)
+            levels[f.symbol] = (f.stop_loss, f.take_profit)
+        elif f.side == "sell":
+            tracker.on_sell(f.symbol, f.quantity, f.price)
+        else:  # guard against bad rows
+            continue
+        replayed += 1
+        if tracker.quantity(f.symbol) <= 1e-12:
+            levels.pop(f.symbol, None)
+    return replayed, levels

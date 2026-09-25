@@ -9,6 +9,9 @@ orders and portfolio snapshots persist. Without this module every restart silent
 * zeroed the daily-loss baseline and the losing-streak/cooldown state —
   weakening every stateful guard exactly when it matters.
 
+Venue executors (Kraken/XTB) get their local FIFO ledger, exit levels and pending
+orders back the same way (§7.58).
+
 The runners call :func:`rehydrate_from_storage` once, after storage is
 initialized and before any cycle runs. Everything here is fail-soft: a broken
 row must never prevent the agent from starting (a fresh-but-safe state beats no
@@ -23,8 +26,9 @@ from typing import Any
 
 import structlog
 
+from ..execution.kraken_executor import PendingOrderRecord
 from ..execution.position_tracker import FillRecord
-from .models import Position
+from .models import OrderSide, Position
 from .risk_engine import RiskEngine
 from .storage import Storage
 
@@ -85,6 +89,100 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
         synthetic_lots=(counts or {}).get("synthetic_lots"),
     )
     return True
+
+
+def _is_paper_order(order_id: str) -> bool:
+    """Paper fills (``paper-…`` ids) never happened at a venue (§7.58)."""
+    return order_id.startswith("paper-")
+
+
+async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
+    """Restore a venue executor's FIFO ledger, exit levels and pending orders (§7.58).
+
+    Venue executors report live books, but their *local* state — FIFO lots (realized
+    PnL + entry attribution on closes; Kraken spot positions themselves, §7.41), the
+    entry SL/TP they enforce (§7.9) and orders left open (§7.28) — was memory-only,
+    so a restart silently dropped stops and left open orders ``pending`` forever.
+
+    * ``load_fills(fills)`` ← this agent's filled venue orders (paper-era fills of the
+      same agent are skipped — they never happened at the venue), with the latest
+      buy per symbol carrying its entry decision's SL/TP.
+    * ``load_pending_orders(orders)`` ← this agent's ``pending`` rows; the first cycle's
+      reconciliation then resolves them.
+
+    Each hook is optional and fail-soft: a failure logs and leaves that piece empty.
+    """
+    load_fills = getattr(executor, "load_fills", None)
+    if callable(load_fills):
+        try:
+            rows = [
+                o
+                for o in await storage.get_filled_orders()
+                if o.price is not None and not _is_paper_order(o.order_id)
+            ]
+            last_buy: dict[str, int] = {}
+            for o in rows:
+                if o.side == "buy" and o.decision_id is not None:
+                    last_buy[o.symbol] = o.decision_id
+            levels = await storage.get_exit_levels(list(last_buy.values()))
+            fills: list[FillRecord] = []
+            for o in rows:
+                # Only each symbol's latest buy needs its levels (replay keeps the last).
+                sl, tp = (
+                    levels.get(o.decision_id or -1, (None, None))
+                    if o.side == "buy"
+                    else (None, None)
+                )
+                fills.append(
+                    FillRecord(
+                        symbol=o.symbol,
+                        side=o.side,
+                        quantity=float(o.quantity),
+                        price=float(o.price),
+                        decision_id=o.decision_id,
+                        stop_loss=sl,
+                        take_profit=tp,
+                    )
+                )
+            counts = load_fills(fills)
+            logger.info(
+                "venue fill ledger rehydrated from storage",
+                replayed_fills=(counts or {}).get("replayed_fills"),
+                open_symbols=(counts or {}).get("open_symbols"),
+            )
+        except Exception as exc:  # noqa: BLE001 — startup must not die on a bad row
+            logger.warning("failed to rehydrate venue fill ledger", error=str(exc))
+
+    load_pending = getattr(executor, "load_pending_orders", None)
+    if callable(load_pending):
+        try:
+            rows = [
+                o
+                for o in await storage.get_pending_orders()
+                if o.order_id and not _is_paper_order(o.order_id)
+            ]
+            levels = await storage.get_exit_levels(
+                [o.decision_id for o in rows if o.decision_id is not None]
+            )
+            pending: list[PendingOrderRecord] = []
+            for o in rows:
+                sl, tp = levels.get(o.decision_id or -1, (None, None))
+                pending.append(
+                    PendingOrderRecord(
+                        order_id=o.order_id,
+                        symbol=o.symbol,
+                        side=OrderSide(o.side),
+                        quantity=float(o.quantity),
+                        decision_id=o.decision_id,
+                        stop_loss=sl,
+                        take_profit=tp,
+                    )
+                )
+            if pending:
+                load_pending(pending)
+                logger.info("pending venue orders re-tracked from storage", count=len(pending))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to reload pending venue orders", error=str(exc))
 
 
 async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> None:
@@ -151,4 +249,5 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
 async def rehydrate_from_storage(risk_engine: RiskEngine, executor: Any, storage: Storage) -> None:
     """One startup call covering every rehydratable component (see module docstring)."""
     await rehydrate_paper_executor(executor, storage)
+    await rehydrate_venue_executor(executor, storage)
     await rehydrate_risk_engine(risk_engine, storage)

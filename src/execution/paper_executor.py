@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from ..core.models import OrderResult, OrderSide, Position
-from .position_tracker import FillRecord, PositionTracker
+from .position_tracker import FillRecord, PositionTracker, replay_fills
 
 
 class PaperExecutor:
@@ -264,17 +264,9 @@ class PaperExecutor:
         self._positions = {p.symbol: p for p in positions}
 
         tracker = PositionTracker()
-        replayed = 0
-        for f in fills or []:
-            if f.side == "buy":
-                tracker.on_buy(f.symbol, f.quantity, f.price, decision_id=f.decision_id)
-            elif f.side == "sell":
-                # Outcome PnL of historical sells was already backfilled into the
-                # decisions then; we only need the ledger state after them.
-                tracker.on_sell(f.symbol, f.quantity, f.price)
-            else:  # pragma: no cover - guard against bad rows
-                continue
-            replayed += 1
+        # Exit levels ride on the snapshot's positions here, so the replay's own
+        # level map is not needed.
+        replayed, _ = replay_fills(tracker, fills or [])
 
         synthetic = 0
         for p in positions:

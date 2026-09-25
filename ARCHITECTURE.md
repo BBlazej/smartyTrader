@@ -106,7 +106,7 @@ src/
 │   │                         # Storage facade composed in storage.py, re-exported from __init__
 │   ├── decision_pipeline.py  # fetch → mark positions → exit-level check → indicators → prompt → LLM → risk gate → execute → persist
 │   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
-│   ├── rehydration.py        # startup pass: paper book, daily-loss baseline, streak/cooldown from persisted rows (§7.7)
+│   ├── rehydration.py        # startup pass: paper book, venue ledgers/levels/pending orders (§7.58), daily-loss baseline, streak/cooldown from persisted rows (§7.7)
 │   ├── retention.py          # fail-soft storage pruning wrapper (startup + scheduled) (§7.12)
 │   ├── runner.py             # shared runner lifecycle: enabled-gate, single-instance flock (§7.52), wiring, control API startup, --once/scheduled loops (§7.13)
 │   ├── backtester.py         # DecisionReplayBacktester — same risk/fee model over stored decisions, zero LLM calls (§7.14)
@@ -391,7 +391,7 @@ erDiagram
 
 Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark (escapable only via the audited `drawdown_resets` row, §7.53). Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
-Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), venue executors' local state (§7.58: `load_fills` replays the agent's non-paper filled orders into the Kraken/XTB FIFO ledger and re-arms each open symbol's latest entry SL/TP from its decision row; `load_pending_orders` re-tracks `pending` rows so the first cycle's reconciliation resolves them), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
@@ -725,4 +725,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **751 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **758 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

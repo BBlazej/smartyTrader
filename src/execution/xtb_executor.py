@@ -33,7 +33,7 @@ from typing import Any, Protocol
 import structlog
 
 from ..core.models import ClosedEntry, OrderResult, OrderSide, Position, PositionSide
-from .position_tracker import PositionTracker
+from .position_tracker import FillRecord, PositionTracker, replay_fills
 
 logger = structlog.get_logger()
 
@@ -126,6 +126,20 @@ class XTBExecutor:
         except Exception as exc:  # noqa: BLE001
             logger.warning("xtb client close failed (continuing shutdown)", error=str(exc))
 
+    def load_fills(self, fills: list[FillRecord]) -> dict[str, int]:
+        """Rebuild the FIFO ledger + exit levels from stored fills (restart, §7.58).
+
+        Positions themselves come from the venue; the ledger restores realized
+        PnL + entry attribution on post-restart closes, and the levels re-arm
+        pre-restart SL/TP enforcement. Long book only (the agent is long-only,
+        §7.40). ``fills`` must be this venue's own fills, chronological.
+        """
+        tracker = PositionTracker()
+        replayed, levels = replay_fills(tracker, fills)
+        self._tracker = tracker
+        self._exit_levels = levels
+        return {"replayed_fills": replayed, "open_symbols": len(tracker.symbols())}
+
     async def place_order(
         self,
         symbol: str,
@@ -188,8 +202,8 @@ class XTBExecutor:
                 result.realized_pnl = outcome.gross_pnl
                 result.closed_entries = outcome.closed_entries
             else:
-                # Holdings opened before a restart leave no local lots; report no
-                # outcome rather than a fabricated break-even one (§7.8).
+                # Holdings opened outside the agent (or with pruned history) leave
+                # no local lots; report no outcome rather than a fabricated break-even one (§7.8).
                 logger.debug(
                     "closing sell has no locally tracked lots; PnL not reported",
                     symbol=symbol,

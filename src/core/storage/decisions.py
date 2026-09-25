@@ -95,6 +95,24 @@ class DecisionMixin:
                 "failed to accumulate realized pnl", decision_id=decision_id, error=str(exc)
             )
 
+    async def get_exit_levels(
+        self, decision_ids: list[int]
+    ) -> dict[int, tuple[float | None, float | None]]:
+        """``decision_id → (stop_loss, take_profit)`` for the given decisions (§7.58).
+
+        The entry signal's levels are what the pipeline passed to ``place_order``, so
+        venue executors re-arm local SL/TP enforcement from them after a restart.
+        Decision ids are globally unique, so no agent scope is needed here.
+        """
+        if not decision_ids:
+            return {}
+        async with await self._session() as session:
+            stmt = select(
+                LLMDecisionRow.id, LLMDecisionRow.stop_loss, LLMDecisionRow.take_profit
+            ).where(LLMDecisionRow.id.in_(set(decision_ids)))
+            result = await session.execute(stmt)
+            return {row.id: (row.stop_loss, row.take_profit) for row in result.all()}
+
     async def get_closed_decisions(
         self, limit: int = 50, agent: str | None = None
     ) -> list[LLMDecisionRow]:

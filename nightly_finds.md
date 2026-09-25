@@ -63,8 +63,9 @@ fixed unless explicitly marked.
    a position opened before a restart closes afterwards with *no* realized-PnL
    attribution (we deliberately report nothing rather than a fabricated number).
    Fix would be replaying `orders` rows (buy fills carry `decision_id`, price and
-   quantity) into the tracker at startup. **Status: fixed in §7.25** — filled-order
-   replay rebuilds the FIFO ledgers with entry-decision ids across restarts.
+   quantity) into the tracker at startup. **Status: fixed in §7.25 (paper) and §7.58
+   (Kraken/XTB)** — filled-order replay rebuilds the FIFO ledgers with entry-decision ids
+   across restarts; venue executors also get their exit levels and pending orders back.
 
 8. **XTB tracking only works for priced orders** (`xtb_executor.py`): the xAPI seam's
    `create_order` payload is mapped without a fill price, so a *market* order that
@@ -168,3 +169,24 @@ fixed unless explicitly marked.
     differences only — no semantics). Caught by `ruff format --check .` while landing the
     §7.28 reconciliation work; fixed repo-wide in that commit. **Status: fixed.** Consider
     running `ruff format .` (not just `ruff check .`) as part of the per-change routine.
+
+## Found while implementing §7.57–§7.58 (2026-09-25)
+
+18. **Switching an agent between paper and a venue mixes their histories**
+    (`core/rehydration.py`): both executors of one agent write to the same agent-scoped
+    `orders`/`portfolio_snapshots` rows. §7.58's venue replay skips `paper-…` fills, but
+    the reverse is not guarded — a crypto agent that ran keyed on Kraken and is restarted
+    on paper rehydrates the venue's last snapshot as *paper* cash/positions and replays
+    venue fills into the paper ledger; a Kraken sandbox → live switch likewise replays
+    sandbox fills into the live ledger (capped by live balances, so a pre-existing balance
+    can surface as a phantom position). **Status: open** — the rows need an execution-venue
+    tag (e.g. `orders.venue`) so each executor replays only its own history.
+
+19. **Partial fills of cancelled venue orders never reach the ledger or the DB**
+    (`kraken_executor.reconcile_open_orders`, `storage.update_order_status`): only a
+    terminal `closed` status feeds the FIFO ledger; an order that partly filled and was then
+    cancelled is recorded `cancelled` with its filled amount dropped. The stored `quantity`
+    also stays the *requested* size even when the reconciled fill differs, so the §7.58
+    replay rebuilds lots from requested, not filled, quantities. **Status: open** — feed
+    `filled > 0` of cancelled orders through the ledger and let `update_order_status`
+    write the filled quantity.

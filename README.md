@@ -89,7 +89,7 @@ src/
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live)
 │   ├── storage/              # SQLite (SQLAlchemy + aiosqlite) repository package (§7.36)
 │   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → persist decision → execute
-│   ├── rehydration.py        # Restores paper book + risk trackers from SQLite at startup
+│   ├── rehydration.py        # Restores paper book, venue ledgers/exit levels/pending orders + risk trackers at startup
 │   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
 │   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
 │   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
@@ -210,7 +210,8 @@ against real ccxt payloads** (nested balances, fill price/time recording,
 graceful spot `fetch_positions` degradation; §7.41 removed any accidental path to
 real money — keyed live smoke still pending),
 and **restart-safe paper state** (cash/positions rehydrate from the latest
-portfolio snapshot; daily-loss baseline and losing-streak/cooldown rebuild from
+portfolio snapshot; Kraken/XTB rebuild their FIFO ledgers, entry SL/TP and pending
+orders from stored rows, §7.58; daily-loss baseline and losing-streak/cooldown rebuild from
 persisted outcomes; `execution.initial_cash` is config-driven), and **honest
 outcome attribution** (one shared FIFO tracker gives every executor's closing
 fills a `realized_pnl` plus per-entry-decision `closed_entries`, so the PnL of a
@@ -235,7 +236,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**751 tests passing at ~94% coverage.**
+**758 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

@@ -34,7 +34,7 @@ from typing import Any, Protocol
 import structlog
 
 from ..core.models import OrderResult, OrderSide, Position, PositionSide
-from .position_tracker import PositionTracker
+from .position_tracker import FillRecord, PositionTracker, replay_fills
 
 logger = structlog.get_logger()
 
@@ -63,6 +63,23 @@ class _PendingOrder:
     # on every reconcile until the agent confirms it persisted the transition, so a
     # DB error can never lose it (and the ledger is only ever fed once).
     resolved: OrderResult | None = None
+
+
+@dataclass
+class PendingOrderRecord:
+    """A stored ``status='pending'`` order reloaded at startup (§7.58).
+
+    ``_open_orders`` lives in memory, so without this an order left open across a
+    restart was never polled again and its row stayed ``pending`` forever.
+    """
+
+    order_id: str
+    symbol: str
+    side: OrderSide
+    quantity: float
+    decision_id: int | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 class ExchangeClient(Protocol):
@@ -116,9 +133,9 @@ class KrakenExecutor:
         # entry decisions via closed_entries (§7.8). Venue fees are not in the
         # create_order payload, so tracked PnL is gross of commission.
         self._tracker = PositionTracker()
-        # Exit levels from our own entry signals (§7.9). Kraken spot reports no
-        # positions at all, so this map only matters once position visibility
-        # lands; kept for parity with the other executors.
+        # Exit levels from our own entry signals (§7.9), attached to the spot
+        # positions reported from the ledger (§7.41); rebuilt from storage at
+        # startup by :meth:`load_fills` (§7.58).
         self._exit_levels: dict[str, tuple[float | None, float | None]] = {}
 
     @property
@@ -211,6 +228,43 @@ class KrakenExecutor:
             )
         return result
 
+    def load_fills(self, fills: list[FillRecord]) -> dict[str, int]:
+        """Rebuild the FIFO ledger + exit levels from stored fills (restart, §7.58).
+
+        Called once at startup, before any cycle trades on this executor: closes
+        after a restart report realized PnL + ``closed_entries`` again, spot
+        positions reappear with their cost basis, and pre-restart SL/TP are
+        enforced. ``fills`` must be this venue's own fills, chronological.
+        """
+        tracker = PositionTracker()
+        replayed, levels = replay_fills(tracker, fills)
+        self._tracker = tracker
+        self._exit_levels = levels
+        return {"replayed_fills": replayed, "open_symbols": len(tracker.symbols())}
+
+    def load_pending_orders(self, orders: list[PendingOrderRecord]) -> int:
+        """Re-track orders stored as ``pending`` so reconciliation polls them (§7.58).
+
+        The first cycle's :meth:`reconcile_open_orders` then resolves each one
+        through the normal two-phase path (ledger fed once, row patched).
+        """
+        for o in orders:
+            if not o.order_id:
+                continue
+            self._order_symbols[o.order_id] = o.symbol
+            self._open_orders.setdefault(
+                o.order_id,
+                _PendingOrder(
+                    symbol=o.symbol,
+                    side=o.side,
+                    quantity=o.quantity,
+                    decision_id=o.decision_id,
+                    stop_loss=o.stop_loss,
+                    take_profit=o.take_profit,
+                ),
+            )
+        return len(self._open_orders)
+
     def _record_fill(
         self,
         symbol: str,
@@ -231,8 +285,8 @@ class KrakenExecutor:
         if self._tracker.quantity(symbol) > 0:
             outcome = self._tracker.on_sell(symbol, filled_qty, fill)
             return outcome.gross_pnl, list(outcome.closed_entries)
-        # Nothing tracked (e.g. holdings opened before a restart): better
-        # no outcome than a fabricated break-even one (§7.8).
+        # Nothing tracked (e.g. holdings bought outside the agent, or history
+        # pruned before a restart): better no outcome than a fabricated break-even one (§7.8).
         logger.debug(
             "closing sell has no locally tracked lots; PnL not reported",
             symbol=symbol,

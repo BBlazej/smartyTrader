@@ -142,3 +142,18 @@ class OrderMixin:
                 stmt = stmt.where(OrderRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def get_pending_orders(self, agent: str | None = None) -> list[OrderRow]:
+        """Orders still stored as ``pending``, oldest first (§7.58).
+
+        Reloaded into a venue executor's reconciliation set at startup — an order
+        left open across a restart would otherwise stay ``pending`` forever.
+        Agent-scoped (§7.39).
+        """
+        async with await self._session() as session:
+            stmt = select(OrderRow).where(OrderRow.status == "pending").order_by(OrderRow.id.asc())
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())

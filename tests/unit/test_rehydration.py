@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -12,10 +13,13 @@ from src.core.rehydration import (
     rehydrate_from_storage,
     rehydrate_paper_executor,
     rehydrate_risk_engine,
+    rehydrate_venue_executor,
 )
 from src.core.risk_engine import RiskEngine
 from src.core.storage import Storage
+from src.execution.kraken_executor import KrakenExecutor
 from src.execution.paper_executor import PaperExecutor
+from src.execution.xtb_executor import XTBExecutor
 
 
 @pytest.fixture()
@@ -410,3 +414,196 @@ class TestLiveOutcomeCoverage:
         await pipeline.close_all_positions()
 
         assert engine._loss_tracker.consecutive_losses == 1
+
+
+# ── §7.58: venue executors (Kraken/XTB) ────────────────────────
+
+
+def _spot_kraken() -> tuple[KrakenExecutor, AsyncMock]:
+    client = AsyncMock()
+    client.fetch_positions.side_effect = Exception("kraken fetchPositions() not supported")
+    client.fetch_balance.return_value = {"total": {"BTC": 10.0, "ETH": 10.0}}
+    return KrakenExecutor(client), client
+
+
+async def _entry_decision(storage: Storage, symbol: str, sl: float, tp: float) -> int:
+    return await storage.save_llm_decision(
+        symbol=symbol,
+        action="buy",
+        confidence=0.9,
+        reasoning="entry",
+        stop_loss=sl,
+        take_profit=tp,
+        risk_verdict="approved",
+        risk_reason=None,
+    )
+
+
+async def _fill(
+    storage: Storage,
+    order_id: str,
+    symbol: str,
+    side: str,
+    qty: float,
+    price: float,
+    decision_id: int | None = None,
+    status: str = "filled",
+) -> None:
+    await storage.save_order(
+        order_id=order_id,
+        symbol=symbol,
+        side=side,
+        quantity=qty,
+        price=price,
+        status=status,
+        decision_id=decision_id,
+    )
+
+
+class TestVenueRehydration:
+    """§7.58: FIFO ledger, exit levels and pending orders survive a venue restart."""
+
+    async def test_kraken_spot_book_levels_and_attribution_survive(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            d1 = await _entry_decision(storage, "BTC/USDT", 90.0, 150.0)
+            d2 = await _entry_decision(storage, "BTC/USDT", 95.0, 160.0)
+            await _fill(storage, "K1", "BTC/USDT", "buy", 1.0, 100.0, d1)
+            await _fill(storage, "K2", "BTC/USDT", "buy", 1.0, 110.0, d2)
+            await _fill(storage, "K3", "BTC/USDT", "sell", 0.5, 120.0)
+            # A paper-era fill of the same agent never happened at the venue.
+            await _fill(storage, "paper-abc", "BTC/USDT", "buy", 5.0, 1.0, d1)
+
+            executor, client = _spot_kraken()
+            await rehydrate_from_storage(RiskEngine(RiskSettings()), executor, storage)
+
+            (pos,) = await executor.get_positions()
+            assert pos.quantity == pytest.approx(1.5)
+            assert pos.avg_entry_price == pytest.approx((0.5 * 100.0 + 1.0 * 110.0) / 1.5)
+            # The latest entry's plan is enforced again (live rule: last buy wins).
+            assert (pos.stop_loss, pos.take_profit) == (95.0, 160.0)
+
+            client.create_order.return_value = {
+                "id": "K4",
+                "status": "closed",
+                "average": 130.0,
+                "filled": 1.5,
+            }
+            sell = await executor.place_order("BTC/USDT", OrderSide.SELL, 1.5, price=130.0)
+            assert sell.realized_pnl == pytest.approx(0.5 * 30.0 + 1.0 * 20.0)
+            entries = {e.entry_decision_id: e.pnl for e in sell.closed_entries}
+            assert entries == {d1: pytest.approx(15.0), d2: pytest.approx(20.0)}
+            assert executor._exit_levels == {}
+        finally:
+            await storage.close()
+
+    async def test_flat_symbol_has_no_lots_or_levels(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            d1 = await _entry_decision(storage, "ETH/USDT", 9.0, 15.0)
+            await _fill(storage, "E1", "ETH/USDT", "buy", 2.0, 10.0, d1)
+            await _fill(storage, "E2", "ETH/USDT", "sell", 2.0, 12.0)
+
+            executor, _ = _spot_kraken()
+            await rehydrate_venue_executor(executor, storage)
+            assert await executor.get_positions() == []
+            assert executor._exit_levels == {}
+        finally:
+            await storage.close()
+
+    async def test_only_own_agent_fills_are_replayed(self, tmp_db_path: str) -> None:
+        other = Storage(tmp_db_path, agent="stocks")
+        await other.initialize()
+        await _fill(other, "X1", "BTC/USDT", "buy", 1.0, 100.0)
+        await other.close()
+
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            executor, _ = _spot_kraken()
+            await rehydrate_venue_executor(executor, storage)
+            assert await executor.get_positions() == []
+        finally:
+            await storage.close()
+
+    async def test_pending_order_is_reconciled_after_restart(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            d1 = await _entry_decision(storage, "BTC/USDT", 90.0, 150.0)
+            await _fill(storage, "OPEN-1", "BTC/USDT", "buy", 1.0, 100.0, d1, status="pending")
+
+            executor, client = _spot_kraken()
+            await rehydrate_venue_executor(executor, storage)
+
+            client.fetch_order.return_value = {
+                "id": "OPEN-1",
+                "status": "closed",
+                "average": 101.0,
+                "filled": 1.0,
+            }
+            (update,) = await executor.reconcile_open_orders()
+            client.fetch_order.assert_awaited_once_with("OPEN-1", "BTC/USDT")
+            assert (update.status, update.price) == ("filled", pytest.approx(101.0))
+            # The late fill entered the ledger with its entry decision + plan.
+            (pos,) = await executor.get_positions()
+            assert (pos.quantity, pos.stop_loss, pos.take_profit) == (1.0, 90.0, 150.0)
+            assert executor.pending_decision_id("OPEN-1") == d1
+            # And it is cancellable (symbol known again).
+            assert "OPEN-1" in executor._order_symbols
+        finally:
+            await storage.close()
+
+    async def test_xtb_levels_reattach_to_venue_positions(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="stocks")
+        await storage.initialize()
+        try:
+            d1 = await _entry_decision(storage, "AAPL", 95.0, 130.0)
+            await _fill(storage, "101", "AAPL", "buy", 2.0, 100.0, d1)
+
+            client = AsyncMock()
+            client.get_positions.return_value = [
+                {"symbol": "AAPL", "quantity": 2.0, "avg_entry_price": 100.0}
+            ]
+            executor = XTBExecutor(client)
+            await rehydrate_from_storage(RiskEngine(RiskSettings()), executor, storage)
+
+            (pos,) = await executor.get_positions()
+            assert (pos.stop_loss, pos.take_profit) == (95.0, 130.0)
+
+            client.get_open_trades.return_value = [
+                {"order": 101, "symbol": "AAPL", "cmd": 0, "volume": 2.0}
+            ]
+            client.close_trade.return_value = {"order_id": "102", "status": "filled"}
+            sell = await executor.place_order("AAPL", OrderSide.SELL, 2.0, price=90.0)
+            assert sell.realized_pnl == pytest.approx(-20.0)
+            assert [e.entry_decision_id for e in sell.closed_entries] == [d1]
+        finally:
+            await storage.close()
+
+    async def test_storage_failure_is_fail_soft(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            executor, _ = _spot_kraken()
+            with (
+                patch.object(storage, "get_filled_orders", side_effect=RuntimeError("db gone")),
+                patch.object(storage, "get_pending_orders", side_effect=RuntimeError("db gone")),
+            ):
+                await rehydrate_venue_executor(executor, storage)  # must not raise
+            assert await executor.get_positions() == []
+            assert executor._open_orders == {}
+        finally:
+            await storage.close()
+
+    async def test_paper_executor_is_untouched(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        try:
+            executor = PaperExecutor(initial_cash=1_000.0)
+            await rehydrate_venue_executor(executor, storage)  # no hooks → no-op
+            assert executor.cash == pytest.approx(1_000.0)
+        finally:
+            await storage.close()
