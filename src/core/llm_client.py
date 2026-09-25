@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import httpx
 import structlog
+from pydantic import ValidationError
 
 from .config import LLMSettings
 from .models import TradeSignal
@@ -106,7 +108,17 @@ class LLMClient:
                 resp.raise_for_status()
 
                 data = resp.json()
-                raw_content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                raw_content = choice["message"]["content"]
+                if choice.get("finish_reason") == "length":
+                    # Cut off at max_tokens — usually a long reasoning block ate
+                    # the budget before the JSON (§7.57). Name it in the log so
+                    # the fix (raise max_tokens) is obvious.
+                    logger.warning(
+                        "llm_response_truncated",
+                        max_tokens=self.settings.max_tokens,
+                        attempt=attempt,
+                    )
 
                 # Size guard (§7.33): a runaway generation must fail the attempt
                 # (retry → eventual HOLD fallback), never reach the parser.
@@ -180,21 +192,74 @@ def _derive_base_url(endpoint: str) -> str:
     return endpoint + "/"
 
 
+# Reasoning-model scratchpads (Qwen3, DeepSeek-R1 …). Some LM Studio builds put
+# them in ``content`` ahead of the answer, so they must never reach ``json.loads``
+# (§7.57). Matched case-insensitively; ``<thinking>`` is a common variant.
+_THINK_BLOCK_RE = re.compile(r"<(think|thinking)>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_THINK_CLOSE_RE = re.compile(r"</(?:think|thinking)>", re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<(?:think|thinking)>", re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Drop reasoning blocks: closed ones, an unopened preamble, an unclosed tail."""
+    text = _THINK_BLOCK_RE.sub("", text)
+    # Chat templates that open the think block themselves emit only the closing
+    # tag — everything before the last one is reasoning.
+    closes = list(_THINK_CLOSE_RE.finditer(text))
+    if closes:
+        text = text[closes[-1].end() :]
+    # A block still open was cut off (``max_tokens``): a JSON *draft* inside it
+    # is not an answer and must never be traded on.
+    opened = _THINK_OPEN_RE.search(text)
+    if opened:
+        text = text[: opened.start()]
+    return text.strip()
+
+
+def _json_objects(text: str) -> list[dict[str, Any]]:
+    """Every top-level, balanced ``{…}`` object in ``text``, in order.
+
+    ``raw_decode`` does the balancing, so braces inside JSON strings (a
+    ``reasoning`` quoting ``{x}``) cannot derail it; nested objects are skipped
+    because the scan resumes after each decoded top-level object.
+    """
+    decoder = json.JSONDecoder()
+    found: list[dict[str, Any]] = []
+    i = text.find("{")
+    while i != -1:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        i = text.find("{", end)
+    return found
+
+
 def _parse_signal(raw: str) -> TradeSignal:
-    """Extract JSON from LLM response and validate into TradeSignal."""
-    text = raw.strip()
+    """Extract the trade-signal JSON from an LLM response and validate it.
 
-    # Handle markdown code blocks (with or without language tag like ```json)
-    if "```" in text:
-        start = text.find("```") + 3
-        # Skip the language tag if present (e.g. "json\n")
-        first_newline = text[start:].find("\n")
-        if first_newline != -1:
-            start += first_newline + 1
-        end = text.rfind("```")
-        text = text[start:end].strip()
+    Tolerates reasoning blocks, markdown fences and prose around the object
+    (§7.57): the *last* balanced object that validates as a ``TradeSignal``
+    wins — models that restate or correct themselves put the final answer last.
+    Raises ``json.JSONDecodeError`` when no object is present at all (e.g. a
+    reasoning block truncated by ``max_tokens``) and the validation error of the
+    last candidate when none validates, so the caller's retry path runs.
+    """
+    text = _strip_reasoning(raw)
+    candidates = _json_objects(text)
+    if not candidates:
+        raise json.JSONDecodeError("No JSON object in LLM response", text, 0)
 
-    data = json.loads(text)
-    # The fallback marker is ours alone — never let model output forge it.
-    data.pop("is_fallback", None)
-    return TradeSignal(**data)
+    last_error: Exception | None = None
+    for data in reversed(candidates):
+        # The fallback marker is ours alone — never let model output forge it.
+        data.pop("is_fallback", None)
+        try:
+            return TradeSignal(**data)
+        except (ValidationError, TypeError) as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error

@@ -99,7 +99,7 @@ src/
 ├── core/
 │   ├── models.py             # Pydantic models + Executor Protocol (single source of truth for contracts)
 │   ├── config.py             # YAML + env settings loader (Settings validates config/settings.yaml)
-│   ├── llm_client.py         # LM Studio HTTP client (retry, JSON parse, HOLD fallback, llm_exchange audit log)
+│   ├── llm_client.py         # LM Studio HTTP client (retry, think-tolerant JSON parse §7.57, HOLD fallback, llm_exchange audit log)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
 │   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
 │   │                         # models/engine/snapshots/decisions/orders/control/pruning mixins,
@@ -725,4 +725,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **465 tests passing at ~93% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **751 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from src.core.config import LLMSettings
 from src.core.llm_client import LLMClient, _parse_signal, _resolve_chat_url
@@ -59,6 +60,62 @@ class TestParseSignal:
         # model puts there is ignored (§7.8 — audit rows must stay trustworthy).
         raw = '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.5, "reasoning": "x", "is_fallback": true}'
         assert _parse_signal(raw).is_fallback is False
+
+
+_SIG = '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.8, "reasoning": "breakout"}'
+
+
+class TestParseSignalReasoningModels:
+    """§7.57: think blocks, prose and multiple objects around the answer."""
+
+    def test_think_block_before_json(self) -> None:
+        raw = "<think>\nRSI is 72, maybe {overbought}? Let me weigh it.\n</think>\n\n" + _SIG
+        assert _parse_signal(raw).action.value == "buy"
+
+    def test_think_block_with_draft_json_is_ignored(self) -> None:
+        draft = '{"symbol": "BTC/USDT", "action": "sell", "confidence": 0.9, "reasoning": "d"}'
+        raw = f"<think>First idea: {draft}. No wait.</think>{_SIG}"
+        assert _parse_signal(raw).action.value == "buy"
+
+    def test_unopened_close_tag_drops_preamble(self) -> None:
+        # Templates that open the think block themselves emit only "</think>".
+        draft = '{"symbol": "BTC/USDT", "action": "sell", "confidence": 0.9, "reasoning": "d"}'
+        raw = f"reasoning here {draft} more reasoning</think>\n{_SIG}"
+        assert _parse_signal(raw).action.value == "buy"
+
+    def test_truncated_think_block_never_yields_a_draft(self) -> None:
+        # max_tokens cut the reasoning off: a JSON draft inside it is no answer.
+        raw = "<think>Maybe " + _SIG + " but let me also check the MACD and"
+        with pytest.raises(json.JSONDecodeError):
+            _parse_signal(raw)
+
+    def test_leading_and_trailing_prose(self) -> None:
+        raw = f"Here is my decision:\n{_SIG}\nHope this helps!"
+        assert _parse_signal(raw).confidence == 0.8
+
+    def test_braces_inside_strings_do_not_break_extraction(self) -> None:
+        raw = (
+            'Answer: {"symbol": "BTC/USDT", "action": "hold", "confidence": 0.4, '
+            '"reasoning": "range {60k-62k} holds; no } breakout"}'
+        )
+        assert _parse_signal(raw).reasoning == "range {60k-62k} holds; no } breakout"
+
+    def test_last_valid_object_wins(self) -> None:
+        first = '{"symbol": "BTC/USDT", "action": "sell", "confidence": 0.6, "reasoning": "a"}'
+        raw = f"Initially: {first}\nCorrected final answer: {_SIG}"
+        assert _parse_signal(raw).action.value == "buy"
+
+    def test_non_signal_trailing_object_falls_back_to_earlier_signal(self) -> None:
+        raw = f'{_SIG}\nMetadata: {{"tokens": 12}}'
+        assert _parse_signal(raw).action.value == "buy"
+
+    def test_no_valid_signal_raises_validation_error(self) -> None:
+        with pytest.raises(ValidationError):
+            _parse_signal('{"action": "moon", "confidence": 2}')
+
+    def test_fence_after_think_block(self) -> None:
+        raw = f"<think>hmm</think>\n```json\n{_SIG}\n```"
+        assert _parse_signal(raw).symbol == "BTC/USDT"
 
 
 def _resp(content: str) -> MagicMock:
@@ -124,6 +181,23 @@ class TestSeedAndSizeGuard:
             signal = await client.ask_trade_signal("s", "u")
         assert signal.is_fallback is False
         assert len(signal.reasoning) > 4000
+
+    async def test_truncated_completion_is_logged_and_falls_back(self, client: LLMClient) -> None:
+        resp = MagicMock()
+        resp.json.return_value = {
+            "choices": [
+                {"message": {"content": "<think>long reasoning"}, "finish_reason": "length"}
+            ]
+        }
+        resp.raise_for_status = MagicMock()
+        with (
+            patch.object(client._client, "post", new=AsyncMock(return_value=resp)),
+            patch("src.core.llm_client.logger") as log,
+        ):
+            signal = await client.ask_trade_signal("s", "u")
+        assert signal.is_fallback is True
+        events = [c.args[0] for c in log.warning.call_args_list]
+        assert "llm_response_truncated" in events
 
 
 class TestAskTradeSignal:
