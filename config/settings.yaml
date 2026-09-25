@@ -5,7 +5,7 @@ llm:
   max_retries: 3
   use_json_schema: false   # enable once the local model accepts response_format
   temperature: 0.2         # sampling temperature sent with every request (§7.19)
-  max_tokens: 1024         # completion cap per request (§7.19)
+  max_tokens: 40000         # completion cap per request (§7.19)
   retry_backoff_base_seconds: 1.0   # exponential backoff between retries; 0 = off
   seed: null               # set an integer for deterministic evaluation (§7.33); null omits it
   max_response_chars: 20000  # raw completion size cap before parsing (§7.33); 0 = guard off
