@@ -33,7 +33,18 @@ class TestSettingsLoad:
         s = Settings(config_path=config_path)
 
         assert s.crypto_agent.enabled is True
-        assert "BTC/USDT" in s.crypto_agent.pairs
+        # §7.64: OKX Europe, EUR-quoted pairs (USDT isn't tradable for EEA accounts).
+        assert s.crypto_agent.exchange == "myokx"
+        assert s.crypto_agent.quote_currency == "EUR"
+        assert s.crypto_agent.pairs and all(p.endswith("/EUR") for p in s.crypto_agent.pairs)
+
+    def test_pairs_must_match_quote_currency(self) -> None:
+        from src.core.config import AgentConfig
+
+        with pytest.raises(ValueError, match="quote_currency"):
+            AgentConfig(enabled=True, pairs=["BTC/EUR", "ETH/USDT"], quote_currency="EUR")
+        ok = AgentConfig(enabled=True, pairs=["BTC/EUR"], quote_currency="eur")
+        assert ok.quote_currency == "EUR"
 
     def test_stocks_agent_disabled_by_default(self, config_path: str) -> None:
         s = Settings(config_path=config_path)

@@ -70,7 +70,7 @@ class TestLoadDotenv:
 
 
 def _settings(
-    exchange: str = "kraken",
+    exchange: str = "myokx",
     testnet: bool = True,
     fee_pct: float = 0.0026,
     slippage_pct: float = 0.001,
@@ -78,7 +78,7 @@ def _settings(
 ) -> SimpleNamespace:
     """A minimal settings stub with just the attributes the helper reads."""
     return SimpleNamespace(
-        crypto_agent=SimpleNamespace(exchange=exchange, testnet=testnet),
+        crypto_agent=SimpleNamespace(exchange=exchange, testnet=testnet, quote_currency="EUR"),
         execution=SimpleNamespace(
             paper_fee_pct=fee_pct,
             paper_slippage_pct=slippage_pct,
@@ -100,15 +100,15 @@ class TestBuildDataAndExecution:
         settings = _settings()
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
-            patch("scripts.run_crypto_agent.create_kraken_executor") as mock_executor,
+            patch("scripts.run_crypto_agent.create_ccxt_executor") as mock_executor,
         ):
             _, executor, mode = _build_data_and_execution(settings)
 
         assert mode == "paper"
         assert isinstance(executor, PaperExecutor)
         # The data feed must be built against live public data (no sandbox mode).
-        mock_provider.assert_called_once_with(exchange_id="kraken", testnet=False)
-        # No API key → the Kraken executor is never constructed.
+        mock_provider.assert_called_once_with(exchange_id="myokx", testnet=False)
+        # No API key → the keyed executor is never constructed.
         mock_executor.assert_not_called()
 
     # ── §7.41: keyed execution never reaches real money by accident ──────
@@ -118,11 +118,11 @@ class TestBuildDataAndExecution:
         order_provider = SimpleNamespace(client=object())
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
-            patch("scripts.run_crypto_agent.create_kraken_executor") as mock_executor,
+            patch("scripts.run_crypto_agent.create_ccxt_executor") as mock_executor,
             patch("scripts.run_crypto_agent.exchange_has_sandbox", return_value=has_sandbox),
             patch.dict(
                 os.environ,
-                {"KRAKEN_API_KEY": "key", "KRAKEN_API_SECRET": "secret", **env},
+                {"EXCHANGE_API_KEY": "key", "EXCHANGE_API_SECRET": "secret", **env},
                 clear=True,
             ),
         ):
@@ -134,22 +134,55 @@ class TestBuildDataAndExecution:
     def test_key_on_exchange_without_sandbox_stays_on_paper(self) -> None:
         from src.execution.paper_executor import PaperExecutor
 
-        # The shipped Kraken default: testnet: true — but Kraken spot has no sandbox.
-        executor, mode, provider = self._keyed(_settings(testnet=True), has_sandbox=False, env={})
+        # testnet: true on an exchange ccxt has no sandbox for → never keyed.
+        executor, mode, provider = self._keyed(
+            _settings(exchange="kraken", testnet=True), has_sandbox=False, env={}
+        )
         assert mode == "paper" and isinstance(executor, PaperExecutor)
         assert provider.call_count == 1  # the keyed client is never even built
 
     def test_key_with_real_sandbox_uses_it(self) -> None:
+        # The shipped default: OKX Europe demo trading (§7.64), incl. the passphrase.
         executor, mode, provider = self._keyed(
-            _settings(exchange="binance", testnet=True), has_sandbox=True, env={}
+            _settings(testnet=True),
+            has_sandbox=True,
+            env={"EXCHANGE_API_PASSPHRASE": "phrase"},
         )
-        assert mode == "binance-sandbox" and executor == "KEYED"
+        assert mode == "myokx-sandbox" and executor == "KEYED"
         assert provider.call_args_list[1].kwargs == {
-            "exchange_id": "binance",
+            "exchange_id": "myokx",
             "testnet": True,
             "api_key": "key",
             "api_secret": "secret",
+            "api_passphrase": "phrase",
         }
+
+    def test_keyed_executor_gets_quote_currency_and_venue_tag(self) -> None:
+        order_provider = SimpleNamespace(client=object())
+        with (
+            patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
+            patch("scripts.run_crypto_agent.create_ccxt_executor") as mock_executor,
+            patch("scripts.run_crypto_agent.exchange_has_sandbox", return_value=True),
+            patch.dict(os.environ, {"EXCHANGE_API_KEY": "key"}, clear=True),
+        ):
+            mock_provider.side_effect = [SimpleNamespace(client=object()), order_provider]
+            _build_data_and_execution(_settings(testnet=True))
+        mock_executor.assert_called_once_with(
+            order_provider.client, quote_currency="EUR", venue="myokx-sandbox"
+        )
+
+    def test_old_kraken_env_names_are_not_read(self) -> None:
+        from src.execution.paper_executor import PaperExecutor
+
+        # §7.64: Kraken was dropped without fallbacks — its variables configure nothing.
+        with (
+            patch("scripts.run_crypto_agent.create_ccxt_provider"),
+            patch("scripts.run_crypto_agent.create_ccxt_executor") as mock_executor,
+            patch.dict(os.environ, {"KRAKEN_API_KEY": "key"}, clear=True),
+        ):
+            _, executor, mode = _build_data_and_execution(_settings(testnet=True))
+        assert mode == "paper" and isinstance(executor, PaperExecutor)
+        mock_executor.assert_not_called()
 
     def test_testnet_false_alone_never_trades_live(self) -> None:
         from src.execution.paper_executor import PaperExecutor
@@ -171,7 +204,7 @@ class TestBuildDataAndExecution:
             has_sandbox=False,
             env={"LIVE_TRADING_ACK": "I_ACCEPT_REAL_MONEY_RISK"},
         )
-        assert mode == "kraken-LIVE" and executor == "KEYED"
+        assert mode == "myokx-LIVE" and executor == "KEYED"
         assert provider.call_args_list[1].kwargs["testnet"] is False
 
     def test_paper_executor_gets_configured_costs(self) -> None:
@@ -180,7 +213,7 @@ class TestBuildDataAndExecution:
         settings = _settings(fee_pct=0.005, slippage_pct=0.002, initial_cash=25_000.0)
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider"),
-            patch("scripts.run_crypto_agent.create_kraken_executor"),
+            patch("scripts.run_crypto_agent.create_ccxt_executor"),
         ):
             _, executor, _ = _build_data_and_execution(settings)
 
@@ -190,21 +223,20 @@ class TestBuildDataAndExecution:
         # initial_cash is config-driven (§7.7), not hardcoded in the executor.
         assert executor.cash == 25_000.0
 
-    def test_exchange_defaults_to_kraken_when_unset(self) -> None:
+    def test_unset_exchange_fails_fast(self) -> None:
         settings = _settings(exchange=None)  # type: ignore[arg-type]
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
-            patch("scripts.run_crypto_agent.create_kraken_executor"),
+            pytest.raises(SystemExit, match="crypto_agent.exchange"),
         ):
             _build_data_and_execution(settings)
-
-        assert mock_provider.call_args_list[0].kwargs["exchange_id"] == "kraken"
+        mock_provider.assert_not_called()
 
     def test_explicit_exchange_is_honored(self) -> None:
         settings = _settings(exchange="binance")
         with (
             patch("scripts.run_crypto_agent.create_ccxt_provider") as mock_provider,
-            patch("scripts.run_crypto_agent.create_kraken_executor"),
+            patch("scripts.run_crypto_agent.create_ccxt_executor"),
         ):
             _build_data_and_execution(settings)
 
@@ -221,8 +253,9 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
         llm=SimpleNamespace(),
         crypto_agent=SimpleNamespace(
             enabled=enabled,
-            exchange="kraken",
+            exchange="myokx",
             testnet=True,
+            quote_currency="EUR",
             interval_minutes=5,
             pairs=["BTC/USDT"],
             decision_history_limit=10,

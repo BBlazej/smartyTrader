@@ -227,16 +227,48 @@ class TestClose:
 
 
 class TestSandboxDetection:
-    """§7.41: Kraken spot has no ccxt sandbox — say so instead of a TypeError."""
+    """§7.41/§7.64: sandbox availability is explicit — an actionable error, not a TypeError."""
 
-    def test_kraken_spot_has_no_sandbox_but_futures_does(self) -> None:
+    def test_okx_europe_has_a_demo_and_some_spot_venues_do_not(self) -> None:
         from src.data.ccxt_provider import exchange_has_sandbox
 
+        assert exchange_has_sandbox("myokx") is True
         assert exchange_has_sandbox("kraken") is False
-        assert exchange_has_sandbox("krakenfutures") is True
 
     def test_requesting_a_missing_sandbox_is_an_actionable_error(self) -> None:
         from src.data.ccxt_provider import create_ccxt_provider
 
         with pytest.raises(ValueError, match="no sandbox"):
             create_ccxt_provider(exchange_id="kraken", testnet=True)
+
+
+class TestOkxEuropeClient:
+    """§7.64: the keyed OKX Europe client — EU host, passphrase, demo header. Offline."""
+
+    async def test_passphrase_host_and_demo_mode(self) -> None:
+        from src.data.ccxt_provider import create_ccxt_provider
+
+        provider = create_ccxt_provider(
+            exchange_id="myokx",
+            testnet=True,
+            api_key="k",
+            api_secret="s",
+            api_passphrase="p",
+        )
+        try:
+            client = provider.client
+            assert (client.apiKey, client.secret, client.password) == ("k", "s", "p")
+            assert client.hostname == "eea.okx.com"
+            # OKX demo trading = same host + this header on every request.
+            assert client.headers.get("x-simulated-trading") == "1"
+        finally:
+            await provider.close()
+
+    async def test_public_data_client_is_not_in_demo_mode(self) -> None:
+        from src.data.ccxt_provider import create_ccxt_provider
+
+        provider = create_ccxt_provider(exchange_id="myokx", testnet=False)
+        try:
+            assert "x-simulated-trading" not in (provider.client.headers or {})
+        finally:
+            await provider.close()

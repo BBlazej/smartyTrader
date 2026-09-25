@@ -9,7 +9,7 @@ orders and portfolio snapshots persist. Without this module every restart silent
 * zeroed the daily-loss baseline and the losing-streak/cooldown state —
   weakening every stateful guard exactly when it matters.
 
-Venue executors (Kraken/XTB) get their local FIFO ledger, exit levels and pending
+Venue executors (ccxt spot/XTB) get their local FIFO ledger, exit levels and pending
 orders back the same way (§7.58).
 
 The runners call :func:`rehydrate_from_storage` once, after storage is
@@ -26,7 +26,7 @@ from typing import Any
 
 import structlog
 
-from ..execution.kraken_executor import PendingOrderRecord
+from ..execution.ccxt_executor import PendingOrderRecord
 from ..execution.position_tracker import FillRecord
 from .models import OrderSide, Position
 from .risk_engine import RiskEngine
@@ -52,7 +52,7 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
     """Restore a paper executor's cash + positions from the latest snapshot.
 
     Returns whether state was applied. Executors that report live venue books
-    (Kraken/XTB) have no ``load_portfolio_state`` hook and are skipped.
+    (ccxt spot/XTB) have no ``load_portfolio_state`` hook and are skipped.
     """
     load = getattr(executor, "load_portfolio_state", None)
     if not callable(load):
@@ -109,7 +109,7 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
     """Restore a venue executor's FIFO ledger, exit levels and pending orders (§7.58).
 
     Venue executors report live books, but their *local* state — FIFO lots (realized
-    PnL + entry attribution on closes; Kraken spot positions themselves, §7.41), the
+    PnL + entry attribution on closes; ccxt spot positions themselves, §7.41), the
     entry SL/TP they enforce (§7.9) and orders left open (§7.28) — was memory-only,
     so a restart silently dropped stops and left open orders ``pending`` forever.
 

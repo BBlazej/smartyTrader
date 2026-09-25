@@ -1,7 +1,7 @@
 # Autonomous Trading Agent
 
 Paper-trading agents powered by a local LLM (LM Studio). Two agents — **crypto**
-(Kraken) and **stocks** (XTB demo) — share one decision pipeline, one
+(OKX Europe) and **stocks** (XTB demo — API closed, moving to Saxo, PLAN §7.66) — share one decision pipeline, one
 deterministic risk engine, and one storage layer.
 
 > **Safety-first:** the paper executor is the default and nothing executes
@@ -63,16 +63,16 @@ placement or DB writes. Single-cycle mode is the explicit `--once` flag, never
 a side effect of disabling an agent.
 
 **Paper mode is the default.** The crypto agent always runs on **live public
-market data** — Kraken's public OHLCV endpoint needs no API key and no sandbox
-mode, so even the paper path generates real snapshots, indicators, and LLM
-signals. The **first cycle runs immediately at startup**, then repeats every
-`interval_minutes`. Execution stays simulated: without `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`
-in `.env` (the runner loads it for you — no `python-dotenv` needed), orders are
-filled by the fee/slippage-aware `PaperExecutor`. **Kraken spot has no sandbox
-(§7.41):** with keys set, orders only leave paper when `crypto_agent.testnet: false`,
+market data** — OKX Europe's public OHLCV endpoint (ccxt `myokx`, EUR pairs; §7.64)
+needs no API key and no sandbox mode, so even the paper path generates real snapshots,
+indicators, and LLM signals. The **first cycle runs immediately at startup**, then repeats
+every `interval_minutes`. Execution stays simulated: without `EXCHANGE_API_KEY` in `.env`
+(the runner loads it for you — no `python-dotenv` needed), orders are filled by the
+fee/slippage-aware `PaperExecutor`. With OKX **demo-trading** keys
+(`EXCHANGE_API_KEY`/`_SECRET`/`_PASSPHRASE`) and the default `testnet: true`, orders go to
+the OKX demo (mode `myokx-sandbox`). Real money needs `crypto_agent.testnet: false`,
 `crypto_agent.live_trading: true` **and** env `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`
-are all present (mode `<exchange>-LIVE`); a `testnet: true` exchange that *does* have
-a ccxt sandbox runs `<exchange>-sandbox`; anything else stays on paper and logs why.
+(mode `<exchange>-LIVE`, §7.41); anything else stays on paper and logs why.
 The stocks runner
 executes on the `PaperExecutor` by default; real **XTB demo** execution is opt-in
 (§7.16): set `xtb_execution.enabled: true` **and** `XTB_ACCOUNT_ID` +
@@ -98,12 +98,12 @@ src/
 │   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
-│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (Kraken)
+│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
 │   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam)
 ├── execution/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
-│   ├── kraken_executor.py    # Keyed Kraken orders via CCXT (live only with §7.41 ack)
+│   ├── ccxt_executor.py      # Keyed ccxt spot orders — OKX demo, live only with §7.41 ack
 │   ├── xtb_executor.py       # XTB demo orders via the injected xAPI client seam
 │   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth
 ├── agents/
@@ -161,8 +161,8 @@ thresholds. Key sections:
 | Variable | Effect |
 |---|---|
 | `LM_STUDIO_ENDPOINT` | Override the LLM endpoint |
-| `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Keyed Kraken execution — never before §7.41's live-money ack; public data needs no key |
-| `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: keyed Kraken spot or `xtb_execution.account_type: real` (§7.41) |
+| `EXCHANGE_API_KEY` / `EXCHANGE_API_SECRET` / `EXCHANGE_API_PASSPHRASE` | Keyed crypto execution (OKX needs all three): demo keys with `testnet: true`; live only with §7.41's ack; public data needs no key |
+| `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: a keyed exchange with `testnet: false` or `xtb_execution.account_type: real` (§7.41) |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
 | `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
 | `XTB_API_KEY` | *Deprecated* — the old placeholder for §7.16; no longer read by any code |
@@ -197,7 +197,7 @@ agent, **stocks provider + executor + agent**, paper executor with
 fee/slippage modeling, monitoring (structured logging), both
 entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
 + realized PnL fed back to the LLM), and the **crypto agent on real data**
-(the paper path fetches live public Kraken OHLCV — no API key needed — while
+(the paper path fetches live public OKX Europe OHLCV — no API key needed — while
 execution stays simulated), the **timezone-aware market-hours guard** (the
 stocks window is compared in the config-driven `market_timezone`, so a UTC host
 stays correct), **SQLite WAL mode** (concurrent reads while the agent writes),
@@ -209,12 +209,12 @@ is the explicit single-cycle flag), a **single runner process per agent** (exclu
 file lock — a double-start refuses with exit code 2, §7.52), and the **drawdown guard is live** (peak
 equity high-water mark persisted via SQLite, seeded at startup) with the
 **order-size cap enforced at the gate** (oversized plans are rejected before
-execution; sells clamp to units held), and the **keyed Kraken path hardened
-against real ccxt payloads** (nested balances, fill price/time recording,
-graceful spot `fetch_positions` degradation; §7.41 removed any accidental path to
-real money — keyed live smoke still pending),
+execution; sells clamp to units held), and the **keyed ccxt spot path hardened
+against real ccxt payloads** (nested balances, fill price/time recording, spot-only
+positions from the fill ledger — §7.64; §7.41 removed any accidental path to
+real money — OKX demo smoke run still pending, §7.28),
 and **restart-safe paper state** (cash/positions rehydrate from the latest
-portfolio snapshot; Kraken/XTB rebuild their FIFO ledgers, entry SL/TP and pending
+portfolio snapshot; ccxt/XTB executors rebuild their FIFO ledgers, entry SL/TP and pending
 orders from stored rows, §7.58 — each executor only from its own venue-tagged rows, §7.61; daily-loss baseline and losing-streak/cooldown rebuild from
 persisted outcomes; `execution.initial_cash` is config-driven), and **honest
 outcome attribution** (one shared FIFO tracker gives every executor's closing
@@ -245,10 +245,10 @@ opt-in via `xtb_execution.enabled` + env credentials — paper stays the default
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
 
-> **Real money is double-gated (§7.41):** Kraken spot has **no sandbox**, so a keyed Kraken spot
-> executor is only ever built with `crypto_agent.testnet: false` **and** `live_trading: true` **and**
-> `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`; anything less stays on paper and logs why (same ack for
-> `xtb_execution.account_type: real`). All four critical findings of external review 4 are closed.
+> **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with
+> `crypto_agent.testnet: false` **and** `live_trading: true` **and**
+> `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`; anything less stays on paper (or on the OKX demo with
+> `testnet: true`) and logs why (same ack for `xtb_execution.account_type: real`). All four critical findings of external review 4 are closed.
 
 ## Documentation map
 

@@ -1,6 +1,6 @@
 """FIFO cost-basis position tracker shared by all executors (§7.8).
 
-Every executor — paper, Kraken, XTB — runs its fills through one tracker so
+Every executor — paper, ccxt spot, XTB — runs its fills through one tracker so
 ``OrderResult.realized_pnl`` is populated on *closing* fills everywhere (real
 venues used to leave it ``None``, silently skipping the "learn from your track
 record" backfill). FIFO lots also carry the decision that opened each lot, so a

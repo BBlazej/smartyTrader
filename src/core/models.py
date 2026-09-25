@@ -210,7 +210,7 @@ class OrderResult(BaseModel):
 class Executor(Protocol):
     """Swappable order execution interface.
 
-    Every executor (paper, keyed Kraken, XTB demo) implements this contract.
+    Every executor (paper, ccxt spot, XTB demo) implements this contract.
     The risk engine and decision pipeline depend only on this interface.
     """
 

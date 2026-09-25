@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.models import OrderSide
-from src.execution.kraken_executor import KrakenExecutor
+from src.execution.ccxt_executor import CcxtExecutor
 
 
 @pytest.fixture()
@@ -16,13 +16,13 @@ def mock_client() -> AsyncMock:
 
 
 @pytest.fixture()
-def executor(mock_client: AsyncMock) -> KrakenExecutor:
-    return KrakenExecutor(mock_client, quote_currency="USDT")
+def executor(mock_client: AsyncMock) -> CcxtExecutor:
+    return CcxtExecutor(mock_client, quote_currency="USDT", venue="test")
 
 
 class TestPlaceOrder:
     @pytest.mark.asyncio
-    async def test_market_order(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def test_market_order(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.create_order.return_value = {
             "id": "order-123",
             "status": "closed",
@@ -39,7 +39,7 @@ class TestPlaceOrder:
         assert result.side == OrderSide.BUY
 
     @pytest.mark.asyncio
-    async def test_limit_order(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def test_limit_order(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.create_order.return_value = {
             "id": "order-456",
             "status": "open",
@@ -55,102 +55,53 @@ class TestPlaceOrder:
         assert result.price == 2000.0
 
     @pytest.mark.asyncio
-    async def test_rejected_order(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def test_rejected_order(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.create_order.return_value = {"id": "order-789", "status": "rejected"}
 
         result = await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0)
         assert result.status == "rejected"
 
     @pytest.mark.asyncio
-    async def test_empty_response(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def test_empty_response(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.create_order.return_value = None
         result = await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0)
         assert result.order_id == ""
         assert result.status == "pending"
 
 
-class TestGetPositions:
+class TestSpotOnlyPositions:
+    """§7.64: positions always come from the fill ledger — ``fetch_positions`` is never
+    used. On OKX it *succeeds* with margin/derivatives positions only (``[]`` for a spot
+    account), which used to hide every spot holding from valuation, exits and close-all."""
+
     @pytest.mark.asyncio
-    async def test_returns_positions(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+    async def test_venue_fetch_positions_is_never_consulted(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
-        mock_client.fetch_positions.return_value = [
-            {
-                "symbol": "BTC/USDT",
-                "side": "long",
-                "contracts": 0.5,
-                "entryPrice": 50000.0,
-                "markPrice": 51000.0,
-            },
-            {
-                "symbol": "ETH/USDT",
-                "side": "short",
-                "contracts": 2.0,
-                "entryPrice": 2500.0,
-                "markPrice": 2400.0,
-            },
-        ]
+        mock_client.fetch_positions.return_value = []  # what OKX returns for spot
+        mock_client.fetch_balance.return_value = {"total": {"BTC": 1.0}}
+        mock_client.create_order.return_value = {
+            "id": "B1",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+        }
+        await executor.place_order("BTC/EUR", OrderSide.BUY, 1.0, price=100.0)
 
-        positions = await executor.get_positions()
-
-        assert len(positions) == 2
-        assert positions[0].symbol == "BTC/USDT"
-        assert positions[0].quantity == 0.5
-        assert positions[0].avg_entry_price == 50000.0
-        assert positions[0].current_price == 51000.0
+        (pos,) = await executor.get_positions()
+        assert (pos.symbol, pos.quantity) == ("BTC/EUR", 1.0)
+        mock_client.fetch_positions.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_shorts_map_honestly_not_as_fake_longs(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+    async def test_empty_ledger_is_an_empty_book(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
-        """§7.38 (find #4): both ccxt short encodings land as side=SHORT."""
-        from src.core.models import PositionSide
-
-        mock_client.fetch_positions.return_value = [
-            {
-                "symbol": "BTC/USDT",
-                "contracts": -0.5,
-                "entryPrice": 50_000.0,
-                "markPrice": 49_000.0,
-            },
-            {"symbol": "ETH/USDT", "side": "short", "contracts": 2.0, "entryPrice": 2_500.0},
-        ]
-
-        positions = await executor.get_positions()
-        btc, eth = positions
-        assert btc.side == PositionSide.SHORT and btc.quantity == 0.5
-        # Short at 49k mark vs 50k entry → +500 unrealized (§7.38 pnl inversion).
-        assert btc.pnl == pytest.approx(500.0)
-        assert eth.side == PositionSide.SHORT and eth.quantity == 2.0
-
-    @pytest.mark.asyncio
-    async def test_skips_zero_contracts(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
-    ) -> None:
-        mock_client.fetch_positions.return_value = [
-            {"symbol": "BTC/USDT", "side": "long", "contracts": 0.0, "entryPrice": 50000.0},
-            {"symbol": "ETH/USDT", "side": "long", "contracts": 1.0, "entryPrice": 2500.0},
-        ]
-        positions = await executor.get_positions()
-        assert len(positions) == 1
-        assert positions[0].symbol == "ETH/USDT"
-
-    @pytest.mark.asyncio
-    async def test_empty_response(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
-        mock_client.fetch_positions.return_value = []
-        assert await executor.get_positions() == []
-
-    @pytest.mark.asyncio
-    async def test_none_response(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
-        mock_client.fetch_positions.return_value = None
         assert await executor.get_positions() == []
 
 
 class TestCancelOrder:
     @pytest.mark.asyncio
-    async def test_cancel_known_order(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
-    ) -> None:
+    async def test_cancel_known_order(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         # First place an order to register the symbol
         mock_client.create_order.return_value = {"id": "order-1", "status": "open"}
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0)
@@ -161,7 +112,7 @@ class TestCancelOrder:
 
     @pytest.mark.asyncio
     async def test_cancel_unknown_order(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         result = await executor.cancel_order("nonexistent")
         assert result is False
@@ -169,7 +120,7 @@ class TestCancelOrder:
 
     @pytest.mark.asyncio
     async def test_cancel_failure_returns_false(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {"id": "order-1", "status": "open"}
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0)
@@ -181,7 +132,7 @@ class TestCancelOrder:
 
 class TestGetCash:
     @pytest.mark.asyncio
-    async def test_returns_balance(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def test_returns_balance(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.fetch_free_balance.return_value = 50000.0
         cash = await executor.get_cash()
         assert cash == 50000.0
@@ -198,7 +149,7 @@ class TestRealCcxtShapes:
 
     @pytest.mark.asyncio
     async def test_nested_free_balance_dict(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         # Real fetch_free_balance(): currency code → {free, used, total}.
         mock_client.fetch_free_balance.return_value = {
@@ -209,21 +160,21 @@ class TestRealCcxtShapes:
 
     @pytest.mark.asyncio
     async def test_free_balance_total_fallback_and_case_insensitive_key(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.fetch_free_balance.return_value = {"usdt": {"total": 77.0}}
         assert await executor.get_cash() == pytest.approx(77.0)
 
     @pytest.mark.asyncio
     async def test_missing_quote_currency_is_zero(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.fetch_free_balance.return_value = {"BTC": {"free": 1.0}}
         assert await executor.get_cash() == 0.0
 
     @pytest.mark.asyncio
     async def test_closed_order_records_fill_price_and_time(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         # A marketable limit comes back closed in the create_order payload.
         mock_client.create_order.return_value = {
@@ -246,7 +197,7 @@ class TestRealCcxtShapes:
 
     @pytest.mark.asyncio
     async def test_open_order_stays_pending_without_fill_time(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
         result = await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=1.0)
@@ -255,7 +206,7 @@ class TestRealCcxtShapes:
 
     @pytest.mark.asyncio
     async def test_fetch_positions_not_supported_degrades_gracefully(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         # Kraken spot via CCXT raises NotSupported here; every cycle must not crash.
         class NotSupported(Exception):
@@ -275,7 +226,7 @@ class TestRealizedPnlAttribution:
 
     @pytest.mark.asyncio
     async def test_closing_sell_realizes_pnl_and_attributes_entry(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {
             "id": "D-BUY",
@@ -302,7 +253,7 @@ class TestRealizedPnlAttribution:
 
     @pytest.mark.asyncio
     async def test_untracked_holdings_report_no_outcome(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         # A sell of lots we never filled locally (e.g. opened before a restart)
         # must not fabricate a break-even outcome.
@@ -320,7 +271,7 @@ class TestRealizedPnlAttribution:
 
     @pytest.mark.asyncio
     async def test_pending_orders_are_not_tracked(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         # An unfilled buy must not create a lot a later sell could "close".
         mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
@@ -337,16 +288,13 @@ class TestRealizedPnlAttribution:
 
 
 class TestExitLevelCarrying:
-    """§7.9: exit levels from entry signals are re-attached to reported positions
-    (ccxt payloads don't carry them) and dropped once the position closes."""
+    """§7.9: exit levels from entry signals are attached to the ledger positions and
+    dropped once the position closes."""
 
     @pytest.mark.asyncio
     async def test_levels_attached_then_dropped_on_close(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
-        mock_client.fetch_positions.return_value = [
-            {"symbol": "BTC/USDT", "contracts": 1.0, "entryPrice": 100.0}
-        ]
         mock_client.create_order.return_value = {
             "id": "D-BUY",
             "status": "closed",
@@ -375,7 +323,7 @@ class TestExitLevelCarrying:
         await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=90.0)
 
         assert executor._exit_levels == {}
-        assert (await executor.get_positions())[0].stop_loss is None
+        assert await executor.get_positions() == []
 
 
 class TestClose:
@@ -387,14 +335,14 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_closes_exchange_client(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await executor.close()
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_close_is_idempotent(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await executor.close()
         await executor.close()
@@ -402,7 +350,9 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_without_close_method_is_noop(self) -> None:
-        executor = KrakenExecutor(AsyncMock(spec=["create_order"]), quote_currency="USDT")
+        executor = CcxtExecutor(
+            AsyncMock(spec=["create_order"]), quote_currency="USDT", venue="test"
+        )
         await executor.close()  # must not raise
 
 
@@ -410,7 +360,7 @@ class TestReconcileOpenOrders:
     """§7.28: orders left ``open`` at the venue are re-polled and their status
     transitions reported once, flowing through the same FIFO ledger."""
 
-    async def _place_pending(self, executor: KrakenExecutor, mock_client: AsyncMock) -> None:
+    async def _place_pending(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
         mock_client.create_order.return_value = {"id": "D-OPEN", "status": "open"}
         result = await executor.place_order(
             "BTC/USDT",
@@ -425,7 +375,7 @@ class TestReconcileOpenOrders:
 
     @pytest.mark.asyncio
     async def test_pending_order_lands_filled_with_attribution(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await self._place_pending(executor, mock_client)
         mock_client.fetch_order.return_value = {
@@ -471,7 +421,7 @@ class TestReconcileOpenOrders:
 
     @pytest.mark.asyncio
     async def test_cancelled_order_reports_and_stops_tracking(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await self._place_pending(executor, mock_client)
         mock_client.fetch_order.return_value = {"id": "D-OPEN", "status": "canceled"}
@@ -484,7 +434,7 @@ class TestReconcileOpenOrders:
 
     @pytest.mark.asyncio
     async def test_still_open_is_skipped_and_retried(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await self._place_pending(executor, mock_client)
         mock_client.fetch_order.return_value = {"id": "D-OPEN", "status": "open"}
@@ -502,7 +452,7 @@ class TestReconcileOpenOrders:
 
     @pytest.mark.asyncio
     async def test_failed_poll_is_fail_soft_and_retried(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await self._place_pending(executor, mock_client)
         mock_client.fetch_order.side_effect = TimeoutError("venue unreachable")
@@ -520,7 +470,7 @@ class TestReconcileOpenOrders:
     @pytest.mark.asyncio
     async def test_client_without_fetch_order_is_a_noop(self) -> None:
         client = AsyncMock(spec=["create_order", "cancel_order", "fetch_free_balance"])
-        executor = KrakenExecutor(client, quote_currency="USDT")
+        executor = CcxtExecutor(client, quote_currency="USDT", venue="test")
         # A list-spec mock is not async-aware; wire the call explicitly.
         client.create_order = AsyncMock(return_value={"id": "D-OPEN", "status": "open"})
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
@@ -528,7 +478,7 @@ class TestReconcileOpenOrders:
 
     @pytest.mark.asyncio
     async def test_cancel_by_us_stops_reconciliation(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         await self._place_pending(executor, mock_client)
         assert await executor.cancel_order("D-OPEN") is True
@@ -542,14 +492,13 @@ class TestReconcileOpenOrders:
 
 
 class TestSpotPositionsFromLedger:
-    """§7.41: on Kraken spot (no fetch_positions) holdings come from our own fills."""
+    """§7.41/§7.64: spot holdings come from our own fills, capped by venue balances."""
 
     @staticmethod
     def _spot_client() -> AsyncMock:
         client = AsyncMock()
-        client.fetch_positions.side_effect = Exception("kraken fetchPositions() not supported")
-        client.fetch_balance.return_value = {"total": {"BTC": 1.0, "USDT": 9_000.0}}
-        client.fetch_free_balance.return_value = {"USDT": {"free": 9_000.0}}
+        client.fetch_balance.return_value = {"total": {"BTC": 1.0, "EUR": 9_000.0}}
+        client.fetch_free_balance.return_value = {"EUR": {"free": 9_000.0}}
         client.create_order.return_value = {
             "id": "B1",
             "status": "closed",
@@ -560,7 +509,7 @@ class TestSpotPositionsFromLedger:
 
     async def test_filled_buy_shows_as_a_marked_position(self) -> None:
         client = self._spot_client()
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order(
             "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, stop_loss=90.0, take_profit=130.0
         )
@@ -579,19 +528,19 @@ class TestSpotPositionsFromLedger:
         from src.core.models import PortfolioState
 
         client = self._spot_client()
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         executor.update_price("BTC/USDT", 100.0)
         book = PortfolioState(
             cash=await executor.get_cash(), positions=await executor.get_positions()
         )
-        # Pre-§7.41 total value = free USDT only (9000): the buy looked like −100.
+        # Pre-§7.41 total value = free quote only (9000): the buy looked like −100.
         assert book.total_value == pytest.approx(9_100.0)
 
     async def test_venue_balance_caps_the_ledger(self) -> None:
         client = self._spot_client()
         client.fetch_balance.return_value = {"total": {"BTC": 0.4}}  # e.g. partly withdrawn
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         (pos,) = await executor.get_positions()
         assert pos.quantity == pytest.approx(0.4)
@@ -599,17 +548,10 @@ class TestSpotPositionsFromLedger:
     async def test_balance_failure_falls_back_to_the_ledger(self) -> None:
         client = self._spot_client()
         client.fetch_balance.side_effect = TimeoutError("venue slow")
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         (pos,) = await executor.get_positions()
         assert pos.quantity == pytest.approx(1.0)
-
-    async def test_fetch_positions_is_not_retried_every_call(self) -> None:
-        client = self._spot_client()
-        executor = KrakenExecutor(client)
-        await executor.get_positions()
-        await executor.get_positions()
-        client.fetch_positions.assert_awaited_once()
 
     async def test_close_all_now_sells_spot_holdings(self) -> None:
         from src.core.config import RiskSettings
@@ -617,7 +559,7 @@ class TestSpotPositionsFromLedger:
         from src.core.risk_engine import RiskEngine
 
         client = self._spot_client()
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         executor.update_price("BTC/USDT", 110.0)
         client.create_order.return_value = {
@@ -644,7 +586,7 @@ class TestPartialFills:
     """§7.61: a cancel/expiry that traded is a partial fill, never a lost one."""
 
     async def test_cancelled_create_order_with_fill_is_a_partial_fill(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {
             "id": "IOC-1",
@@ -660,7 +602,7 @@ class TestPartialFills:
         assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.4)
 
     async def test_reconciled_cancel_with_fill_feeds_the_ledger(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {"id": "P-1", "status": "open", "amount": 1.0}
         await executor.place_order(
@@ -679,7 +621,7 @@ class TestPartialFills:
         assert executor._exit_levels["BTC/USDT"] == (90.0, None)
 
     async def test_untraded_cancel_stays_cancelled(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {"id": "P-2", "status": "open", "amount": 1.0}
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
@@ -689,7 +631,7 @@ class TestPartialFills:
         assert executor._tracker.quantity("BTC/USDT") == 0.0
 
     async def test_expired_is_terminal_not_pending_forever(
-        self, executor: KrakenExecutor, mock_client: AsyncMock
+        self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
         mock_client.create_order.return_value = {"id": "P-3", "status": "open", "amount": 1.0}
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
@@ -700,5 +642,5 @@ class TestPartialFills:
         assert await executor.reconcile_open_orders() == []
 
     def test_venue_label(self, mock_client: AsyncMock) -> None:
-        assert KrakenExecutor(mock_client).venue == "kraken"
-        assert KrakenExecutor(mock_client, venue="kraken-live").venue == "kraken-live"
+        executor = CcxtExecutor(mock_client, quote_currency="EUR", venue="myokx-sandbox")
+        assert executor.venue == "myokx-sandbox"

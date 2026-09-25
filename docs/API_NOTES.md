@@ -1,27 +1,35 @@
 # API Notes
 
-Quirks and gotchas for the two exchanges, gathered as we integrate.
+Quirks and gotchas for the venues, gathered as we integrate.
 
-## Kraken (spot)
+## OKX Europe (crypto spot) — §7.64
 
-- **There is no spot sandbox** (verified against ccxt 4.5: `kraken().urls['test']`
-  is `None`, and `set_sandbox_mode(True)` raises an opaque `TypeError`; only
-  `krakenfutures` has `demo-futures.kraken.com`). `create_ccxt_provider(testnet=True)`
-  now raises an actionable `ValueError` for exchanges without one, and the crypto
-  runner keeps a keyed Kraken spot setup on **paper** unless `testnet: false`,
-  `live_trading: true` and `LIVE_TRADING_ACK` are all set — it is real money (§7.41).
-- **No `fetch_positions` on spot:** positions come from the executor's own fill ledger,
-  capped by `fetch_balance()` totals and marked each cycle (§7.41).
-- **Order types:** market, limit, stop-loss, take-profit supported.
+- **Which OKX:** EEA residents are served by OKX Europe (Malta, MiCA-licensed). In ccxt
+  that is **`myokx`** (host `eea.okx.com`), not `okx` (global). EU accounts trade
+  **EUR/USDC-quoted** pairs only — USDT is not tradable for EEA accounts (MiCA).
+  Verified 2026-09-26: `BTC/EUR` (min 0.0001 BTC) and `ETH/EUR` (min 0.001 ETH) listed,
+  BTC/EUR spread ≈ 0.0001 %, 272 active EUR spot pairs.
+- **Credentials:** API key + secret + **passphrase** (ccxt `password`) — our env vars
+  `EXCHANGE_API_KEY` / `EXCHANGE_API_SECRET` / `EXCHANGE_API_PASSPHRASE`.
+- **Demo trading:** same host; ccxt `set_sandbox_mode(True)` adds the
+  `x-simulated-trading: 1` header. Demo needs its **own** API key (OKX → Trade → Demo
+  Trading → Demo Trading API). `testnet: true` selects this.
+- **`fetch_positions` is a trap for spot:** OKX serves it, but only for
+  margin/derivatives — a spot account gets `[]`. `CcxtExecutor` therefore never calls it:
+  positions come from its own fill ledger, capped by `fetch_balance()` totals and marked
+  each cycle (§7.41/§7.64).
+- **Fees:** spot base tier ≈ 0.08 % maker / 0.10 % taker (lower EU spot-only fees from
+  2026-09-25 — check the account); buy fees are charged in the **base** currency (see
+  PLAN §7.65).
 - **Statuses:** CCXT normalizes exchange statuses. We map `closed → filled`,
-  `open/pending → pending`, `canceled/cancelled → cancelled`, `rejected → rejected`
-  (see `src/execution/kraken_executor.py::_STATUS_MAP`).
+  `open/pending → pending`, `canceled/cancelled/expired → cancelled`, `rejected → rejected`
+  (see `src/execution/ccxt_executor.py::_STATUS_MAP`).
 - **Cancellation needs the symbol:** CCXT's `cancel_order(id, symbol)` requires the
   symbol, so the executor tracks `order_id → symbol` in `_order_symbols`.
 - **Rate limits:** set `enableRateLimit: True` on the client. Add exponential
   backoff for `RateLimitExceeded` once we see it in the wild.
-- **Balances:** read the quote-currency free balance (`fetch_free_balance("USDT")`)
-  for the cash figure the risk engine needs.
+- **Balances:** read the quote-currency free balance (`fetch_free_balance`, keyed by
+  `crypto_agent.quote_currency` — `EUR`) for the cash figure the risk engine needs.
 
 ## XTB Demo (stocks) — as implemented in §7.16
 

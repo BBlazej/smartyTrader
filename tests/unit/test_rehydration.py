@@ -18,7 +18,7 @@ from src.core.rehydration import (
 )
 from src.core.risk_engine import RiskEngine
 from src.core.storage import Storage
-from src.execution.kraken_executor import KrakenExecutor
+from src.execution.ccxt_executor import CcxtExecutor
 from src.execution.paper_executor import PaperExecutor
 from src.execution.xtb_executor import XTBExecutor
 
@@ -420,11 +420,11 @@ class TestLiveOutcomeCoverage:
 # ── §7.58: venue executors (Kraken/XTB) ────────────────────────
 
 
-def _spot_kraken() -> tuple[KrakenExecutor, AsyncMock]:
+def _spot_kraken() -> tuple[CcxtExecutor, AsyncMock]:
     client = AsyncMock()
     client.fetch_positions.side_effect = Exception("kraken fetchPositions() not supported")
     client.fetch_balance.return_value = {"total": {"BTC": 10.0, "ETH": 10.0}}
-    return KrakenExecutor(client), client
+    return CcxtExecutor(client, quote_currency="EUR", venue="test"), client
 
 
 async def _entry_decision(storage: Storage, symbol: str, sl: float, tp: float) -> int:
@@ -648,7 +648,7 @@ class TestVenueSwitches:
             client = AsyncMock()
             client.fetch_positions.side_effect = Exception("not supported")
             client.fetch_balance.return_value = {"total": {"BTC": 5.0}}
-            live = KrakenExecutor(client, venue="binance-live")
+            live = CcxtExecutor(client, venue="binance-live", quote_currency="EUR")
             await rehydrate_venue_executor(live, storage)
             assert await live.get_positions() == []
             assert live._open_orders == {}

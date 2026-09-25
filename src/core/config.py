@@ -9,8 +9,8 @@ from typing import Any
 import yaml
 
 #: Environment acknowledgement required, together with an explicit config flag,
-#: before any executor may touch a REAL-money account (§7.41): Kraken spot keyed
-#: trading (there is no spot sandbox) and ``xtb_execution.account_type: real``.
+#: before any executor may touch a REAL-money account (§7.41): a keyed exchange run
+#: with ``testnet: false`` and ``xtb_execution.account_type: real``.
 LIVE_TRADING_ACK_ENV = "LIVE_TRADING_ACK"
 LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 
@@ -120,9 +120,12 @@ class AgentConfig:
         # §7.56: ask the LLM once per newly closed bar; cycles in between only mark
         # positions and enforce exit levels.
         decide_on_new_bar_only: bool = True,
-        # §7.41: explicit opt-in for a keyed executor on a venue with no sandbox
-        # (Kraken spot = real money). Also needs LIVE_TRADING_ACK in the env.
+        # §7.41: explicit opt-in for a keyed executor on the live venue (real money).
+        # Also needs LIVE_TRADING_ACK in the env.
         live_trading: bool = False,
+        # §7.64: currency the keyed executor counts as cash (e.g. "EUR" on OKX Europe,
+        # where USDT is not tradable for EEA accounts). Every pair must be quoted in it.
+        quote_currency: str | None = None,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -145,6 +148,16 @@ class AgentConfig:
         self.timeframe = timeframe
         self.decide_on_new_bar_only = decide_on_new_bar_only
         self.live_trading = bool(live_trading)
+        self.quote_currency = quote_currency.upper() if quote_currency else None
+        if self.quote_currency:
+            mismatched = [
+                pair for pair in self.pairs if pair.split("/")[-1].upper() != self.quote_currency
+            ]
+            if mismatched:
+                raise ValueError(
+                    f"pairs {mismatched} are not quoted in quote_currency "
+                    f"'{self.quote_currency}' — cash and position sizing would be wrong"
+                )
 
 
 class RiskSettings:

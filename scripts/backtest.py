@@ -9,7 +9,7 @@ Examples:
     python -m scripts.backtest --days 30 --symbols BTC/USDT ETH/USDT --timeframe 1h
     python -m scripts.backtest --provider yfinance --symbols AAPL --days 90 --report out.json
 
-The candle source is fresh from the venue (Kraken public data via CCXT, or yfinance):
+The candle source is fresh from the venue (the configured exchange's public data via CCXT, or yfinance):
 the agent does not run 24/7, so stored ``market_snapshots`` alone are too sparse.
 """
 
@@ -47,7 +47,9 @@ def _build_history_provider(provider_kind: str, settings: Settings) -> tuple[Any
         return create_xtb_provider(), "1d"
     from src.data.ccxt_provider import create_ccxt_provider
 
-    exchange = settings.crypto_agent.exchange or "kraken"
+    exchange = settings.crypto_agent.exchange
+    if not exchange:
+        raise SystemExit("crypto_agent.exchange is not set (e.g. 'myokx')")
     # Public data endpoint: no keys, no sandbox — the backtester never trades.
     return create_ccxt_provider(exchange_id=exchange, testnet=False), "1h"
 
@@ -183,7 +185,7 @@ def main() -> None:
         "--provider",
         choices=["ccxt", "yfinance"],
         default="ccxt",
-        help="Candle source (default ccxt = Kraken public data)",
+        help="Candle source (default ccxt = crypto_agent.exchange public data)",
     )
     parser.add_argument(
         "--timeframe",

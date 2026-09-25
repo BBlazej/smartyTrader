@@ -20,16 +20,20 @@ llm:
 
 crypto_agent:
   enabled: true
-  exchange: kraken
-  # §7.41: Kraken SPOT has no sandbox. With KRAKEN_API_KEY set, `testnet: true` on
-  # an exchange without one stays on the paper executor (warned); a keyed live run
-  # needs `testnet: false` AND `live_trading: true` AND LIVE_TRADING_ACK in the env.
+  # OKX Europe (ccxt "myokx", host eea.okx.com — MiCA-licensed; §7.64). Without
+  # EXCHANGE_API_KEY this is live public data + the paper executor. With keys,
+  # `testnet: true` trades the OKX **demo** (sandbox mode); a keyed live run needs
+  # `testnet: false` AND `live_trading: true` AND LIVE_TRADING_ACK in the env (§7.41).
+  exchange: myokx
   testnet: true
   live_trading: false
+  # Cash currency of the keyed executor; every pair must be quoted in it. EEA
+  # accounts can't trade USDT (MiCA) — EUR (or USDC) pairs only.
+  quote_currency: EUR
   interval_minutes: 5
   pairs:
-    - BTC/USDT
-    - ETH/USDT
+    - BTC/EUR
+    - ETH/EUR
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
   # §7.56: ask the LLM once per newly CLOSED bar; the 5-min cycles in between only
@@ -81,7 +85,7 @@ risk:
 execution:
   paper_fee_pct: 0.0026
   paper_slippage_pct: 0.001
-  initial_cash: 100000.0   # seeds a fresh paper portfolio; after the first cycle
+  initial_cash: 1000.0     # seeds a fresh paper portfolio (sized to the real plan); after the first cycle
                            # the persisted snapshot (and restart rehydration) wins
 
 storage:

@@ -18,7 +18,7 @@ Two independent paper-trading agents sharing a common core:
 
 | | Crypto Agent | Stocks Agent |
 |---|---|---|
-| **Exchange** | Kraken (public data; keyed = sandbox or ack-gated live, §7.41) | XTB (demo account) |
+| **Exchange** | OKX Europe — ccxt `myokx`, EUR pairs (public data; keyed = OKX demo or ack-gated live, §7.41/§7.64) | XTB (demo account; API closed 2025 → Saxo, §7.66) |
 | **Data** | CCXT (OHLCV); news/sentiment — *planned* | xAPI + yfinance (OHLCV); economic calendar — *planned* |
 | **LLM** | LM Studio → Qwen 3.8 27B (`qwen/qwen3.8-27b`) | Same shared LLM client |
 
@@ -29,7 +29,7 @@ Both agents use the same decision pipeline, risk engine, and storage layer — o
 ```mermaid
 flowchart TB
     LMStudio["LM Studio (local LLM, OpenAI-compatible)"]
-    Kraken["Kraken (public OHLCV / keyed live)"]
+    OKX["OKX Europe (public OHLCV / demo / keyed live)"]
     StocksSrc["yfinance / xAPI (stocks data)"]
 
     subgraph agents["src/agents — market shells"]
@@ -56,7 +56,7 @@ flowchart TB
 
     subgraph execution["src/execution"]
         PAPER["paper_executor.py (default)"]
-        KEX["kraken_executor.py"]
+        KEX["ccxt_executor.py (spot)"]
         XEX["xtb_executor.py"]
         PT["position_tracker.py — shared FIFO realized-PnL ledger"]
     end
@@ -65,7 +65,7 @@ flowchart TB
 
     CA --> CCXTP
     SA --> XTBP
-    CCXTP --> Kraken
+    CCXTP --> OKX
     XTBP --> StocksSrc
     CA --> PIPE
     SA --> PIPE
@@ -78,7 +78,7 @@ flowchart TB
     PAPER --> PT
     KEX --> PT
     XEX --> PT
-    KEX --> Kraken
+    KEX --> OKX
     PIPE --> STORE
     STORE --> DB
     BT --> STORE
@@ -119,7 +119,7 @@ src/
 ├── execution/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
-│   ├── kraken_executor.py    # Keyed Kraken orders via ccxt — sandbox if the exchange has one, else ack-gated live (§7.41); real payload parsing, spot fetch_positions degradation handled;
+│   ├── ccxt_executor.py      # Keyed ccxt spot orders (OKX Europe) — demo/sandbox if the exchange has one, else ack-gated live (§7.41); spot-only ledger positions (§7.64);
 │   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28;
 │   │                         #  resolved statuses re-delivered until confirm_reconciled, §7.44)
 │   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
@@ -142,7 +142,7 @@ scripts/
 ├── rebaseline_drawdown.py    # audited CLI drawdown peak re-baseline, dry-run default (§7.53)
 └── backtest.py               # decision-replay CLI (--start/--end/--days/--symbols/--provider/--timeframe/--report) (§7.14)
 
-docs/API_NOTES.md             # Kraken + XTB API quirks
+docs/API_NOTES.md             # OKX Europe + XTB API quirks
 config/settings.yaml          # all tunables (see §Configuration below)
 ```
 
@@ -237,7 +237,7 @@ class Executor(Protocol):
     async def get_cash(self) -> float: ...
 ```
 
-- `kraken_executor.py` — keyed Kraken via ccxt (mode `<exchange>-sandbox` where ccxt has one; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
+- `ccxt_executor.py` — `CcxtExecutor`, keyed ccxt **spot** (OKX Europe, `myokx`; mode `<exchange>-sandbox` = OKX demo trading; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); cash = free balance of `crypto_agent.quote_currency` (EUR); positions always from the FIFO fill ledger capped by `fetch_balance` totals — `fetch_positions` is never used (OKX serves it for margin/derivatives only, `[]` for spot; §7.64); real fill payload parsing; credentials `EXCHANGE_API_KEY`/`_SECRET`/`_PASSPHRASE`.
 - `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor. Fills are booked at the **venue's** price (§7.62): once `tradeTransactionStatus` says ACCEPTED the client reads the trade record (`getTrades` `open_price` / `getTradesHistory` `close_price`) and returns it with `price_source: "venue"`; fail-soft fallback to the requested price (`"requested"`) on no match, an error, or a > 20 % deviation.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
@@ -368,7 +368,7 @@ erDiagram
         datetime created_at "storage-time bound for pruning unfilled rows (§7.12 migration)"
         string agent "owning agent — FIFO replay reads only its own fills (§7.39)"
         float realized_pnl "closing fills only — one outcome per fill; loss-streak rehydration source (§7.46)"
-        string venue "paper / kraken-live / xtb-demo … — restart replay reads only its own venue (+ legacy NULL) (§7.61)"
+        string venue "paper / myokx-sandbox / xtb-demo … — restart replay reads only its own venue (+ legacy NULL) (§7.61)"
     }
     portfolio_snapshots {
         int id PK
@@ -393,7 +393,7 @@ erDiagram
 
 Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark (escapable only via the audited `drawdown_resets` row, §7.53). Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
-Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), venue executors' local state (§7.58: `load_fills` replays the agent's non-paper filled orders into the Kraken/XTB FIFO ledger and re-arms each open symbol's latest entry SL/TP from its decision row; `load_pending_orders` re-tracks `pending` rows so the first cycle's reconciliation resolves them). Book/fill/pending reads are **venue-scoped** (§7.61): the runner calls `storage.bind_venue(executor.venue)` so every order/portfolio row is stamped (`paper`, `<exchange>-sandbox`/`-live`, `xtb-demo`/`-real`), and rehydration reads only the executor's own venue plus legacy unstamped rows — a venue → paper or sandbox → live switch never restores foreign history (drawdown peak and daily baseline stay agent-wide: switching to a smaller account can only latch the drawdown gate, the fail-safe direction). Reconciled partial fills (a cancel/expiry with `filled > 0`) are recorded `filled` at the traded amount and `update_order_status(quantity=…)` persists it. The pass also restores the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), venue executors' local state (§7.58: `load_fills` replays the agent's non-paper filled orders into the ccxt/XTB FIFO ledger and re-arms each open symbol's latest entry SL/TP from its decision row; `load_pending_orders` re-tracks `pending` rows so the first cycle's reconciliation resolves them). Book/fill/pending reads are **venue-scoped** (§7.61): the runner calls `storage.bind_venue(executor.venue)` so every order/portfolio row is stamped (`paper`, `<exchange>-sandbox`/`-live`, `xtb-demo`/`-real`), and rehydration reads only the executor's own venue plus legacy unstamped rows — a venue → paper or sandbox → live switch never restores foreign history (drawdown peak and daily baseline stay agent-wide: switching to a smaller account can only latch the drawdown gate, the fail-safe direction). Reconciled partial fills (a cancel/expiry with `filled > 0`) are recorded `filled` at the traded amount and `update_order_status(quantity=…)` persists it. The pass also restores the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
@@ -404,7 +404,7 @@ This section holds the **design decisions** locked in Week 6 — the data pipeli
 | # | Decision | Chosen |
 |---|---|---|
 | 1 | Backtest type | **(a) Decision replay** — re-simulate *stored* `llm_decisions` against the price path that followed. Deterministic, **zero LLM calls**. (LLM replay = non-deterministic + expensive on the local 27B model; deferred.) |
-| 2 | Backtest price history | **Fresh historical candles** from the source (Kraken via CCXT / yfinance) for arbitrary date ranges — the agent does not run 24/7, so stored `market_snapshots` alone is too sparse. Stored snapshots are kept as a secondary/audit source. |
+| 2 | Backtest price history | **Fresh historical candles** from the source (OKX Europe via CCXT / yfinance) for arbitrary date ranges — the agent does not run 24/7, so stored `market_snapshots` alone is too sparse. Stored snapshots are kept as a secondary/audit source. |
 | 3 | Dashboard control scope | **Pause/resume** + **close all open positions** + **safe config management** (see #6). No manual order placement, no live risk-param override, no kill in v1. |
 | 4 | Agent ↔ dashboard control channel | **Agent exposes a small HTTP control API (FastAPI); the dashboard calls it** — real-time control (e.g. "close all" is immediate, not gated on the 5-min cycle). |
 | 5 | Dashboard stack | **FastAPI + Jinja2/HTMX** (server-rendered, HTMX for updates + control), lightweight chart lib (uPlot) via CDN for time-series. No Node/npm build step → one slim Docker image. |
@@ -416,7 +416,7 @@ This section holds the **design decisions** locked in Week 6 — the data pipeli
 
 ```mermaid
 flowchart TD
-    MD["MARKET DATA (OHLCV): CCXT → Kraken · xAPI / yfinance → stocks"]
+    MD["MARKET DATA (OHLCV): CCXT → OKX Europe · yfinance → stocks"]
     UP["UNIFIED PIPELINE: fetch candles → compute indicators → normalize → persist (one code path — src/core/decision_pipeline.py + providers)"]
     AGENT["AGENT (live): prompt → LLM → risk → execute"]
     BT["BACKTESTER (replay): stored decisions vs historical candles"]
@@ -479,7 +479,7 @@ docker compose up -d --build            # crypto agent + dashboard; backtester: 
 
 - **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
 - **Deviation from the locked design:** `config/` is a **read-only bind mount**, not an `agent-config` named volume — nothing ever writes config files (safe overrides live in `agent_control` DB rows), so host edits stay authoritative on container restart instead of going stale inside a pre-seeded volume.
-- Secrets enter only via compose environment substitution (`${KRAKEN_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
+- Secrets enter only via compose environment substitution (`${EXCHANGE_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
 - No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
 
 ## Backtesting (§7.14 — implemented)
@@ -499,7 +499,7 @@ Implementation status:
 
 **No look-ahead (§7.49):** candle timestamps are bar open times, so each candle event fires at its **close** (open + timeframe); decisions are priced from bars that had closed when they were made, and exits fire when the breaching bar closes.
 
-**Decision replay**: `DecisionReplayBacktester` (`src/core/backtester.py`) re-simulates the *stored* `llm_decisions` against **fresh historical candles** (Kraken via CCXT paginated `fetch_history` / yfinance range fetch) through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Exit levels and position sizing are shared functions (`exit_level_breach` / `calculate_quantity`) so replay cannot drift from live. Stored `market_snapshots` remain a secondary/audit source.
+**Decision replay**: `DecisionReplayBacktester` (`src/core/backtester.py`) re-simulates the *stored* `llm_decisions` against **fresh historical candles** (OKX Europe via CCXT paginated `fetch_history` / yfinance range fetch) through the **same** risk engine + fee/slippage model as live — deterministic, **zero LLM calls**. Exit levels and position sizing are shared functions (`exit_level_breach` / `calculate_quantity`) so replay cannot drift from live. Stored `market_snapshots` remain a secondary/audit source.
 
 Metrics (CLI summary + `--report` JSON):
 - Total return vs. per-symbol buy-and-hold benchmark (+ equal-weight blend)
@@ -530,10 +530,10 @@ Metrics (CLI summary + `--report` JSON):
 
 ## API Notes
 
-### Kraken (spot) — no sandbox
-- **Kraken spot has no testnet/sandbox** (ccxt `urls['test']` is `None`; only `krakenfutures` has `demo-futures.kraken.com`). Keyed spot trading is real money — gated by `crypto_agent.live_trading: true` + `LIVE_TRADING_ACK` (§7.41); without both, a keyed setup stays on paper.
-- Spot has no `fetch_positions`: the executor reports its FIFO ledger capped by `fetch_balance` totals, marked each cycle via `update_price` (§7.41).
-- Auth: API key + secret via HMAC-SHA256 signatures
+### OKX Europe (crypto spot) — §7.64
+- EEA accounts use **OKX Europe** — ccxt `myokx`, host `eea.okx.com`; **EUR/USDC pairs only** (USDT not tradable under MiCA). **Demo trading** = same host + `x-simulated-trading: 1` (ccxt sandbox mode, own demo API key). Keyed live trading is real money — gated by `crypto_agent.live_trading: true` + `LIVE_TRADING_ACK` (§7.41). Kraken was dropped 2026-09-26 (no spot demo, higher fees).
+- `fetch_positions` covers margin/derivatives only (`[]` for spot) — the executor reports its FIFO ledger capped by `fetch_balance` totals, marked each cycle via `update_price` (§7.41/§7.64).
+- Auth: API key + secret + passphrase (ccxt `password`); details in `docs/API_NOTES.md`
 - Rate limits: Check current docs — implement exponential backoff
 - Order types: market, limit, stop-loss, take-profit supported
 
@@ -560,16 +560,14 @@ llm:
 
 crypto_agent:
   enabled: true
-  exchange: kraken
-  # §7.41: Kraken SPOT has no sandbox. With KRAKEN_API_KEY set, `testnet: true` on
-  # an exchange without one stays on the paper executor (warned); a keyed live run
-  # needs `testnet: false` AND `live_trading: true` AND LIVE_TRADING_ACK in the env.
+  exchange: myokx               # OKX Europe (§7.64); keys → demo with testnet: true
   testnet: true
   live_trading: false
+  quote_currency: EUR           # every pair must be quoted in it (USDT not tradable in the EEA)
   interval_minutes: 5
   pairs:
-    - BTC/USDT
-    - ETH/USDT
+    - BTC/EUR
+    - ETH/EUR
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
   decide_on_new_bar_only: true # one LLM decision per closed bar; cycles between only mark + exit-check
@@ -618,7 +616,7 @@ risk:
 execution:
   paper_fee_pct: 0.0026
   paper_slippage_pct: 0.001
-  initial_cash: 100000.0   # seeds a fresh paper portfolio; after the first cycle
+  initial_cash: 1000.0     # seeds a fresh paper portfolio (sized to the real plan); after the first cycle
                            # the persisted snapshot (and restart rehydration) wins
 
 storage:
@@ -671,7 +669,7 @@ xtb_execution:
 
 > `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
 
-Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `KRAKEN_API_KEY`/`KRAKEN_API_SECRET`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
+Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
 
 ## Dependencies (current)
 

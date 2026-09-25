@@ -1,27 +1,28 @@
-"""Kraken (testnet) order executor via CCXT.
+"""Spot order executor for any CCXT exchange (OKX Europe by default, §7.64).
 
 Implements the shared ``Executor`` protocol (place_order, get_positions,
 cancel_order, get_cash, close) on top of a CCXT exchange client. The client is
 injected so this module is testable without a network connection or real API keys.
 
-Known venue limitations (§7.6)
-------------------------------
-* Kraken **spot** via CCXT does not serve ``fetch_positions`` (raises
-  ``NotSupported``) and has **no sandbox** (§7.41 — keyed spot is real money). In
-  spot mode :meth:`KrakenExecutor.get_positions` reports the executor's own FIFO
-  ledger — capped by the venue's actual base-currency balance and marked at each
+Design
+------
+* **Spot, long-only, always.** Positions come from the executor's own FIFO ledger of
+  fills — capped by the venue's actual base-currency balance and marked at each
   cycle's close via :meth:`update_price` — so valuation, the risk gates, exit-level
-  enforcement and close-all see real holdings (they used to see only cash: every
-  BUY looked like a loss of its own notional and tripped the daily-loss/drawdown
-  gates, while SL/TP and close-all silently did nothing).
+  enforcement and close-all see real holdings. ``fetch_positions`` is deliberately
+  never used: on venues that serve it (OKX) it reports margin/derivatives positions
+  only, i.e. an empty book for a spot account (§7.64); spot long-only is a design rule.
+* Cash is the free balance of the configured quote currency (``EUR`` on OKX Europe,
+  where USDT is not tradable for EEA accounts under MiCA).
 * The pipeline submits marketable *limit* orders (priced at the snapshot's last
   close); those usually come back ``closed`` in the ``create_order`` payload,
-  which is now recorded with fill price (``average``) and ``filled_at``. Orders
-  left ``open`` are remembered locally and re-polled every cycle via
-  :meth:`KrakenExecutor.reconcile_open_orders` (§7.28): terminal statuses update
-  the stored order row and flow through the same FIFO ledger as create_order fills.
-* A live-keyed smoke test (sandbox exchange or acknowledged live, §7.41) still needs a
-  network-enabled environment (the dev sandbox blocks outbound HTTPS).
+  recorded with fill price (``average``) and ``filled_at``. Orders left ``open``
+  are remembered locally and re-polled every cycle via
+  :meth:`CcxtExecutor.reconcile_open_orders` (§7.28): terminal statuses update the
+  stored order row and flow through the same FIFO ledger as create_order fills.
+* Sandbox vs live is decided by the runner (§7.41): ccxt's sandbox/demo mode when the
+  exchange has one (OKX demo trading), real money only behind ``live_trading`` +
+  ``LIVE_TRADING_ACK``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from ..core.models import OrderResult, OrderSide, Position, PositionSide
+from ..core.models import OrderResult, OrderSide, Position
 from .position_tracker import FillRecord, PositionTracker, replay_fills
 
 logger = structlog.get_logger()
@@ -128,23 +129,17 @@ class ExchangeClient(Protocol):
         Any
     ): ...  # real ccxt returns a currency→{free,total} dict; simplified stubs may return a float
 
-    async def fetch_positions(
-        self, symbols: list[str] | None = None, params: dict[str, Any] | None = None
-    ) -> list[dict[str, Any]]: ...
-
     async def fetch_balance(self, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
 
-class KrakenExecutor:
-    """Maps the shared Executor protocol to Kraken order calls via CCXT."""
+class CcxtExecutor:
+    """Maps the shared Executor protocol to CCXT spot order calls."""
 
-    def __init__(
-        self, client: ExchangeClient, quote_currency: str = "USDT", venue: str = "kraken"
-    ) -> None:
+    def __init__(self, client: ExchangeClient, *, quote_currency: str, venue: str) -> None:
         self._client = client
         self._quote = quote_currency
-        # Stamped on this executor's order/portfolio rows (§7.61): e.g. ``kraken-live``
-        # vs ``kraken-sandbox`` — a restart replays only this venue's fills.
+        # Stamped on this executor's order/portfolio rows (§7.61): e.g. ``myokx-sandbox``
+        # vs ``myokx-live`` — a restart replays only this venue's fills.
         self.venue = venue
         self._closed = False
         # order_id -> symbol, since ccxt cancel_order needs the symbol.
@@ -152,16 +147,11 @@ class KrakenExecutor:
         # Orders left ``open`` at the venue, re-polled each cycle (§7.28).
         self._open_orders: dict[str, _PendingOrder] = {}
         self._reconcile_unsupported_logged = False
-        # One-time warning guard for the Kraken-spot fetch_positions gap (§7.6).
-        self._positions_unsupported_logged = False
-        # §7.41: once fetch_positions proves unsupported, positions come from the
-        # local ledger (+ venue balances), marked at each cycle's snapshot close.
-        self._spot_mode = False
+        # Marks from each cycle's snapshot close (spot positions are valued here).
         self._marks: dict[str, float] = {}
-        # Local FIFO ledger of *our* fills. Kraken spot gives no fetch_positions,
-        # so this both enables realized_pnl on closing sells and attributes it to
-        # entry decisions via closed_entries (§7.8). Venue fees are not in the
-        # create_order payload, so tracked PnL is gross of commission.
+        # Local FIFO ledger of *our* fills: the spot position book, realized_pnl on
+        # closing sells, and attribution to entry decisions via closed_entries (§7.8).
+        # Tracked PnL is gross of commission.
         self._tracker = PositionTracker()
         # Exit levels from our own entry signals (§7.9), attached to the spot
         # positions reported from the ledger (§7.41); rebuilt from storage at
@@ -409,51 +399,6 @@ class KrakenExecutor:
             self._marks[symbol] = new_price
 
     async def get_positions(self) -> list[Position]:
-        if self._spot_mode:
-            return await self._spot_positions()
-        try:
-            raw_positions = await self._client.fetch_positions()
-        except Exception as exc:  # noqa: BLE001
-            # Kraken *spot* via CCXT does not serve fetch_positions (NotSupported).
-            # From now on report our own ledger instead (§7.41) — never an empty
-            # book that hides real holdings from valuation, gates and exits.
-            self._spot_mode = True
-            if not self._positions_unsupported_logged:
-                self._positions_unsupported_logged = True
-                logger.warning(
-                    "fetch_positions unsupported on the keyed venue (spot); positions "
-                    "now come from the local fill ledger capped by venue balances",
-                    error=str(exc),
-                )
-            return await self._spot_positions()
-        positions: list[Position] = []
-        for pos in raw_positions or []:
-            raw_qty = float(pos.get("contracts") or pos.get("amount") or 0.0)
-            if raw_qty == 0.0:
-                continue
-            # §7.38 (find #4): ccxt encodes shorts either as negative contracts
-            # (net-position payloads) or via the ``side`` field (detail payloads).
-            # They map honestly to side=SHORT with an absolute quantity — never a
-            # positive-quantity long in disguise.
-            raw_side = str(pos.get("side") or "").lower()
-            side = PositionSide.SHORT if raw_side == "short" or raw_qty < 0 else PositionSide.LONG
-            avg_entry = float(pos.get("entryPrice") or pos.get("averageCost") or 0.0)
-            current = float(pos.get("markPrice") or pos.get("entryPrice") or avg_entry)
-            levels = self._exit_levels.get(str(pos.get("symbol")))
-            positions.append(
-                Position(
-                    symbol=str(pos.get("symbol")),
-                    quantity=abs(raw_qty),
-                    avg_entry_price=avg_entry,
-                    current_price=current,
-                    side=side,
-                    stop_loss=levels[0] if levels else None,
-                    take_profit=levels[1] if levels else None,
-                )
-            )
-        return positions
-
-    async def _spot_positions(self) -> list[Position]:
         """Long positions from the FIFO ledger, capped by actual venue balances (§7.41).
 
         The ledger knows cost basis and entry decisions; the venue knows what is really
@@ -519,7 +464,7 @@ def _extract_quote_balance(balance: Any, quote: str) -> float:
     """Pull the quote-currency free balance out of a ccxt ``fetch_free_balance`` payload.
 
     Real CCXT returns a dict keyed by currency code whose values are nested
-    ``{"free": x, "used": y, "total": z}`` dicts (Kraken includes every funded
+    ``{"free": x, "used": y, "total": z}`` dicts (venues list every funded
     currency); simplified clients/tests may return a bare float. A missing
     quote key means the account holds none of it → 0.0.
     """
@@ -564,8 +509,8 @@ def _parse_ms_timestamp(value: Any) -> datetime | None:
     return datetime.fromtimestamp(ms / 1000.0, tz=UTC)
 
 
-def create_kraken_executor(
-    client: ExchangeClient, quote_currency: str = "USDT", venue: str = "kraken"
-) -> KrakenExecutor:
-    """Wrap an existing CCXT client in a KrakenExecutor."""
-    return KrakenExecutor(client, quote_currency=quote_currency, venue=venue)
+def create_ccxt_executor(
+    client: ExchangeClient, *, quote_currency: str, venue: str
+) -> CcxtExecutor:
+    """Wrap an existing CCXT client in a :class:`CcxtExecutor`."""
+    return CcxtExecutor(client, quote_currency=quote_currency, venue=venue)

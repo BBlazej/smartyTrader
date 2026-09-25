@@ -18,8 +18,9 @@ x-agent-env: &agent-env
   LM_STUDIO_ENDPOINT: "${LM_STUDIO_ENDPOINT:-http://host.docker.internal:1234/v1/chat/completions}"
   # Credentials pass through only if set (shell env or a sibling .env); empty →
   # paper executor. The dashboard never sees any of this.
-  KRAKEN_API_KEY: "${KRAKEN_API_KEY:-}"
-  KRAKEN_API_SECRET: "${KRAKEN_API_SECRET:-}"
+  EXCHANGE_API_KEY: "${EXCHANGE_API_KEY:-}"
+  EXCHANGE_API_SECRET: "${EXCHANGE_API_SECRET:-}"
+  EXCHANGE_API_PASSPHRASE: "${EXCHANGE_API_PASSPHRASE:-}"
   # Optional alert channel (§7.51); empty → alerts go to the log only.
   ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
 

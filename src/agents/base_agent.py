@@ -266,7 +266,7 @@ class BaseTradingAgent:
     async def _reconcile_orders(self) -> None:
         """Poll + persist status transitions of venue orders left pending (§7.28).
 
-        Uses the executor's optional ``reconcile_open_orders()`` hook (Kraken;
+        Uses the executor's optional ``reconcile_open_orders()`` hook (ccxt spot;
         paper orders fill instantly and XTB polls internally to a terminal
         status, so those executors simply have no hook). Fail-soft: a broken
         poll must never halt the cycle. Fills realized here carry their

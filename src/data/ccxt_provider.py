@@ -1,4 +1,4 @@
-"""Crypto market data provider via CCXT (Kraken)."""
+"""Crypto market data provider via CCXT (OKX Europe by default, §7.64)."""
 
 from __future__ import annotations
 
@@ -137,8 +137,8 @@ class CCXTProvider:
 def exchange_has_sandbox(exchange_id: str) -> bool:
     """Whether ccxt knows a sandbox/testnet endpoint for ``exchange_id`` (§7.41).
 
-    Kraken **spot** has none (``urls['test']`` is ``None``); only ``krakenfutures``
-    has a demo environment. Offline check — the exchange object is never connected.
+    E.g. OKX (``okx``/``myokx``) has demo trading; some spot venues have none
+    (``urls['test']`` is ``None``). Offline check — the exchange object is never connected.
     """
     import ccxt.async_support as ccxt_async  # lazy import
 
@@ -150,16 +150,18 @@ def exchange_has_sandbox(exchange_id: str) -> bool:
 
 
 def create_ccxt_provider(
-    exchange_id: str = "kraken",
+    exchange_id: str,
     testnet: bool = True,
     api_key: str | None = None,
     api_secret: str | None = None,
+    api_passphrase: str | None = None,
     candles_limit: int = 100,
 ) -> CCXTProvider:
     """Build a provider backed by a real CCXT exchange.
 
-    CCXT is imported lazily so the rest of the package (and its tests) stays
-    importable without the dependency installed.
+    ``api_passphrase`` is ccxt's ``password`` credential — OKX requires it alongside
+    key + secret (§7.64). CCXT is imported lazily so the rest of the package (and its
+    tests) stays importable without the dependency installed.
     """
     import ccxt.async_support as ccxt_async  # lazy import
 
@@ -169,14 +171,16 @@ def create_ccxt_provider(
         params["apiKey"] = api_key
     if api_secret:
         params["secret"] = api_secret
+    if api_passphrase:
+        params["password"] = api_passphrase
 
     client = exchange_cls(params)
     if testnet:
         if not client.urls.get("test"):
             # ccxt's own error here is an opaque TypeError (§7.41, external review 4).
             raise ValueError(
-                f"exchange '{exchange_id}' has no sandbox/testnet in ccxt — Kraken spot, "
-                "for example, only offers live trading (krakenfutures has a demo)"
+                f"exchange '{exchange_id}' has no sandbox/testnet in ccxt — it only offers "
+                "live trading (OKX, ccxt 'myokx', has a demo)"
             )
         client.set_sandbox_mode(True)
 

@@ -18,7 +18,7 @@ from src.core.decision_pipeline import DecisionPipeline
 from src.core.models import OHLCV, ClosedEntry, MarketSnapshot, OrderResult, OrderSide, TradeSignal
 from src.core.risk_engine import RiskEngine
 from src.core.storage import Storage
-from src.execution.kraken_executor import KrakenExecutor
+from src.execution.ccxt_executor import CcxtExecutor
 from src.execution.paper_executor import PaperExecutor
 
 
@@ -136,12 +136,12 @@ class TestReconciliationIsLossless:
     """A reconciled venue fill is confirmed to the executor only once persisted."""
 
     @staticmethod
-    async def _pending_kraken(storage: Storage, decision_id: int | None = None) -> KrakenExecutor:
+    async def _pending_kraken(storage: Storage, decision_id: int | None = None) -> CcxtExecutor:
         client = AsyncMock()
         client.create_order.return_value = {"id": "V-1", "status": "open"}
         client.fetch_free_balance.return_value = {"USDT": {"free": 1_000.0}}
         client.fetch_positions.return_value = []
-        executor = KrakenExecutor(client)
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
         await executor.place_order(
             "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, decision_id=decision_id
         )

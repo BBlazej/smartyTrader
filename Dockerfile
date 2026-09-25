@@ -3,7 +3,7 @@
 # the dashboard is server-rendered Jinja2/HTMX with uPlot via CDN.
 #
 # The compose file sets each service's command; a bare `docker run` defaults to
-# the crypto agent (paper by default — no KRAKEN_API_KEY → PaperExecutor).
+# the crypto agent (paper by default — no EXCHANGE_API_KEY → PaperExecutor).
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \

@@ -632,8 +632,8 @@ class DecisionPipeline:
         Uses the optional ``update_price(symbol, price)`` hook implemented by
         :class:`PaperExecutor`: without it a paper position keeps its fill
         price forever, so unrealized PnL stays 0 and the daily-loss rule can
-        never see market moves. Executors that report live venue prices
-        (Kraken, XTB) do not implement the hook and are left untouched.
+        never see market moves. The ccxt spot executor uses it to value its ledger
+        positions (§7.41); XTB reports live venue prices and has no hook.
         Fail-soft: a marking failure must never break a trading cycle.
         """
         if not snapshot.candles:

@@ -89,7 +89,7 @@ class OrderRow(Base):
     # Realized PnL of a *closing* fill (§7.46) — one row per closing fill, exactly
     # what the live loss-streak tracker counts, so restart rehydration matches it.
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Execution venue (§7.61): ``paper`` / ``kraken-live`` / ``xtb-demo`` … — each
+    # Execution venue (§7.61): ``paper`` / ``myokx-sandbox`` / ``xtb-demo`` … — each
     # executor replays only its own fills at restart. NULL = legacy/unknown.
     venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
