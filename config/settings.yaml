@@ -1,14 +1,22 @@
 llm:
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
   model: "qwen/qwen3.8-27b"
-  timeout_seconds: 30
+  # Whole-response budget: requests aren't streamed, so the full completion (incl.
+  # any <think> reasoning) must arrive within this. A local 27B model needs minutes
+  # for thousands of tokens. The scheduler never overlaps cycles (max_instances=1).
+  timeout_seconds: 300
   max_retries: 3
   use_json_schema: false   # enable once the local model accepts response_format
   temperature: 0.2         # sampling temperature sent with every request (§7.19)
-  max_tokens: 40000         # completion cap per request (§7.19)
+  # Completion cap per request (§7.19) — NOT the context window (set that in LM
+  # Studio when loading the model; prompt + max_tokens must fit inside it). Room
+  # for Qwen3 reasoning + the JSON; truncation logs llm_response_truncated (§7.57).
+  max_tokens: 8192
   retry_backoff_base_seconds: 1.0   # exponential backoff between retries; 0 = off
   seed: null               # set an integer for deterministic evaluation (§7.33); null omits it
-  max_response_chars: 20000  # raw completion size cap before parsing (§7.33); 0 = guard off
+  # Raw completion size cap before parsing (§7.33); 0 = guard off. Keep it ≈4×
+  # max_tokens (~4 chars/token) or long answers are discarded before the parser.
+  max_response_chars: 36000
 
 crypto_agent:
   enabled: true

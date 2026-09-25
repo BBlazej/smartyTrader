@@ -551,9 +551,11 @@ Everything is config-driven — thresholds, endpoints, schedules, retention wind
 llm:
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
   model: "qwen/qwen3.8-27b"
-  timeout_seconds: 30
+  timeout_seconds: 300     # whole (non-streamed) completion incl. reasoning
   max_retries: 3
   use_json_schema: false   # enable once the local model accepts response_format
+  max_tokens: 8192         # completion cap — not the context window (that's LM Studio's)
+  max_response_chars: 36000  # size guard ≈ 4 × max_tokens
 
 crypto_agent:
   enabled: true
