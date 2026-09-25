@@ -27,9 +27,11 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import structlog
+
+logger = structlog.get_logger()
 
 from ..analysis.candles import timeframe_delta
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
@@ -61,6 +63,68 @@ def load_dotenv(path: str = ".env") -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+class RunnerAlreadyRunning(RuntimeError):
+    """Raised when another runner instance of the same agent owns the lock (§7.52)."""
+
+
+class RunnerLock:
+    """Exclusive per-agent-runner file lock (§7.52).
+
+    Nothing else prevents two runners of the same agent: they would share one SQLite
+    DB while keeping *separate* in-memory paper books, exit levels and pending-order
+    state — forking decisions and halving every risk guard. An OS ``flock`` is the
+    foolproof form: it is released by the kernel even when the holder dies abruptly,
+    so there are no stale-pid files to reason about (the pid written inside is
+    diagnostics only).
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._handle: TextIO | None = None
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def acquire(self) -> bool:
+        """Take the exclusive lock without blocking; ``False`` when another holds it."""
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-POSIX dev machines only
+            logger.warning(
+                "fcntl unavailable; running WITHOUT the single-instance runner lock",
+                lock_file=str(self._path),
+            )
+            return True
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self._path.open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        """Explicit unlock for graceful paths; an abrupt exit needs none (kernel releases)."""
+        if self._handle is None:
+            return
+        try:
+            import fcntl
+
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except Exception:  # noqa: BLE001, S110 - closing the fd below releases regardless
+            pass
+        finally:
+            self._handle.close()
+            self._handle = None
 
 
 def build_alerts(settings: Settings) -> AlertManager:
@@ -116,6 +180,25 @@ async def run_agent(
             "exiting without running anything"
         )
         return
+
+    # Single-instance guard (§7.52): refuse a second runner of this agent *before*
+    # touching the DB — two processes over one shared SQLite file would trade from
+    # separate in-memory books while both stamping the same control row. The lock is
+    # held for the whole run; any exit path below (or process death) releases it.
+    # An in-memory DB cannot be shared across processes at all, so there is nothing
+    # to guard (and no directory to put a lock file in).
+    runner_lock: RunnerLock | None = None
+    if settings.storage.database_path != ":memory:":
+        runner_lock = RunnerLock(
+            Path(settings.storage.database_path).parent / f"{component}.runner.lock"
+        )
+    if runner_lock is not None and not runner_lock.acquire():
+        message = (
+            f"another {component} runner already holds {runner_lock.path}; refusing to start "
+            "a second instance (it would share the DB with separate in-memory state)"
+        )
+        log.error(message, lock_file=str(runner_lock.path))
+        raise RunnerAlreadyRunning(message)
 
     # Agent-bound storage (§7.39): both agents share one DB file, so every write is
     # stamped with this component and every book/decision/order read stays within it.
@@ -216,6 +299,8 @@ async def run_agent(
             await provider.close()
             await executor.close()
             await storage.close()
+            if runner_lock is not None:
+                runner_lock.release()
         return
 
     # Late import so tests can patch src.core.scheduler.AsyncSchedulerManager.
@@ -286,4 +371,6 @@ async def run_agent(
         await provider.close()
         await executor.close()
         await storage.close()
+        if runner_lock is not None:
+            runner_lock.release()
         log.info(f"{component} agent shut down cleanly")

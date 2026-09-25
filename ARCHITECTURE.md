@@ -88,6 +88,7 @@ flowchart TB
 ```
 
 - **Layering**: `agents/` are thin market-specific subclasses of `BaseTradingAgent`; all shared lifecycle lives in `core/runner.py::run_agent` + `agents/base_agent.py` (§7.13). Market quirks hook via `_skip_cycle_reason()`.
+- **One runner process per agent** (§7.52): `run_agent` holds an exclusive non-blocking `flock` (`<db-dir>/<component>.runner.lock`, acquired before anything is constructed; contention → `RunnerAlreadyRunning`, exit 2). Kernel-released on abrupt death, so two runners can never trade one DB from separate in-memory books.
 - **Protocol seams**: providers and executors are swappable via `Protocol` interfaces (`Executor` is defined in `core/models.py`). Paper is the default executor on both markets.
 - The backtester and control API read/write the *same* SQLite DB — no separate state anywhere.
 
@@ -107,7 +108,7 @@ src/
 │   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
 │   ├── rehydration.py        # startup pass: paper book, daily-loss baseline, streak/cooldown from persisted rows (§7.7)
 │   ├── retention.py          # fail-soft storage pruning wrapper (startup + scheduled) (§7.12)
-│   ├── runner.py             # shared runner lifecycle: enabled-gate, wiring, control API startup, --once/scheduled loops (§7.13)
+│   ├── runner.py             # shared runner lifecycle: enabled-gate, single-instance flock (§7.52), wiring, control API startup, --once/scheduled loops (§7.13)
 │   ├── backtester.py         # DecisionReplayBacktester — same risk/fee model over stored decisions, zero LLM calls (§7.14)
 │   ├── control_api.py        # agent-side FastAPI control API (pause/resume/close-all/config/status) (§7.15 P2)
 │   ├── control_config.py     # SafeConfigOverrides whitelist; parse_and_apply onto live objects (§7.15 P2)

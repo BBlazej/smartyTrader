@@ -35,7 +35,7 @@ from src.core.config import (
     Settings,
     live_trading_acknowledged,
 )
-from src.core.runner import build_alerts, load_dotenv, run_agent
+from src.core.runner import RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import PaperExecutor
 from src.execution.xtb_client import XApiClient
@@ -154,6 +154,10 @@ def main() -> None:
         asyncio.run(run(run_once=args.once))
     except KeyboardInterrupt:
         pass
+    except RunnerAlreadyRunning:
+        # §7.52: another runner owns this agent; run_agent logged the reason.
+        # Distinct exit code so cron/systemd notices a refused double-start.
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

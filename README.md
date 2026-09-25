@@ -200,7 +200,8 @@ and **per-cycle position marking** (open paper positions are re-marked at each
 snapshot's last close before the risk check, so unrealized PnL and the
 daily-loss rule track the market), and **honest `enabled: false` semantics**
 (both runners exit without running anything when an agent is disabled; `--once`
-is the explicit single-cycle flag), and the **drawdown guard is live** (peak
+is the explicit single-cycle flag), a **single runner process per agent** (exclusive
+file lock — a double-start refuses with exit code 2, §7.52), and the **drawdown guard is live** (peak
 equity high-water mark persisted via SQLite, seeded at startup) with the
 **order-size cap enforced at the gate** (oversized plans are rejected before
 execution; sells clamp to units held), and the **keyed Kraken path hardened
