@@ -125,6 +125,7 @@ scripts/
 ├── run_stocks_agent.py       # Entry point — stocks-specific factories + shared runner
 ├── run_dashboard.py          # Web dashboard server (monitor + control + safe config) (§7.15)
 ├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
+├── rebaseline_drawdown.py    # Audited CLI drawdown peak re-baseline — the latch's only exit (§7.53)
 └── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)

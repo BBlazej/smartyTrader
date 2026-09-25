@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import structlog
 from sqlalchemy import Select, select
 
-from .models import MarketSnapshotRow, PortfolioSnapshotRow
+from .models import DrawdownResetRow, MarketSnapshotRow, PortfolioSnapshotRow
+
+logger = structlog.get_logger()
 
 
 class MarketSnapshotMixin:
@@ -107,6 +110,68 @@ class PortfolioSnapshotMixin:
             result = await session.execute(stmt)
             value = result.scalar()
             return float(value) if value is not None else None
+
+    # ── Drawdown peak re-baseline (§7.53) ────────────────────
+
+    async def record_drawdown_reset(
+        self, baseline_value: float, agent: str | None = None
+    ) -> DrawdownResetRow:
+        """Persist an operator's explicit drawdown re-baseline (audited, CLI-only).
+
+        Upsert per agent; the audit trail is this row plus the structlog line —
+        superseded values are not kept here (the snapshot history stays intact).
+        """
+        scope = self._agent_scope(agent)
+        if scope is None:  # pragma: no cover - callers always name an agent
+            raise ValueError("drawdown resets require an explicit agent")
+        async with await self._session() as session:
+            row = await session.get(DrawdownResetRow, scope)
+            if row is None:
+                row = DrawdownResetRow(agent=scope, baseline_value=baseline_value)
+                session.add(row)
+            else:
+                row.baseline_value = baseline_value
+                row.reset_at = datetime.now(UTC)
+            await session.commit()
+            logger.info(
+                "drawdown peak rebaselined",
+                agent=scope,
+                baseline_value=baseline_value,
+                reset_at=str(row.reset_at),
+            )
+            return row
+
+    async def get_drawdown_reset(self, agent: str | None = None) -> DrawdownResetRow | None:
+        async with await self._session() as session:
+            scope = self._agent_scope(agent)
+            if scope is None:
+                return None
+            return await session.get(DrawdownResetRow, scope)
+
+    async def get_effective_peak_equity(self, agent: str | None = None) -> float | None:
+        """The drawdown high-water seed an operator can actually escape (§7.53).
+
+        Without a reset row this is the historical MAX over never-pruned snapshots.
+        After one, history before ``reset_at`` no longer latches the guard: the seed
+        is ``max(baseline_value, MAX(total_value since reset_at))``.
+        """
+        from sqlalchemy import func
+
+        reset = await self.get_drawdown_reset(agent)
+        if reset is None:
+            return await self.get_max_portfolio_value(agent)
+        async with await self._session() as session:
+            stmt = self._scoped_snapshots(
+                select(func.max(PortfolioSnapshotRow.total_value)).where(
+                    PortfolioSnapshotRow.timestamp >= reset.reset_at
+                ),
+                agent,
+            )
+            result = await session.execute(stmt)
+            since = result.scalar()
+        if since is None:
+            return float(reset.baseline_value)
+        return max(float(reset.baseline_value), float(since))
 
     async def get_latest_portfolio_snapshot(
         self, agent: str | None = None

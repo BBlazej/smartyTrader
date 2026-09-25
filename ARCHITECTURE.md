@@ -139,6 +139,7 @@ scripts/
 ├── run_crypto_agent.py       # crypto-specific factories + shared runner
 ├── run_stocks_agent.py       # stocks-specific factories + shared runner
 ├── prune_storage.py          # out-of-band retention pruning (no agents, no trades) (§7.12)
+├── rebaseline_drawdown.py    # audited CLI drawdown peak re-baseline, dry-run default (§7.53)
 └── backtest.py               # decision-replay CLI (--start/--end/--days/--symbols/--provider/--timeframe/--report) (§7.14)
 
 docs/API_NOTES.md             # Kraken + XTB API quirks
@@ -257,7 +258,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 
 Additional engine facts:
 
-- The drawdown high-water mark is seeded at startup from `Storage.get_max_portfolio_value()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5).
+- The drawdown high-water mark is seeded at startup from `Storage.get_effective_peak_equity()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5). The seed is reset-aware (§7.53): with a `drawdown_resets` row it becomes `max(baseline_value, MAX(total_value since reset_at))` — the operator's audited CLI exit from a permanently-latched guard (`scripts/rebaseline_drawdown.py`, dry-run by default; no dashboard equivalent by design).
 - Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7).
 - The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
@@ -313,7 +314,7 @@ stateDiagram-v2
 ## Storage schema & retention
 
 - **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
-- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`.
+- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53).
 - **Agent scoping (§7.39):** both agents share the file, so `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
 
@@ -387,7 +388,7 @@ erDiagram
     }
 ```
 
-Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark. Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
+Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark (escapable only via the audited `drawdown_resets` row, §7.53). Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
 Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 

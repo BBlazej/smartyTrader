@@ -105,6 +105,22 @@ class PortfolioSnapshotRow(Base):
     agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
+class DrawdownResetRow(Base):
+    """Audited drawdown peak re-baseline per agent (§7.53).
+
+    Without one, the high-water mark is MAX over never-pruned snapshots — a permanent
+    latch whose only exit would be hand-editing SQLite. This row records the operator's
+    explicit CLI reset: new baseline value + when it happened. Startup seeding then
+    ignores snapshots older than ``reset_at`` (they stay in the DB as audit history).
+    """
+
+    __tablename__ = "drawdown_resets"
+
+    agent: Mapped[str] = mapped_column(String(20), primary_key=True)  # crypto | stocks
+    baseline_value: Mapped[float] = mapped_column(Float)
+    reset_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
 class AgentControlRow(Base):
     """Control-plane row per agent (§7.15): the DB stays the single source of truth.
 

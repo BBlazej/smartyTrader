@@ -209,10 +209,11 @@ async def run_agent(
     risk_engine = RiskEngine(settings.risk)
 
     # Seed the drawdown high-water mark from persisted portfolio history so a
-    # restart cannot reset the guard (§7.5). Fail-soft: without history the
-    # engine seeds lazily from the first reading.
+    # restart cannot reset the guard (§7.5). The read is reset-aware (§7.53): an
+    # operator's CLI re-baseline cuts the latch history off at ``reset_at``.
+    # Fail-soft: without history the engine seeds lazily from the first reading.
     try:
-        risk_engine.seed_peak_equity(await storage.get_max_portfolio_value())
+        risk_engine.seed_peak_equity(await storage.get_effective_peak_equity())
     except Exception as exc:  # noqa: BLE001
         log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
 
