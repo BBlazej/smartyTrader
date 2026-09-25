@@ -166,7 +166,7 @@ band, momentum rank, unusual-volume flags. Output: ranked candidates. No LLM inv
 raw text) with dedup and retention like other tables. Candidate sources (to be decided, Q6):
 - *Events / calendars:* earnings dates, economic calendar (CPI, rate decisions), exchange
   announcements (listings, delistings, maintenance).
-- *Filings:* SEC EDGAR (US, free), ESPI/EBI (GPW) if Polish stocks are in scope.
+- *Filings:* SEC EDGAR (US, free); EU issuers' regulatory announcements if EU stocks are in scope.
 - *News:* RSS from a curated list of reputable outlets; crypto news feeds.
 - *Sentiment/attention (optional):* e.g. trending lists — noisy, lowest priority.
 
@@ -249,7 +249,7 @@ Before any of this, the base must be honest — otherwise we'd be allocating on 
 2. **Realistic fees:** `execution.paper_fee_pct` 0.26 % → the actual taker tier (verify, likely
    ~0.40 % on Kraken Pro's entry tier); fee model per venue.
 3. **Stock broker decision:** XTB closed its API on 2025-03-14; the XTB executor is a dead end.
-   Choose IBKR (paper + live from Poland, US + GPW) or Alpaca (fast paper loop, US only), or stay
+   Choose IBKR (paper + live from Slovakia, US + EU exchanges) or Alpaca (fast paper loop, US only), or stay
    paper-only on yfinance for now.
 4. **Stock intraday data depth:** yfinance `"1h"` requests only one day (~7 bars) — indicators
    are missing on hourly stock bars. Needed if a stocks swing sleeve uses 1 h.
@@ -296,29 +296,29 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 4. ~~Portfolio limits~~ — **decided:** per-sleeve limits (§4.8). Still to confirm: the
    recommended loose agent-wide backstop.
 5. **Universe size:** how many dynamic symbols per agent (LLM budget suggests ≤ 5–8 hourly)?
-6. **News sources:** free only (RSS, EDGAR, calendars) or paid APIs acceptable? Polish sources
-   (ESPI/EBI) needed?
+6. **News sources:** free only (RSS, EDGAR, calendars) or paid APIs acceptable? Are EU-listed
+   stocks in scope (then EU issuer announcements are needed)?
 7. **Hardware:** is a second, smaller local model for summarization acceptable?
 
-### Q1 — IBKR vs Alpaca (for a Poland-based user)
+### Q1 — IBKR vs Alpaca (for a user resident in Slovakia — EU/EEA, EUR)
 
 | | **Interactive Brokers (IBKR)** | **Alpaca** |
 |---|---|---|
-| Availability from Poland | Yes — served by IB Ireland (EU-regulated, passported) | Paper-only account: email sign-up, no funding. Live: many non-US countries, Poland not confirmed — ask their support |
+| Availability from Slovakia | Yes — all EU/EEA residents are served by Interactive Brokers Ireland (Central Bank of Ireland, EU-passported) | Paper-only account: email sign-up, no funding. Live: many non-US countries, **Slovakia not confirmed** — ask their support |
 | Paper trading | Free, $1M simulated; requires an **open and funded IBKR Pro** live account first | Free, $100k simulated, instant, no funding |
-| Markets | 160+ markets: US, **GPW (Warsaw)**, EU exchanges, ETFs, bonds | US stocks & ETFs (+ crypto); no GPW |
+| Markets | 160+ markets: US, EU exchanges (Xetra, Euronext, …), ETFs, bonds | US stocks & ETFs (+ crypto); no EU exchanges |
 | API | TWS API over a locally running **IB Gateway/TWS** app (ports 4002 paper / 4001 live), or the Web API; periodic re-login (2FA) — more moving parts | Plain **REST + WebSocket** with API keys; paper and live are the same API on different URLs |
 | Market data | Paid per-exchange subscriptions for real-time (paper shares the live account's); delayed data free | Free IEX-only feed (partial volume); full SIP $99/month |
-| Costs | Low per-share commissions (tiered), cheap FX; PLN base currency possible | Commission-free US stocks; USD-only deposits for internationals |
+| Costs | Low per-share commissions (tiered), cheap FX; **EUR base currency** | Commission-free US stocks; USD-only deposits for internationals (EUR→USD conversion on every deposit) |
 | Fit with our code | New executor + client + a gateway process (extra Docker service) | New executor + client; simplest integration |
-| Taxes (PL) | No PIT-8C — self-report PIT-38; W-8BEN for US withholding | Same |
+| Taxes | Neither is a Slovak broker — you declare gains yourself in the Slovak tax return; W-8BEN for US dividend withholding. Holds of days–weeks never meet a one-year holding test, so expect ordinary income-tax treatment — confirm with a Slovak tax advisor | Same |
 
 **Recommendation:** use **Alpaca paper** to build and validate the stocks sleeves now (zero
 cost, no funding, fastest loop — yfinance can stay the data source, or Alpaca's free IEX bars).
-Choose **IBKR** as the eventual live broker if real-money stocks from Poland are the goal (it
-certainly accepts Polish residents and covers GPW). Executors sit behind one `Executor`
-protocol, so starting on Alpaca paper and adding IBKR later costs one extra executor, not a
-redesign.
+Choose **IBKR** as the eventual live broker if real-money stocks are the goal — it certainly
+accepts Slovak residents, keeps the account in EUR and covers EU exchanges too. Executors sit
+behind one `Executor` protocol, so starting on Alpaca paper and adding IBKR later costs one
+extra executor, not a redesign.
 
 ## 9. Non-goals (v1)
 
