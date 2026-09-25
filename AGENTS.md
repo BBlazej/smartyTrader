@@ -9,7 +9,7 @@ This is an autonomous paper-trading agent system powered by a local LLM (LM Stud
 - DB: SQLite via SQLAlchemy + aiosqlite (WAL mode — one writer, concurrent readers for the dashboard/backtester)
 - Scheduling: APScheduler
 - HTTP client: httpx (for LLM calls)
-- Crypto data/orders: CCXT → Kraken (public data; **Kraken spot has no sandbox** — keyed execution is a `<exchange>-sandbox` only where ccxt provides one, else ack-gated live, §7.41)
+- Crypto data/orders: CCXT → Kraken (public data; **Kraken spot has no sandbox** — keyed execution is a `<exchange>-sandbox` only where ccxt provides one, else ack-gated live, §7.41). **Venue direction decided 2026-09-26:** crypto moves to **OKX Europe** (ccxt `myokx`, EUR/USDC pairs, API demo; PLAN §7.64), stocks to **Saxo OpenAPI** (SIM first; PLAN §7.66) — XTB closed its API in 2025. The user is in Slovakia (EEA): MiCA rules apply.
 - Stocks data: yfinance, xAPI (XTB demo)
 - Structured logging: structlog
 - Config: YAML (`config/settings.yaml`) + `.env` for secrets

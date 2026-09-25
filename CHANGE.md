@@ -1,9 +1,10 @@
 # CHANGE.md — Multi-strategy trading with a research layer (proposal)
 
 **Status:** proposal, under discussion — nothing here is implemented. Started 2026-09-26.
-**Decided so far (2026-09-26):** Q3 — "long-term" means **days to weeks** (position trading,
-not months-long investing); Q4 — risk limits move to **per-style (per-sleeve) limits** (§4.8).
-Q1 (stock broker) open — comparison in §8.
+**Decided so far (2026-09-26):** Q1 — venues: **OKX Europe** for crypto, **Saxo** for stocks
+(demo/SIM first, same APIs for real money later; §8); Q3 — "long-term" means **days to weeks**
+(position trading, not months-long investing); Q4 — risk limits move to **per-style
+(per-sleeve) limits** (§4.8).
 **Scope:** turn today's single-style swing trader into a system that runs several trading
 *styles* side by side (short-term swing + longer-term position trades), measures which one
 actually earns money, shifts capital toward what works, and widens what the agents look at
@@ -244,13 +245,13 @@ Today's seven rules evaluate the **whole agent book**. With sleeves they evaluat
 
 Before any of this, the base must be honest — otherwise we'd be allocating on wrong numbers:
 
-1. **Kraken for an EEA account:** USDT pairs are not tradable in the EEA (MiCA) — move to EUR
-   (or USDC) pairs and make the executor's quote currency configurable.
-2. **Realistic fees:** `execution.paper_fee_pct` 0.26 % → the actual taker tier (verify, likely
-   ~0.40 % on Kraken Pro's entry tier); fee model per venue.
-3. **Stock broker decision:** XTB closed its API on 2025-03-14; the XTB executor is a dead end.
-   Choose IBKR (paper + live from Slovakia, US + EU exchanges) or Alpaca (fast paper loop, US only), or stay
-   paper-only on yfinance for now.
+1. **Crypto on OKX Europe (PLAN §7.64):** EUR/USDC pairs (USDT is not tradable for EEA
+   accounts), configurable quote currency, API passphrase support; then the OKX demo smoke run
+   (PLAN §7.28).
+2. **Realistic per-venue costs (PLAN §7.65):** OKX ~0.10 % taker; Saxo 0.08 % min $1 + 0.25 %
+   FX — the paper executor must model minimums and FX, not just a percentage.
+3. **Stocks on Saxo (PLAN §7.66):** XTB closed its API on 2025-03-14; build a Saxo OpenAPI
+   executor against the free SIM environment, then retire the XTB code.
 4. **Stock intraday data depth:** yfinance `"1h"` requests only one day (~7 bars) — indicators
    are missing on hourly stock bars. Needed if a stocks swing sleeve uses 1 h.
 5. **§7.63** live yfinance validation.
@@ -287,8 +288,7 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 
 ## 8. Open questions (need your decisions)
 
-1. **Stock broker:** IBKR, Alpaca, or paper-only for now? (Blocks stocks sleeves.) —
-   *open*; comparison below.
+1. ~~Stock broker~~ — **decided:** OKX Europe (crypto) + Saxo (stocks); reasoning below.
 2. **Which sleeves first?** Suggest crypto swing (1 h) + crypto position (1 d) — same venue,
    24/7 data, fastest feedback. Stocks after the broker question.
 3. ~~Horizons~~ — **decided:** "long-term" = days to weeks (position sleeve on 4 h/1 d bars,
@@ -300,7 +300,23 @@ universe selection before expensive, risky text ingestion (P4 before P5).
    stocks in scope (then EU issuer announcements are needed)?
 7. **Hardware:** is a second, smaller local model for summarization acceptable?
 
-### Q1 — IBKR vs Alpaca (for a user resident in Slovakia — EU/EEA, EUR)
+### Q1 — venue decision (user resident in Slovakia — EU/EEA, EUR)
+
+**Decided 2026-09-26: OKX Europe for crypto, Saxo for stocks.** Both give free demo/SIM access
+through the *same* API later used for real money, and both serve Slovak residents.
+
+| | **OKX Europe** (crypto) | **Saxo** (stocks) |
+|---|---|---|
+| Regulation | MiCA CASP licence (Malta MFSA, Jan 2025; 9/10 services), payments licence (Feb 2026) | Danish bank, Danish FSA; systemically important institution; majority owner J. Safra Sarasin (71 %, 2025) |
+| Client protection | Segregated client assets under MiCA; no deposit insurance for crypto — keep only trading capital there | Up to €100k cash / €20k securities (Danish schemes); segregated custody |
+| Black marks to know | Group pleaded guilty in the US (Feb 2025, ~$505M) to AML violations 2018–2024; Malta's fast-track MiCA approvals criticised | DKK 313M Danish AML fine (2026, 2021–2023 conduct); €300k French AMF fine (2025, IT-migration issues) |
+| Fees | Spot 0.08 % maker / 0.10 % taker base tier (lower EU spot-only fees from 2026-09-25 — verify) → ~0.2 % round trip + slippage | US stocks 0.08 %, **min $1**; FX 0.25 % per conversion → trade from a USD balance: ~0.16 % round trip |
+| Demo | API demo trading (header flag), ccxt `myokx` sandbox mode | Free developer SIM account, $100k, no funding |
+| Watch | EU accounts: EUR/USDC pairs only — check BTC/EUR spreads | $1 minimum dominates trades under ~$1,250; avoid per-trade FX |
+
+Alternatives considered (kept for the record):
+
+#### IBKR vs Alpaca
 
 | | **Interactive Brokers (IBKR)** | **Alpaca** |
 |---|---|---|
@@ -313,12 +329,10 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 | Fit with our code | New executor + client + a gateway process (extra Docker service) | New executor + client; simplest integration |
 | Taxes | Neither is a Slovak broker — you declare gains yourself in the Slovak tax return; W-8BEN for US dividend withholding. Holds of days–weeks never meet a one-year holding test, so expect ordinary income-tax treatment — confirm with a Slovak tax advisor | Same |
 
-**Recommendation:** use **Alpaca paper** to build and validate the stocks sleeves now (zero
-cost, no funding, fastest loop — yfinance can stay the data source, or Alpaca's free IEX bars).
-Choose **IBKR** as the eventual live broker if real-money stocks are the goal — it certainly
-accepts Slovak residents, keeps the account in EUR and covers EU exchanges too. Executors sit
-behind one `Executor` protocol, so starting on Alpaca paper and adding IBKR later costs one
-extra executor, not a redesign.
+Why not these: IBKR needs a funded live account before paper trading and a gateway process;
+Alpaca's live availability for Slovakia is unconfirmed and US-only. Also rejected: Kraken (no
+spot demo, higher fees), Bybit EU (no direct API keys for EU accounts), Coinbase (static canned
+sandbox), Trading 212 (beta API, live market orders only), XTB (API closed).
 
 ## 9. Non-goals (v1)
 

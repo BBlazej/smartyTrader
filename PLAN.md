@@ -78,22 +78,23 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 ### Medium severity (open)
 
-> Order of work (2026-09-26): §7.64 → §7.65 → §7.66 first — they are the prerequisites of the CHANGE.md proposal (CHANGE.md §5) and make paper numbers honest for the §4.3 gates; then §7.28 (keyed smoke run on the corrected pairs).
+> Order of work (2026-09-26, venues decided — **OKX Europe** for crypto, **Saxo** for stocks, CHANGE.md Q1): §7.64 (OKX wiring) → §7.65 (per-venue cost model) → §7.28 (OKX demo smoke run) → §7.66 (Saxo executor, SIM first) → §7.68. These are the prerequisites of the CHANGE.md proposal (§5) and make paper numbers honest for the §4.3 gates.
 
-64. **Kraken pairs not tradable for EEA accounts (USDT delisted under MiCA)** ⏳ [found 2026-09-26]
-    - Kraken halted USDT spot trading for EEA clients in March 2025. Config trades `BTC/USDT`/`ETH/USDT`, and `KrakenExecutor`'s quote currency is a hardcoded `"USDT"` default (`create_kraken_executor`), so a keyed run from the EEA (the user is in Slovakia) would fail. Paper on public data is unaffected.
-    - Fix: EUR (or USDC) pairs in `crypto_agent.pairs`; a config-driven quote currency passed to the executor (cash = free quote balance); validate at startup that every pair's quote matches it.
+64. **Crypto venue → OKX Europe: EUR/USDC pairs, configurable quote, passphrase** ⏳ [found 2026-09-26; venue decided 2026-09-26]
+    - Why: Kraken spot has no demo and halted USDT for EEA clients (MiCA); the user is in Slovakia. OKX Europe (MiCA-licensed, Malta) has a free API demo and is ccxt's `myokx` (host `eea.okx.com`; sandbox mode adds the `x-simulated-trading: 1` header). EU accounts trade **EUR/USDC pairs only**.
+    - Gaps in our code: `KrakenExecutor`/`create_kraken_executor` default the quote to a hardcoded `"USDT"`; `create_ccxt_provider` passes only key + secret, but OKX **requires an API passphrase** (ccxt `password`); env names are Kraken-specific (`KRAKEN_API_KEY`/`_SECRET`); config trades `BTC/USDT`/`ETH/USDT`.
+    - Fix: `crypto_agent.quote_currency` (validated: every pair's quote must match) passed to the executor; generic keyed-venue env vars (`EXCHANGE_API_KEY` / `EXCHANGE_API_SECRET` / `EXCHANGE_API_PASSPHRASE`, Kraken names kept as fallbacks with a deprecation warning); ship `exchange: myokx`, `testnet: true`, pairs `BTC/EUR`, `ETH/EUR` (check spreads vs USDC pairs first). The existing `testnet: true` → `<exchange>-sandbox` path then selects OKX demo without further code. Consider renaming `KrakenExecutor` → `CcxtExecutor` (it is generic ccxt spot) with an alias.
 
-65. **Paper fee below the venue's real taker fee** ⏳ [found 2026-09-26]
-    - `execution.paper_fee_pct: 0.0026`, but the pipeline's marketable limit orders pay the taker fee (Kraken Pro entry tier believed ~0.40 % — verify against the current schedule). Paper PnL and every §4.3 gate are overstated by roughly 0.3 % per round trip.
-    - Fix: set the verified taker rate; consider per-venue fee config so replay/paper match the venue actually targeted.
+65. **Per-venue cost model (fee %, minimum commission, FX)** ⏳ [found 2026-09-26]
+    - `execution.paper_fee_pct: 0.0026` is one Kraken-era number for every venue; the paper executor models only a percentage. Real costs now: **OKX EU** spot base tier 0.08 % maker / 0.10 % taker (lowered for EU spot-only accounts from 2026-09-25 — verify the account's rate); **Saxo** US stocks 0.08 % **min $1** per trade plus **0.25 % FX** per EUR↔USD conversion (avoidable by trading from a USD balance). Without the minimum, small stock trades look cheaper on paper than they are.
+    - Fix: per-venue cost config (`fee_pct`, `min_commission` + currency, `fx_fee_pct` applied when trade and account currencies differ); `PaperExecutor` and `buy_cost_factor` (§7.59 L1) use it; the backtester replays with the same model.
 
-66. **XTB closed its API — XTB executor is a dead end** ⏳ [found 2026-09-26]
-    - XTB's help centre: API access disabled since 2025-03-14 ("XTB no longer offers API access"). Our client targets `wss://ws.xapi.pro`, known only from third-party wrappers — unsupported even if it answers; module docs claim trading "now lives" there.
-    - Fix: correct the xtb_client/xtb_executor/AGENTS/README docs; decide the stocks broker (IBKR / Alpaca / paper-only — CHANGE.md Q1); then retire or replace the XTB executor behind the unchanged `Executor` protocol.
+66. **Stocks executor → Saxo OpenAPI (replaces the dead XTB path)** ⏳ [found 2026-09-26; broker decided 2026-09-26]
+    - XTB disabled API access on 2025-03-14 ("XTB no longer offers API access"); our client targets `wss://ws.xapi.pro`, known only from third-party wrappers, and its module docs wrongly claim trading "now lives" there. Saxo (Danish bank, serves Slovakia) has a free developer **SIM** environment ($100k, no funding) and the same OpenAPI for live after app approval.
+    - Fix, in order: (1) correct the XTB docs/comments now (API closed; path kept disabled); (2) `SaxoClient` + `SaxoExecutor` behind the unchanged `Executor` protocol — OAuth (SIM: 24 h dev token, then an OAuth app for unattended runs), instrument lookup to Saxo `Uic` ids via a data→venue symbol table (like `xtb_execution.symbol_map`), orders, positions (+ FX-aware valuation), balances, fill-price reconciliation (as §7.62), venue tag `saxo-sim`/`saxo-live` (§7.61), rehydration hooks (§7.58); (3) switch the stocks runner, then delete the XTB executor/client. Trade US stocks from a USD sub-account/balance (FX cost, §7.65).
 
 28. **Keyed venue smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1] — *re-scoped by §7.41*
-    - Kraken **spot has no sandbox**, so the original "Kraken testnet" run cannot exist. Options now: (a) a keyed run on an exchange ccxt has a sandbox for (`testnet: true` → `<exchange>-sandbox` mode), or (b) a deliberately acknowledged minimal-size live Kraken spot run (`testnet: false` + `live_trading: true` + `LIVE_TRADING_ACK`). Either needs a network-enabled environment (the dev sandbox blocks outbound HTTPS).
+    - Kraken **spot has no sandbox**, so the original "Kraken testnet" run cannot exist. **Now concrete (2026-09-26):** run it on the **OKX Europe demo** once §7.64 lands (`exchange: myokx`, `testnet: true`, demo API key + secret + passphrase) — first `--once`, then a multi-day paper run; confirms order format, fills, reconciliation and fee reporting against a real API. Needs a network-enabled environment.
     - *Done meanwhile:* per-cycle status reconciliation of orders left `open` is implemented and pinned — `KrakenExecutor.reconcile_open_orders()` re-polls pending venue orders each cycle (agent-side `_reconcile_orders`), patches the stored row via `Storage.update_order_status`, and flows late fills through the FIFO ledger with entry-decision attribution (§7.28).
 
 ### Low severity / housekeeping (open)
