@@ -2,9 +2,16 @@
 
 **Status:** proposal, under discussion — nothing here is implemented. Started 2026-09-26.
 **Decided so far (2026-09-26):** Q1 — venues: **OKX Europe** for crypto, **Saxo** for stocks
-(demo/SIM first, same APIs for real money later; §8); Q3 — "long-term" means **days to weeks**
-(position trading, not months-long investing); Q4 — risk limits move to **per-style
-(per-sleeve) limits** (§4.8).
+(demo/SIM first, same APIs for real money later; §8); Q2 — **crypto first**; Q3 — "long-term"
+means **days to weeks** (position trading, not months-long investing); Q4 — risk limits move to
+**per-style (per-sleeve) limits** plus one loose agent-wide backstop (§4.8); Q6 — **free news
+sources only**. Kraken is dropped entirely (no fallback code).
+
+**Constraints (2026-09-26):** real money at first **≈ €1,000 at most** (may grow after paper
+trading earns trust) and the project should cost next to nothing — free services only, paper
+cash sized to the real plan, real-money stocks deferred (Saxo's $1 minimum is ~1 %/side on
+€100 trades). Everything runs on the user's **desktop PC** (same machine as LM Studio), so
+restart-safety matters and GPU/electricity use is a real cost.
 **Scope:** turn today's single-style swing trader into a system that runs several trading
 *styles* side by side (short-term swing + longer-term position trades), measures which one
 actually earns money, shifts capital toward what works, and widens what the agents look at
@@ -235,7 +242,7 @@ Today's seven rules evaluate the **whole agent book**. With sleeves they evaluat
   operator re-baselines it via the audited CLI (§7.53, per sleeve).
 - **Cash is shared at the venue**, so sizing clamps to *both* the sleeve's budget and the
   agent's actual free cash; a sleeve can never spend another sleeve's budget.
-- **Recommended outer backstop (please confirm):** keep *one* loose agent-wide breaker —
+- **Outer backstop (confirmed 2026-09-26):** keep *one* loose agent-wide breaker —
   e.g. agent equity −20 % from peak → no new entries in any sleeve. Per-sleeve limits don't
   protect against several sleeves losing at once (correlated crypto moves), and a bug in sleeve
   accounting shouldn't be able to lose the whole account. It sits far outside the sleeves' own
@@ -289,16 +296,25 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 ## 8. Open questions (need your decisions)
 
 1. ~~Stock broker~~ — **decided:** OKX Europe (crypto) + Saxo (stocks); reasoning below.
-2. **Which sleeves first?** Suggest crypto swing (1 h) + crypto position (1 d) — same venue,
-   24/7 data, fastest feedback. Stocks after the broker question.
+2. ~~Which sleeves first?~~ — **decided:** crypto first (swing 1 h + position 4 h/1 d on OKX).
+   Stocks follow on Saxo SIM, paper-only until the budget justifies real money.
 3. ~~Horizons~~ — **decided:** "long-term" = days to weeks (position sleeve on 4 h/1 d bars,
    time stop ≈ 4 weeks). Months-long investing stays a non-goal.
-4. ~~Portfolio limits~~ — **decided:** per-sleeve limits (§4.8). Still to confirm: the
-   recommended loose agent-wide backstop.
-5. **Universe size:** how many dynamic symbols per agent (LLM budget suggests ≤ 5–8 hourly)?
-6. **News sources:** free only (RSS, EDGAR, calendars) or paid APIs acceptable? Are EU-listed
-   stocks in scope (then EU issuer announcements are needed)?
-7. **Hardware:** is a second, smaller local model for summarization acceptable?
+4. ~~Portfolio limits~~ — **decided:** per-sleeve limits (§4.8) + the loose agent-wide backstop.
+5. **Universe size** — *decide from data:* benchmark real LLM latency per call first (PLAN
+   §7.69), then size the watchlist to fit. Until then a few pairs.
+6. ~~News sources~~ — **decided:** free only (RSS, EDGAR, calendars, exchange announcements).
+   **Stocks universe: US and EU-listed** (so EU issuer announcements and per-exchange trading
+   hours are needed when stocks sleeves arrive).
+7. **Second (summarizer) model** — *research needed* (before P5): which small model, whether
+   both fit in VRAM or LM Studio must swap them (JIT load / idle-TTL unload / `lms` CLI), and
+   what swapping costs in latency.
+8. **Stock market data** — prefer **Saxo's own data** if the SIM/live account provides it for
+   free at adequate quality; otherwise keep yfinance. Decide when building the Saxo executor
+   (PLAN §7.66) by comparing both.
+9. **Agents choosing their own pairs** — yes, via the deterministic screener + capped watchlist
+   (§4.4, P4). For crypto it is cheap on OKX EU (small EUR/USDC universe) → pulled forward to
+   right after the OKX demo run.
 
 ### Q1 — venue decision (user resident in Slovakia — EU/EEA, EUR)
 
