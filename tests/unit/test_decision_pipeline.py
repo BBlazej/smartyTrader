@@ -1534,3 +1534,67 @@ class TestSideAwareCloses:
         )
         await self._pipeline(book)._check_exit_levels("BTC/USDT", snap)
         assert book.orders == [("BTC/USDT", OrderSide.BUY, 2.0)]
+
+
+class TestFeeAwareSizing:
+    """§7.59 L1/L2: cash-bound buys fit the executor's all-in cost; never round up."""
+
+    async def test_cash_bound_buy_fills_with_fee_and_slippage(self) -> None:
+        from src.core.decision_pipeline import buy_cost_factor
+
+        rs = RiskSettings(max_position_pct=1.0)  # cash, not the cap, binds
+        executor = PaperExecutor(initial_cash=1_000.0, slippage_pct=0.01, fee_pct=0.0026)
+        book = PortfolioState(cash=1_000.0)
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+        )
+        factor = buy_cost_factor(executor)
+        assert factor == pytest.approx(1.01 * 1.0026)
+        qty = calculate_quantity(signal, book, rs, 100.0, cost_factor=factor)
+
+        order = await executor.place_order("BTC/USDT", OrderSide.BUY, qty, price=100.0)
+        assert order.status == "filled", order.reason
+        assert executor.cash >= 0.0
+        # Before §7.59 the plan ignored costs: 10 units → "Insufficient cash".
+        naive = calculate_quantity(signal, book, rs, 100.0)
+        rejected = await PaperExecutor(
+            initial_cash=1_000.0, slippage_pct=0.01, fee_pct=0.0026
+        ).place_order("BTC/USDT", OrderSide.BUY, naive, price=100.0)
+        assert rejected.status == "rejected"
+
+    def test_cost_factor_ignores_non_numeric_attributes(self) -> None:
+        from src.core.decision_pipeline import buy_cost_factor
+
+        assert buy_cost_factor(MagicMock()) == 1.0
+        assert buy_cost_factor(object()) == 1.0
+
+    async def test_sell_returns_exact_holdings_and_fills(self) -> None:
+        rs = RiskSettings(max_position_pct=0.10)
+        held = 0.123456789123  # more precision than 1e-8: round() would go *up*
+        book = PortfolioState(
+            cash=0.0,
+            positions=[
+                Position(
+                    symbol="BTC/USDT", quantity=held, avg_entry_price=100.0, current_price=100.0
+                )
+            ],
+        )
+        signal = TradeSignal(symbol="BTC/USDT", action=Action.SELL, confidence=0.9, reasoning="x")
+        qty = calculate_quantity(signal, book, rs, 100.0)
+        assert qty == held
+
+        executor = PaperExecutor(initial_cash=0.0, slippage_pct=0.0)
+        executor._positions["BTC/USDT"] = book.positions[0].model_copy()
+        order = await executor.place_order("BTC/USDT", OrderSide.SELL, qty, price=100.0)
+        assert order.status == "filled"
+        assert await executor.get_positions() == []  # no dust left behind
+
+    def test_buy_quantity_rounds_down(self) -> None:
+        rs = RiskSettings(max_position_pct=1.0)
+        book = PortfolioState(cash=100.0)
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=2.0
+        )
+        qty = calculate_quantity(signal, book, rs, 3.0)  # 33.333… units
+        assert qty <= 100.0 / 3.0
+        assert qty == pytest.approx(33.33333333)

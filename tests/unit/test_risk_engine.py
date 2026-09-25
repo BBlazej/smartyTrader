@@ -588,3 +588,44 @@ class TestClockInjection:
         for _ in range(3):
             engine.record_outcome(was_profitable=False)
         assert engine._loss_tracker.in_cooldown
+
+
+class TestDailyRolloverAtCheck:
+    """§7.59 L3: the first risk check after UTC midnight uses *today's* baseline."""
+
+    class FakeClock:
+        def __init__(self, start: datetime) -> None:
+            self.current = start
+
+        def now(self) -> datetime:
+            return self.current
+
+    def test_first_check_of_new_day_rebaselines(self, risk_settings: RiskSettings) -> None:
+        clock = self.FakeClock(datetime(2026, 1, 1, 23, 0, tzinfo=UTC))
+        engine = RiskEngine(risk_settings, clock=clock)
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+        )
+        assert engine.evaluate(signal, PortfolioState(cash=1_000.0)).verdict == RiskVerdict.APPROVED
+
+        # Overnight the book fell 3 % (> the 2 % daily limit) — that loss belongs to
+        # yesterday. No post-processing ran in between (the rollover used to live
+        # only there), yet today's first check must start a fresh baseline.
+        clock.current += timedelta(hours=2)
+        result = engine.evaluate(signal, PortfolioState(cash=970.0))
+        assert result.verdict == RiskVerdict.APPROVED, result.reason
+
+        # A further 3 % drop *within* the new day is still caught.
+        result = engine.evaluate(signal, PortfolioState(cash=940.0))
+        assert result.verdict == RiskVerdict.REJECTED
+        assert "Daily loss" in (result.reason or "")
+
+    def test_restored_baseline_survives_the_check(self, risk_settings: RiskSettings) -> None:
+        clock = self.FakeClock(datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+        engine = RiskEngine(risk_settings, clock=clock)
+        engine.restore_daily_baseline(1_000.0)  # restart rehydration (§7.7)
+        signal = TradeSignal(
+            symbol="BTC/USDT", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+        )
+        result = engine.evaluate(signal, PortfolioState(cash=970.0))
+        assert result.verdict == RiskVerdict.REJECTED

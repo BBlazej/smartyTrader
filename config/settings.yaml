@@ -134,3 +134,7 @@ xtb_execution:
   host: "wss://ws.xapi.pro"
   account_type: "demo"          # demo | real — validated at startup; keep demo
   request_timeout_seconds: 10
+  # Data (yfinance) → xAPI symbol table (§7.59 L8); unmapped symbols pass through.
+  # Check exact names in xStation (getAllSymbols) before enabling execution.
+  symbol_map: {}
+  #   AAPL: "AAPL.US"

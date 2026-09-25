@@ -199,7 +199,7 @@ Notes:
 - **No price, no trade** (§7.55): an empty candle series aborts `DecisionPipeline.run` before the LLM (no decision row, no order), and the execute step refuses to place without a usable mark/quantity — `price=None` orders would become unbounded market orders venue-side.
 - **Bars, not cycles, drive decisions** (§7.56): candle timestamps are bar open times; `analysis/candles.py` splits off the still-forming bar — indicators use closed bars, the forming bar stays the live price (marking, exits, prompt "Current price … (live)") and is labelled `[FORMING]` in the prompt. With `decide_on_new_bar_only` the LLM is asked once per newly closed bar per symbol (last decision time in memory, from storage after a restart; fallback HOLDs don't count) while every cycle still marks and enforces exits.
 - **The model sees its own book** (§7.45): the prompt's *YOUR BOOK* section carries the symbol's long position (size, entry, mark, uPnL, active SL/TP), cash vs equity and the per-symbol limit with remaining headroom; past-decision outcomes read `n/a` for HOLD/rejected/unfilled decisions and `still open` only for executed, unclosed entries (`DecisionRecord.filled` ← `Storage.get_filled_decision_ids`).
-- **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. A SELL closes the whole held long (§7.47).
+- **Sizing before gating** (§7.5): `calculate_quantity()` runs first and its notional is passed into `evaluate()`; the approved plan is reused unchanged at execution — a sizing regression cannot slip past approval. A SELL closes the whole held long (§7.47). The BUY cash clamp prices in the executor's slippage + fee (`buy_cost_factor`, §7.59 L1) so a cash-bound approval can't bounce off "insufficient cash"; quantities round down, and a SELL is the exact held size (§7.59 L2).
 - **Persistence after a fill is fail-soft and lossless** (§7.44): the agent contains post-processing per symbol, retries order-row writes (audit log line + alert as last resort), and confirms reconciled venue transitions to the executor only after they are stored — so a locked/full DB never aborts a cycle, skips the heartbeat or loses a fill.
 - **Closes are side-aware** (§7.48): close-all and exit enforcement send `closing_side(position)` — SELL for a long, a covering BUY for a short — and `exit_level_breach` mirrors the levels for shorts; every position in the symbol is checked (venues can hold a hedged pair).
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
@@ -238,7 +238,7 @@ class Executor(Protocol):
 ```
 
 - `kraken_executor.py` — keyed Kraken via ccxt (mode `<exchange>-sandbox` where ccxt has one; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
-- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default.
+- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
 ## Risk engine (`core/risk_engine.py`)
@@ -260,7 +260,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 Additional engine facts:
 
 - The drawdown high-water mark is seeded at startup from `Storage.get_effective_peak_equity()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5). The seed is reset-aware (§7.53): with a `drawdown_resets` row it becomes `max(baseline_value, MAX(total_value since reset_at))` — the operator's audited CLI exit from a permanently-latched guard (`scripts/rebaseline_drawdown.py`, dry-run by default; no dashboard equivalent by design).
-- Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7).
+- Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7). `_check_daily_loss` rolls the UTC day itself (§7.59 L3) — the post-processing rollover alone left the first check after midnight on yesterday's baseline.
 - The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
 
@@ -468,9 +468,9 @@ Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scrip
 One slim image (`Dockerfile`: python:3.11-slim, non-root `appuser`; installs the package itself + `[stocks]` — dashboard templates ship as package-data via explicit setuptools discovery) serves all four services of `docker-compose.yml`:
 
 ```
-docker compose up -d --build            # agents + dashboard; backtester: docker compose run --rm backtester --days 30
+docker compose up -d --build            # crypto agent + dashboard; backtester: docker compose run --rm backtester --days 30
 ├── agent-crypto     # scripts/run_crypto_agent.py   (control API in-process if enabled)
-├── agent-stocks     # scripts/run_stocks_agent.py
+├── agent-stocks     # scripts/run_stocks_agent.py   (`stocks` profile — opt-in, §7.59 L6: a disabled runner exits 0 and would restart-loop)
 ├── dashboard        # scripts/run_dashboard.py      (bound to loopback on the host: 127.0.0.1:8080; /healthz healthcheck)
 └── backtester       # scripts/backtest.py           (`tools` profile — never started by `up`, restart: "no")
     volume: agent-data → /app/data      # named volume: the shared SQLite + WAL files
@@ -479,7 +479,7 @@ docker compose up -d --build            # agents + dashboard; backtester: docker
 
 - **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
 - **Deviation from the locked design:** `config/` is a **read-only bind mount**, not an `agent-config` named volume — nothing ever writes config files (safe overrides live in `agent_control` DB rows), so host edits stay authoritative on container restart instead of going stale inside a pre-seeded volume.
-- Secrets enter only via compose environment substitution (`${KRAKEN_API_KEY:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
+- Secrets enter only via compose environment substitution (`${KRAKEN_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
 - No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
 
 ## Backtesting (§7.14 — implemented)
@@ -727,4 +727,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **770 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **788 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

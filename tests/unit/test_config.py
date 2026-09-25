@@ -75,3 +75,33 @@ class TestRiskSettingsDefaults:
         assert r.consecutive_losses_cooldown_minutes == 60
         assert r.max_open_positions == 5
         assert r.min_confidence == 0.6
+
+
+class TestXTBSymbolMap:
+    """§7.59 L8: the data → xAPI symbol table is validated at startup."""
+
+    def test_default_is_empty(self) -> None:
+        from src.core.config import XTBExecutionSettings
+
+        assert XTBExecutionSettings().symbol_map == {}
+
+    def test_valid_map_is_kept(self) -> None:
+        from src.core.config import XTBExecutionSettings
+
+        cfg = XTBExecutionSettings(symbol_map={"AAPL": "AAPL.US", "MSFT": "MSFT.US"})
+        assert cfg.symbol_map == {"AAPL": "AAPL.US", "MSFT": "MSFT.US"}
+
+    @pytest.mark.parametrize(
+        "bad",
+        [{"AAPL": "X.US", "MSFT": "X.US"}, {"AAPL": ""}, {"AAPL": 5}],
+    )
+    def test_invalid_maps_fail_fast(self, bad: dict) -> None:
+        from src.core.config import XTBExecutionSettings
+
+        with pytest.raises(ValueError, match="symbol_map"):
+            XTBExecutionSettings(symbol_map=bad)
+
+    def test_shipped_config_loads(self) -> None:
+        from src.core.config import Settings
+
+        assert Settings().xtb_execution.symbol_map == {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
@@ -655,7 +656,13 @@ class DecisionPipeline:
         current_price: float | None = None,
     ) -> float:
         """Calculate position size based on risk settings and available cash."""
-        return calculate_quantity(signal, portfolio, self.risk_engine.settings, current_price)
+        return calculate_quantity(
+            signal,
+            portfolio,
+            self.risk_engine.settings,
+            current_price,
+            cost_factor=buy_cost_factor(self.executor),
+        )
 
 
 # ── Shared trading rules (live pipeline ⇄ backtester, §7.14) ──────
@@ -686,11 +693,26 @@ def closing_side(position: Position) -> OrderSide:
     return OrderSide.BUY if position.side == PositionSide.SHORT else OrderSide.SELL
 
 
+def buy_cost_factor(executor: object) -> float:
+    """Per-unit cash cost of a BUY relative to its quoted price (§7.59 L1).
+
+    ``(1 + slippage) × (1 + fee)`` for executors that model them (paper); 1.0 for
+    venues that report neither. Non-numeric attributes (mocks) count as zero.
+    """
+    factor = 1.0
+    for name in ("slippage_pct", "fee_pct"):
+        value = getattr(executor, name, 0.0)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            factor *= 1.0 + float(value)
+    return factor
+
+
 def calculate_quantity(
     signal: TradeSignal,
     portfolio: PortfolioState,
     settings: RiskSettings,
     current_price: float | None = None,
+    cost_factor: float = 1.0,
 ) -> float:
     """Position size: ``max_position_pct`` of total value, cash- and holdings-clamped.
 
@@ -698,6 +720,11 @@ def calculate_quantity(
     stay identical between them (§7.14). A BUY only fills the *headroom* left under
     the per-position cap — what is already held in the symbol counts (§7.42). A SELL
     closes the **whole** long position (§7.47: SELL means "close", never a slice).
+
+    ``cost_factor`` (:func:`buy_cost_factor`) makes the cash clamp include slippage
+    and fees, so a cash-bound BUY the gate approved is never rejected by the
+    executor for "insufficient cash" (§7.59 L1). Quantities round *down* to 1e-8 —
+    rounding up could exceed cash (§7.59 L2); a SELL returns the held size exactly.
     """
     max_position_value = portfolio.total_value * settings.max_position_pct
     if signal.action == Action.BUY:
@@ -721,9 +748,10 @@ def calculate_quantity(
         risk_budget = portfolio.total_value * settings.risk_per_trade_pct
         quantity = min(quantity, risk_budget / (price - signal.stop_loss))
 
-    # Ensure we don't spend more cash than available for buys
+    # Ensure we don't spend more cash than available for buys — at the executor's
+    # all-in unit cost, not the quoted price (§7.59 L1).
     if signal.action == Action.BUY:
-        max_qty_by_cash = portfolio.cash / price
+        max_qty_by_cash = portfolio.cash / (price * max(cost_factor, 1.0))
         quantity = min(quantity, max_qty_by_cash)
 
     # A SELL closes the held long in full (§7.47) — never more than is held
@@ -735,6 +763,7 @@ def calculate_quantity(
             if p.symbol == signal.symbol and p.side == PositionSide.LONG
         )
         if held > 0:
-            quantity = held
+            # Exactly what is held: rounding could leave dust or overshoot (§7.59 L2).
+            return held
 
-    return round(quantity, 8)
+    return math.floor(max(quantity, 0.0) * 1e8) / 1e8

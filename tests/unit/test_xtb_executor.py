@@ -339,3 +339,49 @@ class TestReduceFirstNeverFlip:
         mock_client.get_open_trades.return_value = []  # the client filters by symbol
         await executor.place_order("MSFT", OrderSide.SELL, quantity=1.0, price=1.0)
         mock_client.get_open_trades.assert_awaited_with("MSFT")
+
+
+class TestSymbolMap:
+    """§7.59 L8: data symbols (yfinance ``AAPL``) ↔ xAPI symbols (``AAPL.US``)."""
+
+    @pytest.fixture()
+    def mapped(self, mock_client: AsyncMock) -> XTBExecutor:
+        return XTBExecutor(mock_client, symbol_map={"AAPL": "AAPL.US"})
+
+    async def test_orders_and_closes_use_venue_symbols(
+        self, mapped: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"order_id": "1", "status": "filled"}
+        await mapped.place_order("AAPL", OrderSide.BUY, 2.0, price=100.0, decision_id=4)
+        mock_client.get_open_trades.assert_awaited_with("AAPL.US")
+        assert mock_client.create_order.await_args.args[0] == "AAPL.US"
+
+        mock_client.get_open_trades.return_value = [
+            {"order": 11, "symbol": "AAPL.US", "cmd": 0, "volume": 2.0}
+        ]
+        mock_client.close_trade.return_value = {"order_id": "12", "status": "filled"}
+        sell = await mapped.place_order("AAPL", OrderSide.SELL, 2.0, price=110.0)
+        mock_client.close_trade.assert_awaited_once_with(11, "AAPL.US", 0, 2.0, price=110.0)
+        # Ledger/attribution stay in data-symbol space.
+        assert sell.symbol == "AAPL"
+        assert sell.closed_entries[0].entry_decision_id == 4
+
+    async def test_positions_map_back_with_levels(
+        self, mapped: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"order_id": "1", "status": "filled"}
+        await mapped.place_order("AAPL", OrderSide.BUY, 1.0, price=100.0, stop_loss=95.0)
+        mock_client.get_positions.return_value = [
+            {"symbol": "AAPL.US", "quantity": 1.0, "avg_entry_price": 100.0},
+            {"symbol": "MSFT.US", "quantity": 1.0, "avg_entry_price": 300.0},  # unmapped
+        ]
+        positions = {p.symbol: p for p in await mapped.get_positions()}
+        assert set(positions) == {"AAPL", "MSFT.US"}
+        assert positions["AAPL"].stop_loss == 95.0
+
+    async def test_unmapped_symbols_pass_through(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"order_id": "1", "status": "filled"}
+        await executor.place_order("AAPL", OrderSide.BUY, 1.0, price=100.0)
+        assert mock_client.create_order.await_args.args[0] == "AAPL"

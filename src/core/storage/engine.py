@@ -160,6 +160,17 @@ class StorageBase:
                     conn.execute(
                         text("UPDATE orders SET venue = 'paper' WHERE order_id LIKE 'paper-%'")
                     )
+        # Orphaned control rows (§7.59 L11): before find #16 the agents keyed their
+        # latches/heartbeats as ``crypto_agent``/``stocks_agent``; the runners have used
+        # ``crypto``/``stocks`` since §7.31, so those rows are read by nothing and only
+        # show up as phantom agents. Exactly these two legacy names are removed.
+        if inspector.has_table("agent_control"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "DELETE FROM agent_control WHERE agent IN ('crypto_agent', 'stocks_agent')"
+                    )
+                )
         # portfolio_snapshots.venue (§7.61): legacy rows stay NULL (read as any venue).
         if inspector.has_table("portfolio_snapshots"):
             snap_cols = {c["name"] for c in inspector.get_columns("portfolio_snapshots")}

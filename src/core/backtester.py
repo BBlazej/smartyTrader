@@ -43,7 +43,7 @@ import structlog
 from ..analysis.candles import timeframe_delta
 from ..execution.paper_executor import PaperExecutor
 from .config import RiskSettings
-from .decision_pipeline import calculate_quantity, exit_level_breach
+from .decision_pipeline import buy_cost_factor, calculate_quantity, exit_level_breach
 from .models import OHLCV, Action, OrderSide, PortfolioState, TradeSignal
 from .risk_engine import RiskEngine
 
@@ -258,7 +258,9 @@ class DecisionReplayBacktester:
             take_profit=decision.take_profit,
         )
         portfolio = await self._portfolio_state()
-        quantity = calculate_quantity(signal, portfolio, self._settings, price)
+        quantity = calculate_quantity(
+            signal, portfolio, self._settings, price, cost_factor=buy_cost_factor(self._executor)
+        )
         planned_notional = quantity * price
 
         risk = self._risk_engine.evaluate(

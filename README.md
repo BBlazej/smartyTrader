@@ -52,7 +52,8 @@ python -m scripts.backtest --days 30        # replay stored decisions vs fresh c
 python -m scripts.run_dashboard             # web dashboard at http://127.0.0.1:8080 (§7.15 P3/P4)
 
 # or run the whole system in containers (§7.15 P5):
-docker compose up -d --build                # agents + dashboard (loopback 127.0.0.1:8080)
+docker compose up -d --build                # crypto agent + dashboard (loopback 127.0.0.1:8080)
+docker compose --profile stocks up -d        # + stocks agent (set stocks_agent.enabled: true first)
 docker compose run --rm backtester --days 30  # on-demand replay (tools profile)
 ```
 
@@ -152,7 +153,7 @@ thresholds. Key sections:
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
-| `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`; requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
+| `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`, `symbol_map` (data → xAPI symbols, e.g. `AAPL: AAPL.US`; §7.59 L8); requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
 
 ### Environment variables
 
@@ -236,7 +237,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**770 tests passing at ~94% coverage.**
+**788 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

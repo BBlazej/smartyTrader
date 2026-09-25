@@ -342,10 +342,11 @@ class RiskEngine:
         return RiskResult(verdict=RiskVerdict.APPROVED)
 
     def _check_daily_loss(self, portfolio: PortfolioState) -> RiskResult:
-        # Only set baseline if not already set (first call of the day).
-        # This allows tests and callers to pre-set a start-of-day value.
-        if self._daily_tracker.start_of_day_value is None:
-            self._daily_tracker.reset_if_new_day(portfolio.total_value)
+        # Roll the day *here* (§7.59 L3): the post-processing rollover in
+        # update_daily_value runs only after a cycle's risk checks, so the first
+        # check after UTC midnight used to compare against yesterday's baseline.
+        # A no-op within the same day, so a restored/pre-set baseline survives.
+        self._daily_tracker.reset_if_new_day(portfolio.total_value)
         self._daily_tracker.update_latest_value(portfolio.total_value)
 
         pnl_pct = self._daily_tracker.daily_pnl_pct

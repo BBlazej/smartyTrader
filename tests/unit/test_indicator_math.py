@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from src.analysis.indicators import _compute_macd, _ema, _ema_series
 from src.core.backtester import estimate_periods_per_year
 
@@ -83,3 +85,38 @@ class TestCalendarAwareAnnualization:
 
     def test_too_few_points_falls_back(self) -> None:
         assert estimate_periods_per_year([], 365.0) == 365.0
+
+
+def test_sub_dollar_price_indicators_keep_significant_digits() -> None:
+    """§7.59 L5: ATR/Bollinger of a 0.00004-priced asset must not round to 0.0."""
+    from src.analysis.indicators import compute_indicators
+    from src.core.models import OHLCV
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    candles = []
+    for i in range(40):
+        close = 0.00004 + (i % 5) * 0.000001
+        candles.append(
+            OHLCV(
+                timestamp=start + timedelta(hours=i),
+                open=close,
+                high=close * 1.02,
+                low=close * 0.98,
+                close=close,
+                volume=1_000_000.0,
+            )
+        )
+    ind = compute_indicators(candles)
+    for key in ("atr_14", "bb_upper", "bb_middle", "bb_lower"):
+        assert ind[key] > 0, key
+    assert ind["bb_middle"] == pytest.approx(0.000042, rel=0.05)
+    assert ind["macd_line"] != 0.0
+
+
+def test_large_price_indicators_keep_two_decimals() -> None:
+    from src.analysis.indicators import _round_price
+
+    assert _round_price(61_234.56789) == 61_234.57
+    assert _round_price(12.345678, 4) == 12.3457
+    assert _round_price(0.000123456789) == 0.000123457
+    assert _round_price(0.0) == 0.0

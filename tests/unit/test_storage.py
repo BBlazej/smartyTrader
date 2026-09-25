@@ -735,6 +735,27 @@ class TestMigrations:
             await again.close()
 
 
+class TestOrphanedControlRows:
+    """§7.59 L11: pre-find-#16 ``crypto_agent``/``stocks_agent`` rows are dropped."""
+
+    async def test_legacy_names_removed_real_rows_kept(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path)
+        await storage.initialize()
+        for name in ("crypto_agent", "stocks_agent", "crypto", "stocks"):
+            await storage.set_agent_state(name, "paused")
+        await storage.close()
+
+        again = Storage(tmp_db_path)
+        await again.initialize()
+        try:
+            assert await again.get_agent_control("crypto_agent") is None
+            assert await again.get_agent_control("stocks_agent") is None
+            assert (await again.get_agent_control("crypto")).state == "paused"
+            assert (await again.get_agent_control("stocks")).state == "paused"
+        finally:
+            await again.close()
+
+
 class TestAgentScoping:
     """§7.39: one DB, two agents — a bound Storage only ever sees its own rows."""
 

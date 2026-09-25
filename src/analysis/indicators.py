@@ -38,16 +38,16 @@ def compute_indicators(candles: list[Any]) -> dict[str, Any]:
     # MACD (12/26/9)
     macd_line, signal_line, histogram = _compute_macd(closes)
     if macd_line is not None:
-        result["macd_line"] = round(macd_line, 4)
-        result["macd_signal"] = round(signal_line, 4)
-        result["macd_histogram"] = round(histogram, 4)
+        result["macd_line"] = _round_price(macd_line, 4)
+        result["macd_signal"] = _round_price(signal_line, 4)
+        result["macd_histogram"] = _round_price(histogram, 4)
 
     # Bollinger Bands (20-period, 2σ)
     bb_upper, bb_middle, bb_lower = _compute_bollinger_bands(closes)
     if bb_upper is not None:
-        result["bb_upper"] = round(bb_upper, 2)
-        result["bb_middle"] = round(bb_middle, 2)
-        result["bb_lower"] = round(bb_lower, 2)
+        result["bb_upper"] = _round_price(bb_upper)
+        result["bb_middle"] = _round_price(bb_middle)
+        result["bb_lower"] = _round_price(bb_lower)
 
         # Bandwidth and position within bands
         bandwidth = (bb_upper - bb_lower) / bb_middle if bb_middle > 0 else 0.0
@@ -56,7 +56,7 @@ def compute_indicators(candles: list[Any]) -> dict[str, Any]:
     # ATR (14-period)
     atr = _compute_atr(highs, lows, closes, period=14)
     if atr is not None:
-        result["atr_14"] = round(atr, 2)
+        result["atr_14"] = _round_price(atr)
 
     # Volume SMA (20-period)
     volumes = [c.volume for c in candles]
@@ -68,6 +68,17 @@ def compute_indicators(candles: list[Any]) -> dict[str, Any]:
 
 
 # ── Indicator Helpers ─────────────────────────────────────────
+
+
+def _round_price(value: float, dp: int = 2) -> float:
+    """Round a price-denominated value without flattening sub-$1 assets (§7.59 L5).
+
+    ``dp`` decimals once ``|value| >= 1`` (the old behavior); below that, 6
+    significant digits — a 0.00004-priced coin's ATR must not read ``0.0``.
+    """
+    if value == 0 or abs(value) >= 1:
+        return round(value, dp)
+    return float(f"{value:.6g}")
 
 
 def _sma(values: list[float], period: int) -> float | None:

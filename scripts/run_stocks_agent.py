@@ -92,7 +92,11 @@ def _make_components(settings: Settings) -> tuple[object, object]:
                 account_type=xtb_cfg.account_type,
                 url=client.url,
             )
-            return provider, XTBExecutor(client, venue=f"xtb-{xtb_cfg.account_type}")
+            return provider, XTBExecutor(
+                client,
+                venue=f"xtb-{xtb_cfg.account_type}",
+                symbol_map=xtb_cfg.symbol_map,
+            )
 
     executor = PaperExecutor(
         initial_cash=settings.execution.initial_cash,

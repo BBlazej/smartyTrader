@@ -89,10 +89,20 @@ class XTBExecutor:
     """Maps the shared Executor protocol to XTB order calls via xAPI."""
 
     def __init__(
-        self, client: XTBClient, *, allow_short: bool = False, venue: str = "xtb-demo"
+        self,
+        client: XTBClient,
+        *,
+        allow_short: bool = False,
+        venue: str = "xtb-demo",
+        symbol_map: dict[str, str] | None = None,
     ) -> None:
         self._client = client
         self._closed = False
+        # Data symbol → xAPI symbol (§7.59 L8): yfinance says ``AAPL``, xAPI trades
+        # ``AAPL.US``. Everything above this executor (pipeline, storage, ledger,
+        # exit levels) speaks data symbols; only calls to the client are translated.
+        self._to_venue: dict[str, str] = dict(symbol_map or {})
+        self._from_venue: dict[str, str] = {v: k for k, v in self._to_venue.items()}
         # Stamped on this executor's order/portfolio rows (§7.61): ``xtb-demo`` vs
         # ``xtb-real`` — a restart replays only this venue's fills.
         self.venue = venue
@@ -158,7 +168,9 @@ class XTBExecutor:
         # §7.40: reduce first — an order opposite to open trades closes them.
         closing_cmd = _OPENED_LONG if side == OrderSide.SELL else _OPENED_SHORT
         opposite = [
-            t for t in await self._client.get_open_trades(symbol) if t.get("cmd") == closing_cmd
+            t
+            for t in await self._client.get_open_trades(self._venue_symbol(symbol))
+            if t.get("cmd") == closing_cmd
         ]
         if opposite:
             return await self._close_trades(symbol, side, quantity, price, opposite)
@@ -177,7 +189,9 @@ class XTBExecutor:
                 ),
             )
 
-        raw = await self._client.create_order(symbol, side.value, quantity, price=price)
+        raw = await self._client.create_order(
+            self._venue_symbol(symbol), side.value, quantity, price=price
+        )
         raw = raw or {}
 
         order_id = str(raw.get("order_id") or raw.get("id") or "")
@@ -245,7 +259,11 @@ class XTBExecutor:
                 continue
             raw = (
                 await self._client.close_trade(
-                    int(trade["order"]), symbol, int(trade["cmd"]), volume, price=price
+                    int(trade["order"]),
+                    self._venue_symbol(symbol),
+                    int(trade["cmd"]),
+                    volume,
+                    price=price,
                 )
                 or {}
             )
@@ -307,10 +325,11 @@ class XTBExecutor:
             )
             avg_entry = float(pos.get("avg_entry_price") or pos.get("entry_price") or 0.0)
             current = float(pos.get("current_price") or pos.get("mark_price") or avg_entry)
-            levels = self._exit_levels.get(str(pos.get("symbol")))
+            symbol = self._data_symbol(str(pos.get("symbol")))
+            levels = self._exit_levels.get(symbol)
             positions.append(
                 Position(
-                    symbol=str(pos.get("symbol")),
+                    symbol=symbol,
                     quantity=abs(raw_qty),
                     avg_entry_price=avg_entry,
                     current_price=current,
@@ -320,6 +339,12 @@ class XTBExecutor:
                 )
             )
         return positions
+
+    def _venue_symbol(self, symbol: str) -> str:
+        return self._to_venue.get(symbol, symbol)
+
+    def _data_symbol(self, venue_symbol: str) -> str:
+        return self._from_venue.get(venue_symbol, venue_symbol)
 
     async def cancel_order(self, order_id: str) -> bool:
         try:

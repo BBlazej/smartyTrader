@@ -1,7 +1,8 @@
 # Trading-agent system — PLAN §7.15 P5. Topology & design decisions: ARCHITECTURE.md
 # ("Container / volume topology").
 #
-#   docker compose up -d --build                      # agents + dashboard
+#   docker compose up -d --build                      # crypto agent + dashboard
+#   docker compose --profile stocks up -d --build     # … plus the stocks agent (enable it in config too)
 #   docker compose run --rm backtester --days 30      # on-demand replay (tools profile)
 #   curl http://127.0.0.1:8080                        # the dashboard (loopback only)
 #
@@ -38,11 +39,17 @@ services:
 
   agent-stocks:
     build: .
+    # Opt-in profile (§7.59 L6): the shipped config has stocks_agent.enabled: false,
+    # and a disabled runner exits 0 by design — with restart: unless-stopped Docker
+    # would restart it forever. Enable the agent in config AND start this profile.
+    profiles: ["stocks"]
     command: ["python", "-m", "scripts.run_stocks_agent"]
     restart: unless-stopped
     environment:
       <<: *agent-env
-      XTB_API_KEY: "${XTB_API_KEY:-}"
+      # The names the runner actually reads (§7.16); empty → paper executor.
+      XTB_ACCOUNT_ID: "${XTB_ACCOUNT_ID:-}"
+      XTB_ACCOUNT_PASSWORD: "${XTB_ACCOUNT_PASSWORD:-}"
     volumes: *agent-volumes
     extra_hosts:
       - "host.docker.internal:host-gateway"

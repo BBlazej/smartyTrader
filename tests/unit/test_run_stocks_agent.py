@@ -57,6 +57,7 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             host="wss://ws.xapi.pro",
             account_type="demo",
             request_timeout_seconds=10.0,
+            symbol_map={"AAPL": "AAPL.US"},
         ),
     )
 
@@ -241,7 +242,9 @@ class TestExecutorSelection:
         )
         xtb_client.assert_called_once()
         assert xtb_client.call_args.kwargs["account_type"] == "demo"
-        xtb_executor.assert_called_once_with(xtb_client.return_value, venue="xtb-demo")
+        xtb_executor.assert_called_once_with(
+            xtb_client.return_value, venue="xtb-demo", symbol_map={"AAPL": "AAPL.US"}
+        )
         paper.assert_not_called()
 
     async def test_enabled_without_credentials_stays_on_paper(self) -> None:

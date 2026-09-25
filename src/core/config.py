@@ -295,6 +295,7 @@ class XTBExecutionSettings:
         host: str = "wss://ws.xapi.pro",
         account_type: str = "demo",
         request_timeout_seconds: float = 10.0,
+        symbol_map: dict[str, str] | None = None,
     ) -> None:
         if account_type not in ("demo", "real"):
             raise ValueError("xtb_execution.account_type must be 'demo' or 'real'")
@@ -302,6 +303,15 @@ class XTBExecutionSettings:
         self.host = host
         self.account_type = account_type
         self.request_timeout_seconds = float(request_timeout_seconds)
+        # Data → xAPI symbol table (§7.59 L8), e.g. {"AAPL": "AAPL.US"}. Unmapped
+        # symbols pass through unchanged. Must be one-to-one so positions map back.
+        symbol_map = dict(symbol_map or {})
+        for key, value in symbol_map.items():
+            if not isinstance(key, str) or not isinstance(value, str) or not value:
+                raise ValueError("xtb_execution.symbol_map must map symbol strings to strings")
+        if len(set(symbol_map.values())) != len(symbol_map):
+            raise ValueError("xtb_execution.symbol_map must be one-to-one")
+        self.symbol_map: dict[str, str] = symbol_map
 
 
 class DashboardSettings:
