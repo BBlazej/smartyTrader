@@ -20,7 +20,9 @@ fixed unless explicitly marked.
 
 2. **`yfinance` is not installed in the dev venv**, so the stocks provider's real
    network path (and the §7.11 data-depth fix) can only be exercised through the
-   injected-source seam; no live yfinance validation from this sandbox. **Status: open.**
+   injected-source seam; no live yfinance validation from this sandbox. CI (§7.60) now
+   installs `[stocks]`, but its tests are offline by rule, so that doesn't close it.
+   **Status: open — tracked as PLAN §7.63.**
 
 ## Code nits noticed en route (candidates for §7.19)
 
@@ -37,7 +39,9 @@ fixed unless explicitly marked.
    seen in §7.6): `KrakenExecutor.get_positions` maps *short* ccxt positions into
    `Position` with positive quantity, i.e. a short looks like a long to the risk
    engine and valuation. The system is spot-only today so it never bites, but any
-   future margin/derivatives work must address this first. **Status: open (by design for now).**
+   future margin/derivatives work must address this first. **Status: fixed in §7.38** —
+   `Position.side` (`PositionSide.LONG`/`SHORT`) exists; Kraken maps negative contracts or
+   `side: "short"` and XTB maps `side`/signed volumes to `SHORT` with an absolute quantity.
 
 ## Review-document drift
 
@@ -71,9 +75,10 @@ fixed unless explicitly marked.
    `create_order` payload is mapped without a fill price, so a *market* order that
    fills has no basis to record and its later close reports no outcome. The pipeline
    always sends marketable limits, so it does not bite today; real xAPI work (§7.16)
-   should read fills from the venue's order/position stream instead. **Status: open**
-   (§7.16 has since landed — instant orders + `tradeTransactionStatus` polling — but
-   the executor still books fills at the requested price, not the venue fill price).
+   should read fills from the venue's order/position stream instead. **Status: open —
+   tracked as PLAN §7.62** (§7.16 has since landed — instant orders + `tradeTransactionStatus`
+   polling — but `XApiClient.create_order`/`close_trade` still echo the *requested* price
+   and `XTBExecutor` books that into the FIFO ledger, not the venue fill price).
 
 9. **`closed_entries` assumes a single-sided (long-only) book**: the tracker consumes
    lots on sells only, matching this system's spot-only usage. If shorts are ever
@@ -136,7 +141,8 @@ fixed unless explicitly marked.
     grace) → else `running`. Related gap on the agent side: skipped cycles (market-hours
     guard) returned before stamping the heartbeat, so a *live* stocks agent would have
     false-alarmed offline overnight — `BaseTradingAgent.run_cycle` now records a heartbeat
-    on skip too. Pause returns earlier and needs none (the latch itself renders `paused`).
+    on skip too. Paused cycles stamp one as well (later change, for §7.24 start/stop
+    safety): a stale beat then unambiguously means the process is gone, not merely paused.
     **Status: fixed.**
 
 ## Found during external review 3 (2026-09-21)
