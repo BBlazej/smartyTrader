@@ -13,9 +13,10 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 | [HISTORY.md](HISTORY.md) | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
 | **PLAN.md** (this file) | gaps, todos & next steps (§7), Phase 4 iteration, risks |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
+| [CHANGE.md](CHANGE.md) | design proposal under discussion: multi-strategy sleeves, allocator, research layer (news/screener) |
 | `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase reviews (`[R-xx]` tags reference these; `[R4-xx]` = `external_4.md`) |
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.63) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
+**Numbering rule:** §7.N identifiers (§7.1–§7.67) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
 
 **Current state (2026-09-25):** 797 tests passing at ~94% coverage, zero pytest warnings — on the local venv and on a clean Python 3.11 install running the CI job's steps (the GitHub workflow itself first runs on the next push). §7.1–§7.38 are complete except §7.18 (optional enrichment), §7.28 (keyed Kraken run — premise corrected by §7.41: Kraken spot has no sandbox) and §7.34 (venue-side OCO) (see [HISTORY.md](HISTORY.md)). External review 4 (`external_4.md`, 2026-09-24) opened §7.39–§7.60. Done so far: §7.39 (per-agent storage scoping), §7.40 (XTB closes via type=CLOSE, never flips), §7.41 (no accidental live Kraken trading; honest spot valuation), §7.42 (per-position cap), §7.43 (browser-safe dashboard/control API, tighten-only risk overrides), §7.44 (fail-soft, lossless post-order persistence), §7.45 (book-aware prompt), §7.46 (loss streak counted once per closing fill), §7.47 (exits never gated; SELL closes in full), §7.48 (side-aware closes and exit levels), §7.49 (backtester look-ahead removed), §7.50 (safe-config overrides actually apply — live interval reschedule, baseline+override re-apply, removal reverts, diff-only persistence), §7.51 (LLM outages surfaced; webhook alert channel), §7.52 (single-instance runner flock), §7.53 (audited CLI drawdown re-baseline), §7.54 (entry SL/TP geometry + optional risk-per-trade sizing), §7.55 (no price → no LLM call, no order), §7.56 (configurable timeframe, one decision per closed bar), §7.57 (reasoning-model tolerant LLM parser), §7.58 (venue executors rehydrate ledgers, exit levels and pending orders) §7.59 (review-4 low-severity bundle: cost-aware sizing, midnight rollover, sub-$1 indicators, compose, XTB symbol map, doc/DB housekeeping), §7.60 (CI on Python 3.11 — which caught a missing `greenlet` dependency, find #20), §7.61 (venue-tagged rows; partial fills recorded) and §7.62 (XTB fills booked at the venue's price). All four critical findings are closed; no venue execution path can reach real money without `live_trading` + `LIVE_TRADING_ACK`. The open items reflect all open work consolidated from `review.MD`, `review2.md`, `external_review3.md`, `external_4.md`, and `nightly_finds.md`, sorted by severity.
 
@@ -77,6 +78,20 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 ### Medium severity (open)
 
+> Order of work (2026-09-26): §7.64 → §7.65 → §7.66 first — they are the prerequisites of the CHANGE.md proposal (CHANGE.md §5) and make paper numbers honest for the §4.3 gates; then §7.28 (keyed smoke run on the corrected pairs).
+
+64. **Kraken pairs not tradable for EEA accounts (USDT delisted under MiCA)** ⏳ [found 2026-09-26]
+    - Kraken halted USDT spot trading for EEA clients in March 2025. Config trades `BTC/USDT`/`ETH/USDT`, and `KrakenExecutor`'s quote currency is a hardcoded `"USDT"` default (`create_kraken_executor`), so a keyed run from Poland would fail. Paper on public data is unaffected.
+    - Fix: EUR (or USDC) pairs in `crypto_agent.pairs`; a config-driven quote currency passed to the executor (cash = free quote balance); validate at startup that every pair's quote matches it.
+
+65. **Paper fee below the venue's real taker fee** ⏳ [found 2026-09-26]
+    - `execution.paper_fee_pct: 0.0026`, but the pipeline's marketable limit orders pay the taker fee (Kraken Pro entry tier believed ~0.40 % — verify against the current schedule). Paper PnL and every §4.3 gate are overstated by roughly 0.3 % per round trip.
+    - Fix: set the verified taker rate; consider per-venue fee config so replay/paper match the venue actually targeted.
+
+66. **XTB closed its API — XTB executor is a dead end** ⏳ [found 2026-09-26]
+    - XTB's help centre: API access disabled since 2025-03-14 ("XTB no longer offers API access"). Our client targets `wss://ws.xapi.pro`, known only from third-party wrappers — unsupported even if it answers; module docs claim trading "now lives" there.
+    - Fix: correct the xtb_client/xtb_executor/AGENTS/README docs; decide the stocks broker (IBKR / Alpaca / paper-only — CHANGE.md Q1); then retire or replace the XTB executor behind the unchanged `Executor` protocol.
+
 28. **Keyed venue smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1] — *re-scoped by §7.41*
     - Kraken **spot has no sandbox**, so the original "Kraken testnet" run cannot exist. Options now: (a) a keyed run on an exchange ccxt has a sandbox for (`testnet: true` → `<exchange>-sandbox` mode), or (b) a deliberately acknowledged minimal-size live Kraken spot run (`testnet: false` + `live_trading: true` + `LIVE_TRADING_ACK`). Either needs a network-enabled environment (the dev sandbox blocks outbound HTTPS).
     - *Done meanwhile:* per-cycle status reconciliation of orders left `open` is implemented and pinned — `KrakenExecutor.reconcile_open_orders()` re-polls pending venue orders each cycle (agent-side `_reconcile_orders`), patches the stored row via `Storage.update_order_status`, and flows late fills through the FIFO ledger with entry-decision attribution (§7.28).
@@ -85,6 +100,11 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 18. **Data-enrichment feeds** ⏳ (optional)
     - Sentiment provider (crypto) and economic-calendar feed (stocks) are aspirational context enrichments.
+    - Expanded into a full proposal (news/events ingest, context cards, screener, watchlist) in [CHANGE.md](CHANGE.md) §4.4.
+
+67. **Hourly stock bars lack indicator history** ⏳ [found 2026-09-26]
+    - `YFinanceSource._PERIOD_MAP["1h"] = ("1d", "1h")` fetches ~7 hourly bars — too few for RSI-14/MACD/Bollinger-20, so a `stocks_agent.timeframe: "1h"` prompt silently lacks indicators. The shipped `1d` setting is fine.
+    - Fix: request a longer period for 1h (yfinance allows up to 730 days of hourly data, e.g. `"1mo"`), and warn at startup when a timeframe's fetched depth can't feed MACD.
 
 34. **Venue-side stop orders (OCO)** ⏳ [§7.9 follow-up]
     - SL/TP enforcement is local to the agent; venue-side OCO stop orders on Kraken/XTB remain future work.

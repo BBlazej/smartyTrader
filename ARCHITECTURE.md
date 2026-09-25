@@ -8,6 +8,7 @@ This document describes **how the system is built**: module layout, data flow, s
 - **ARCHITECTURE.md** (this file) — architecture: components, data flow, schema, control plane, design decisions
 - [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
 - [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
+- [CHANGE.md](CHANGE.md) — design proposal under discussion (multi-strategy sleeves, allocator, research layer); not implemented
 - `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
 - `review.MD` / `review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
 

@@ -258,5 +258,6 @@ for the full list — reordered after the full-codebase reviews; detailed findin
 | `ARCHITECTURE.md` | architecture: components, data flow, storage schema, control plane, design decisions (Mermaid diagrams) |
 | `HISTORY.md` | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
 | `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
+| `CHANGE.md` | design proposal under discussion: multi-strategy sleeves, capital allocator, research layer (news/screener) |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
 | `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase architecture & code reviews |
