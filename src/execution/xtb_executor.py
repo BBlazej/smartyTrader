@@ -88,9 +88,14 @@ _OPENED_SHORT = 1  # xAPI cmd of a SELL-opened (short) trade
 class XTBExecutor:
     """Maps the shared Executor protocol to XTB order calls via xAPI."""
 
-    def __init__(self, client: XTBClient, *, allow_short: bool = False) -> None:
+    def __init__(
+        self, client: XTBClient, *, allow_short: bool = False, venue: str = "xtb-demo"
+    ) -> None:
         self._client = client
         self._closed = False
+        # Stamped on this executor's order/portfolio rows (§7.61): ``xtb-demo`` vs
+        # ``xtb-real`` — a restart replays only this venue's fills.
+        self.venue = venue
         # §7.40: this agent is long-only; a SELL with nothing to close is refused
         # instead of silently opening a short on the venue.
         self._allow_short = allow_short

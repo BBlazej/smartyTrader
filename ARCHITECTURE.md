@@ -368,6 +368,7 @@ erDiagram
         datetime created_at "storage-time bound for pruning unfilled rows (§7.12 migration)"
         string agent "owning agent — FIFO replay reads only its own fills (§7.39)"
         float realized_pnl "closing fills only — one outcome per fill; loss-streak rehydration source (§7.46)"
+        string venue "paper / kraken-live / xtb-demo … — restart replay reads only its own venue (+ legacy NULL) (§7.61)"
     }
     portfolio_snapshots {
         int id PK
@@ -377,6 +378,7 @@ erDiagram
         float unrealized_pnl
         datetime timestamp
         string agent "owning agent — book, baseline and peak are per agent (§7.39)"
+        string venue "paper book restores only from paper (or legacy NULL) snapshots (§7.61)"
     }
     agent_control {
         string agent PK "crypto / stocks — one row per agent"
@@ -391,7 +393,7 @@ erDiagram
 
 Retention policy (§7.12, `core/retention.py` + `scripts/prune_storage.py`): market snapshots default to 30-day retention (re-creatable cache); decisions/orders kept forever unless `history_retention_days > 0`; **`portfolio_snapshots` are never pruned** — they seed the drawdown high-water mark (escapable only via the audited `drawdown_resets` row, §7.53). Pruning runs at runner startup and on `storage.prune_interval_minutes`, fail-soft.
 
-Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), venue executors' local state (§7.58: `load_fills` replays the agent's non-paper filled orders into the Kraken/XTB FIFO ledger and re-arms each open symbol's latest entry SL/TP from its decision row; `load_pending_orders` re-tracks `pending` rows so the first cycle's reconciliation resolves them), the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
+Rehydration (§7.7): at startup, `core/rehydration.py` restores — from the runner's *own* agent-scoped rows (§7.39) — the paper book (latest portfolio snapshot via `load_portfolio_state`), venue executors' local state (§7.58: `load_fills` replays the agent's non-paper filled orders into the Kraken/XTB FIFO ledger and re-arms each open symbol's latest entry SL/TP from its decision row; `load_pending_orders` re-tracks `pending` rows so the first cycle's reconciliation resolves them). Book/fill/pending reads are **venue-scoped** (§7.61): the runner calls `storage.bind_venue(executor.venue)` so every order/portfolio row is stamped (`paper`, `<exchange>-sandbox`/`-live`, `xtb-demo`/`-real`), and rehydration reads only the executor's own venue plus legacy unstamped rows — a venue → paper or sandbox → live switch never restores foreign history (drawdown peak and daily baseline stay agent-wide: switching to a smaller account can only latch the drawdown gate, the fail-safe direction). Reconciled partial fills (a cancel/expiry with `filled > 0`) are recorded `filled` at the traded amount and `update_order_status(quantity=…)` persists it. The pass also restores the daily-loss baseline (today's earliest snapshot) and losing-streak/cooldown (trailing **closing fills** — `orders.realized_pnl`, one per closing fill like the live tracker, §7.46). `execution.initial_cash` only seeds a fresh (empty) portfolio.
 
 ## Data pipeline, storage & dashboard (Week-6 design)
 
@@ -725,4 +727,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **758 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **770 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

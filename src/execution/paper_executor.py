@@ -16,6 +16,10 @@ class PaperExecutor:
     Positions and cash balance are tracked deterministically — no external calls.
     """
 
+    #: Stamped on order/portfolio rows (§7.61): the paper book restores only from
+    #: paper rows, never from a venue account's.
+    venue: str = "paper"
+
     def __init__(
         self,
         initial_cash: float = 100_000.0,

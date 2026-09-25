@@ -72,6 +72,7 @@ class PortfolioSnapshotMixin:
                 total_value=total_value,
                 unrealized_pnl=unrealized_pnl,
                 agent=self._agent_scope(agent),
+                venue=self._venue,
             )
             session.add(row)
             await session.commit()
@@ -174,10 +175,14 @@ class PortfolioSnapshotMixin:
         return max(float(reset.baseline_value), float(since))
 
     async def get_latest_portfolio_snapshot(
-        self, agent: str | None = None
+        self, agent: str | None = None, venue: str | None = None
     ) -> PortfolioSnapshotRow | None:
+        """Newest snapshot of the agent; ``venue`` restricts it to that venue's (or
+        legacy unstamped) rows — the paper book never restores a venue account (§7.61)."""
         async with await self._session() as session:
             stmt = self._scoped_snapshots(select(PortfolioSnapshotRow), agent)
+            if venue is not None:
+                stmt = stmt.where(self._venue_match(PortfolioSnapshotRow.venue, venue))
             stmt = stmt.order_by(PortfolioSnapshotRow.id.desc()).limit(1)
             result = await session.execute(stmt)
             return result.scalars().first()

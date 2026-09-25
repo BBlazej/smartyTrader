@@ -464,3 +464,53 @@ class TestOrderReconciliation:
 
         decisions = {d.id: d for d in await storage.get_closed_decisions()}
         assert decisions[entry_id].realized_pnl == pytest.approx(5.0)
+
+    async def test_partial_fill_quantity_replaces_requested_size(
+        self,
+        storage: Storage,
+        risk_engine: RiskEngine,
+    ) -> None:
+        """§7.61: the stored row carries the *filled* amount — the §7.58 replay source."""
+        from src.core.models import OrderResult, OrderSide
+
+        executor = self.VenueLikeExecutor()
+        await storage.save_order(
+            order_id="venue-2",
+            symbol=SYMBOL,
+            side="buy",
+            quantity=1.0,
+            price=99.0,
+            status="pending",
+        )
+        executor.staged.append(
+            OrderResult(
+                order_id="venue-2",
+                symbol=SYMBOL,
+                side=OrderSide.BUY,
+                quantity=0.4,
+                price=100.0,
+                status="filled",
+                reason="partially filled; remainder cancelled at the venue",
+            )
+        )
+        pipeline = DecisionPipeline(
+            provider=make_provider([100.0]),
+            llm_client=make_llm(
+                [TradeSignal(symbol=SYMBOL, action="hold", confidence=0.5, reasoning="wait")]
+            ),
+            risk_engine=risk_engine,
+            executor=executor,
+            storage=storage,
+        )
+        agent = CryptoAgent(
+            pipeline=pipeline,
+            storage=storage,
+            risk_engine=risk_engine,
+            llm_client=AsyncMock(),
+            pairs=[SYMBOL],
+        )
+
+        await agent.run_cycle()
+
+        (row,) = await storage.get_filled_orders()
+        assert (row.order_id, row.quantity) == ("venue-2", pytest.approx(0.4))

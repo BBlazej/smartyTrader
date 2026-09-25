@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import ColumnElement, create_engine, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base
@@ -39,6 +39,9 @@ class StorageBase:
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._closed = False
         self._agent = agent
+        # Execution venue stamped on order/portfolio rows (§7.61); bound by the runner
+        # once the executor exists.
+        self._venue: str | None = None
 
     @property
     def agent(self) -> str | None:
@@ -48,6 +51,20 @@ class StorageBase:
     def _agent_scope(self, agent: str | None = None) -> str | None:
         """Effective agent for a call: an explicit ``agent`` wins, else the binding."""
         return agent if agent is not None else self._agent
+
+    @property
+    def venue(self) -> str | None:
+        """Execution venue stamped on new order/portfolio rows (``None`` = unstamped)."""
+        return self._venue
+
+    def bind_venue(self, venue: str | None) -> None:
+        """Stamp subsequent order/portfolio writes with the executor's venue (§7.61)."""
+        self._venue = venue
+
+    @staticmethod
+    def _venue_match(column: ColumnElement, venue: str) -> ColumnElement:
+        """Rows of ``venue`` plus legacy unstamped (NULL) rows (§7.61)."""
+        return or_(column == venue, column.is_(None))
 
     @property
     def database_path(self) -> str:
@@ -136,6 +153,20 @@ class StorageBase:
                     conn.execute(text("ALTER TABLE orders ADD COLUMN created_at DATETIME NULL"))
                     conn.execute(
                         text("UPDATE orders SET created_at = filled_at WHERE created_at IS NULL")
+                    )
+            if "venue" not in order_cols:  # §7.61 — paper order ids are self-identifying
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE orders ADD COLUMN venue VARCHAR(40) NULL"))
+                    conn.execute(
+                        text("UPDATE orders SET venue = 'paper' WHERE order_id LIKE 'paper-%'")
+                    )
+        # portfolio_snapshots.venue (§7.61): legacy rows stay NULL (read as any venue).
+        if inspector.has_table("portfolio_snapshots"):
+            snap_cols = {c["name"] for c in inspector.get_columns("portfolio_snapshots")}
+            if "venue" not in snap_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("ALTER TABLE portfolio_snapshots ADD COLUMN venue VARCHAR(40) NULL")
                     )
 
     @staticmethod

@@ -16,6 +16,13 @@ import pytest
 from scripts.run_stocks_agent import run
 
 
+def _storage_mock() -> AsyncMock:
+    """Async Storage stand-in; ``bind_venue`` is the one sync method (§7.61)."""
+    storage = AsyncMock()
+    storage.bind_venue = MagicMock()
+    return storage
+
+
 def _run_settings(enabled: bool) -> SimpleNamespace:
     """A settings stub covering everything ``run()`` reads before the agent."""
     return SimpleNamespace(
@@ -81,7 +88,7 @@ def _mock_env() -> tuple[MagicMock, MagicMock, AsyncMock]:
     provider.close = AsyncMock()
     executor = MagicMock()
     executor.close = AsyncMock()
-    storage = AsyncMock()
+    storage = _storage_mock()
     return provider, executor, storage
 
 
@@ -176,7 +183,7 @@ class TestYFinanceFailFast:
             patch.dict(os.environ, {}, clear=True),
             patch("scripts.run_stocks_agent.Settings", return_value=settings),
             patch("scripts.run_stocks_agent.setup_logging"),
-            patch("src.core.runner.Storage", return_value=AsyncMock()),
+            patch("src.core.runner.Storage", return_value=_storage_mock()),
             patch("src.core.runner.LLMClient", return_value=MagicMock()),
             patch("src.core.runner.RiskEngine"),
             patch(
@@ -234,7 +241,7 @@ class TestExecutorSelection:
         )
         xtb_client.assert_called_once()
         assert xtb_client.call_args.kwargs["account_type"] == "demo"
-        xtb_executor.assert_called_once_with(xtb_client.return_value)
+        xtb_executor.assert_called_once_with(xtb_client.return_value, venue="xtb-demo")
         paper.assert_not_called()
 
     async def test_enabled_without_credentials_stays_on_paper(self) -> None:

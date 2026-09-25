@@ -638,3 +638,67 @@ class TestSpotPositionsFromLedger:
         assert [(s, o.side, o.realized_pnl) for s, o in closed] == [
             ("BTC/USDT", OrderSide.SELL, pytest.approx(10.0))
         ]
+
+
+class TestPartialFills:
+    """§7.61: a cancel/expiry that traded is a partial fill, never a lost one."""
+
+    async def test_cancelled_create_order_with_fill_is_a_partial_fill(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "id": "IOC-1",
+            "status": "canceled",
+            "filled": 0.4,
+            "amount": 1.0,
+            "average": 100.0,
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        assert (result.status, result.quantity) == ("filled", 0.4)
+        assert result.reason is not None and "partially filled" in result.reason
+        assert result.filled_at is not None
+        assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.4)
+
+    async def test_reconciled_cancel_with_fill_feeds_the_ledger(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"id": "P-1", "status": "open", "amount": 1.0}
+        await executor.place_order(
+            "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, decision_id=3, stop_loss=90.0
+        )
+        mock_client.fetch_order.return_value = {
+            "id": "P-1",
+            "status": "canceled",
+            "filled": 0.3,
+            "amount": 1.0,
+            "average": 101.0,
+        }
+        (update,) = await executor.reconcile_open_orders()
+        assert (update.status, update.quantity) == ("filled", 0.3)
+        assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.3)
+        assert executor._exit_levels["BTC/USDT"] == (90.0, None)
+
+    async def test_untraded_cancel_stays_cancelled(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"id": "P-2", "status": "open", "amount": 1.0}
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        mock_client.fetch_order.return_value = {"id": "P-2", "status": "canceled", "filled": 0.0}
+        (update,) = await executor.reconcile_open_orders()
+        assert update.status == "cancelled"
+        assert executor._tracker.quantity("BTC/USDT") == 0.0
+
+    async def test_expired_is_terminal_not_pending_forever(
+        self, executor: KrakenExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"id": "P-3", "status": "open", "amount": 1.0}
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        mock_client.fetch_order.return_value = {"id": "P-3", "status": "expired", "filled": 0}
+        (update,) = await executor.reconcile_open_orders()
+        assert update.status == "cancelled"
+        executor.confirm_reconciled("P-3")
+        assert await executor.reconcile_open_orders() == []
+
+    def test_venue_label(self, mock_client: AsyncMock) -> None:
+        assert KrakenExecutor(mock_client).venue == "kraken"
+        assert KrakenExecutor(mock_client, venue="kraken-live").venue == "kraken-live"

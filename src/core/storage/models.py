@@ -89,6 +89,9 @@ class OrderRow(Base):
     # Realized PnL of a *closing* fill (§7.46) — one row per closing fill, exactly
     # what the live loss-streak tracker counts, so restart rehydration matches it.
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Execution venue (§7.61): ``paper`` / ``kraken-live`` / ``xtb-demo`` … — each
+    # executor replays only its own fills at restart. NULL = legacy/unknown.
+    venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class PortfolioSnapshotRow(Base):
@@ -103,6 +106,9 @@ class PortfolioSnapshotRow(Base):
     # Owning agent (§7.39): each agent's book, daily baseline and drawdown peak are
     # its own — mixing them restored one agent's positions into the other's executor.
     agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # Execution venue (§7.61): the paper book is restored only from paper (or legacy
+    # NULL) snapshots — never from a venue account's cash/positions.
+    venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class DrawdownResetRow(Base):

@@ -37,6 +37,7 @@ class OrderMixin:
                 filled_at=filled_at,
                 agent=self._agent_scope(agent),
                 realized_pnl=realized_pnl,
+                venue=self._venue,
             )
             session.add(row)
             await session.commit()
@@ -49,14 +50,19 @@ class OrderMixin:
         price: float | None = None,
         filled_at: datetime | None = None,
         realized_pnl: float | None = None,
+        quantity: float | None = None,
     ) -> bool:
         """Patch a stored order after venue reconciliation (§7.28).
 
         Returns ``True`` when a row with ``order_id`` existed. ``price``,
-        ``filled_at`` and ``realized_pnl`` are only written when supplied, so a later
-        ``canceled`` transition never blanks an earlier fill record.
+        ``filled_at``, ``realized_pnl`` and ``quantity`` are only written when
+        supplied, so a later ``canceled`` transition never blanks an earlier fill
+        record. ``quantity`` is the *filled* amount (§7.61) — the row was written
+        with the requested size, and the restart replay (§7.58) rebuilds lots from it.
         """
         values: dict[str, object] = {"status": status}
+        if quantity is not None:
+            values["quantity"] = quantity
         if price is not None:
             values["price"] = price
         if filled_at is not None:
@@ -123,7 +129,7 @@ class OrderMixin:
             return {row for row in result.scalars().all() if row is not None}
 
     async def get_filled_orders(
-        self, symbol: str | None = None, agent: str | None = None
+        self, symbol: str | None = None, agent: str | None = None, venue: str | None = None
     ) -> list[OrderRow]:
         """All *filled* orders in chronological order (insertion order).
 
@@ -131,27 +137,34 @@ class OrderMixin:
         rows carry ``side``, ``quantity``, ``price`` and the originating
         ``decision_id``. Ids are monotonic with execution time for both paper
         and venue paths (rows are written when the fill happens). Agent-scoped
-        (§7.39): a runner replays only its own fills.
+        (§7.39): a runner replays only its own fills; ``venue`` narrows it to one
+        execution venue plus legacy unstamped rows (§7.61).
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(OrderRow.status == "filled").order_by(OrderRow.id.asc())
             if symbol:
                 stmt = stmt.where(OrderRow.symbol == symbol)
+            if venue is not None:
+                stmt = stmt.where(self._venue_match(OrderRow.venue, venue))
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_pending_orders(self, agent: str | None = None) -> list[OrderRow]:
+    async def get_pending_orders(
+        self, agent: str | None = None, venue: str | None = None
+    ) -> list[OrderRow]:
         """Orders still stored as ``pending``, oldest first (§7.58).
 
         Reloaded into a venue executor's reconciliation set at startup — an order
         left open across a restart would otherwise stay ``pending`` forever.
-        Agent-scoped (§7.39).
+        Agent-scoped (§7.39); ``venue`` as in :meth:`get_filled_orders` (§7.61).
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(OrderRow.status == "pending").order_by(OrderRow.id.asc())
+            if venue is not None:
+                stmt = stmt.where(self._venue_match(OrderRow.venue, venue))
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)

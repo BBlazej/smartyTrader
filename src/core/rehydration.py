@@ -35,6 +35,12 @@ from .storage import Storage
 logger = structlog.get_logger()
 
 
+def executor_venue(executor: Any) -> str | None:
+    """The executor's venue label (§7.61), or ``None`` when it declares none."""
+    venue = getattr(executor, "venue", None)
+    return venue if isinstance(venue, str) and venue else None
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     """Attach UTC to naive stored timestamps (SQLite has no tz info)."""
     if value is None:
@@ -52,7 +58,10 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
     if not callable(load):
         return False
     try:
-        row = await storage.get_latest_portfolio_snapshot()
+        # Only this venue's (or legacy unstamped) snapshots — a paper book must never
+        # restore a real account's cash/positions after a venue → paper switch (§7.61).
+        venue = executor_venue(executor)
+        row = await storage.get_latest_portfolio_snapshot(venue=venue)
         if row is None:
             return False
         positions = [Position(**p) for p in json.loads(row.positions_json or "[]")]
@@ -71,7 +80,7 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
                     price=float(o.price),
                     decision_id=o.decision_id,
                 )
-                for o in await storage.get_filled_orders()
+                for o in await storage.get_filled_orders(venue=venue)
                 if o.price is not None
             ]
         except Exception as exc:  # noqa: BLE001 — fill history is best-effort
@@ -104,20 +113,21 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
     entry SL/TP they enforce (§7.9) and orders left open (§7.28) — was memory-only,
     so a restart silently dropped stops and left open orders ``pending`` forever.
 
-    * ``load_fills(fills)`` ← this agent's filled venue orders (paper-era fills of the
-      same agent are skipped — they never happened at the venue), with the latest
-      buy per symbol carrying its entry decision's SL/TP.
+    * ``load_fills(fills)`` ← this agent's filled orders *of this venue* (§7.61; plus
+      legacy unstamped rows, minus ``paper-…`` ids — paper fills never happened at a
+      venue), with the latest buy per symbol carrying its entry decision's SL/TP.
     * ``load_pending_orders(orders)`` ← this agent's ``pending`` rows; the first cycle's
       reconciliation then resolves them.
 
     Each hook is optional and fail-soft: a failure logs and leaves that piece empty.
     """
+    venue = executor_venue(executor)
     load_fills = getattr(executor, "load_fills", None)
     if callable(load_fills):
         try:
             rows = [
                 o
-                for o in await storage.get_filled_orders()
+                for o in await storage.get_filled_orders(venue=venue)
                 if o.price is not None and not _is_paper_order(o.order_id)
             ]
             last_buy: dict[str, int] = {}
@@ -158,7 +168,7 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
         try:
             rows = [
                 o
-                for o in await storage.get_pending_orders()
+                for o in await storage.get_pending_orders(venue=venue)
                 if o.order_id and not _is_paper_order(o.order_id)
             ]
             levels = await storage.get_exit_levels(

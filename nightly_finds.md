@@ -179,14 +179,16 @@ fixed unless explicitly marked.
     on paper rehydrates the venue's last snapshot as *paper* cash/positions and replays
     venue fills into the paper ledger; a Kraken sandbox → live switch likewise replays
     sandbox fills into the live ledger (capped by live balances, so a pre-existing balance
-    can surface as a phantom position). **Status: open** — the rows need an execution-venue
-    tag (e.g. `orders.venue`) so each executor replays only its own history.
+    can surface as a phantom position). **Status: fixed in §7.61** — `orders.venue` /
+    `portfolio_snapshots.venue` are stamped from the executor's label and every rehydration
+    read is venue-scoped (legacy NULL rows still match; legacy `paper-…` orders backfilled).
 
 19. **Partial fills of cancelled venue orders never reach the ledger or the DB**
     (`kraken_executor.reconcile_open_orders`, `storage.update_order_status`): only a
     terminal `closed` status feeds the FIFO ledger; an order that partly filled and was then
     cancelled is recorded `cancelled` with its filled amount dropped. The stored `quantity`
     also stays the *requested* size even when the reconciled fill differs, so the §7.58
-    replay rebuilds lots from requested, not filled, quantities. **Status: open** — feed
-    `filled > 0` of cancelled orders through the ledger and let `update_order_status`
-    write the filled quantity.
+    replay rebuilds lots from requested, not filled, quantities. **Status: fixed in §7.61** —
+    a traded cancel/expiry is reported `filled` at the filled amount (ledger fed once), and
+    `update_order_status(quantity=…)` persists it. ccxt's `expired` status — previously
+    unmapped and therefore re-polled as `pending` forever — now maps to `cancelled`.

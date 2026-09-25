@@ -297,6 +297,8 @@ class BaseTradingAgent:
                     price=order.price,
                     filled_at=filled_at,
                     realized_pnl=order.realized_pnl if order.status == "filled" else None,
+                    # The filled amount, not the requested one (§7.61 partial fills).
+                    quantity=order.quantity if order.status == "filled" else None,
                 )
                 if not found:
                     # The original row was lost (e.g. a failed write at placement):

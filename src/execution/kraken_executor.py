@@ -45,8 +45,33 @@ _STATUS_MAP: dict[str, str] = {
     "pending": "pending",
     "canceled": "cancelled",
     "cancelled": "cancelled",
+    # ccxt's terminal "expired" (time-in-force ran out) used to fall through to
+    # "pending" — the order was then re-polled forever (§7.61).
+    "expired": "cancelled",
     "rejected": "rejected",
 }
+
+_PARTIAL_FILL_REASON = "partially filled; remainder cancelled at the venue"
+
+
+def _resolve_status(raw: dict[str, Any], requested: float) -> tuple[str, float, str | None]:
+    """Stable ``(status, quantity, reason)`` for a ccxt order payload (§7.61).
+
+    A terminal cancel/expiry that *did* trade (``filled > 0``) is a partial fill:
+    it is reported ``filled`` with the traded amount, so the ledger, the stored row
+    and the restart replay all see what really changed hands — it used to be
+    recorded ``cancelled`` and the filled units vanished from the books.
+    """
+    status = _STATUS_MAP.get(str(raw.get("status", "open")), "pending")
+    try:
+        filled = float(raw.get("filled") or 0.0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    if status == "filled":
+        return status, filled or float(raw.get("amount") or requested), None
+    if status in ("cancelled", "rejected") and filled > 0:
+        return "filled", filled, _PARTIAL_FILL_REASON
+    return status, float(raw.get("amount") or requested), None
 
 
 @dataclass
@@ -113,9 +138,14 @@ class ExchangeClient(Protocol):
 class KrakenExecutor:
     """Maps the shared Executor protocol to Kraken order calls via CCXT."""
 
-    def __init__(self, client: ExchangeClient, quote_currency: str = "USDT") -> None:
+    def __init__(
+        self, client: ExchangeClient, quote_currency: str = "USDT", venue: str = "kraken"
+    ) -> None:
         self._client = client
         self._quote = quote_currency
+        # Stamped on this executor's order/portfolio rows (§7.61): e.g. ``kraken-live``
+        # vs ``kraken-sandbox`` — a restart replays only this venue's fills.
+        self.venue = venue
         self._closed = False
         # order_id -> symbol, since ccxt cancel_order needs the symbol.
         self._order_symbols: dict[str, str] = {}
@@ -179,7 +209,7 @@ class KrakenExecutor:
 
         order_id = str(raw.get("id") or raw.get("info", {}).get("id") or "")
         self._order_symbols[order_id] = symbol
-        status = _STATUS_MAP.get(str(raw.get("status", "open")), "pending")
+        status, filled_qty, reason = _resolve_status(raw, quantity)
 
         # Real ccxt reports fills with an ``average`` price and millisecond
         # timestamps; a marketable limit (what the pipeline sends) usually comes
@@ -192,7 +222,6 @@ class KrakenExecutor:
                 _parse_ms_timestamp(raw.get("timestamp")) or datetime.now(UTC)
             )
 
-        filled_qty = float(raw.get("filled") or raw.get("amount") or quantity)
         result = OrderResult(
             order_id=order_id,
             symbol=symbol,
@@ -201,6 +230,7 @@ class KrakenExecutor:
             price=float(fill_price) if fill_price is not None else None,
             status=status,
             filled_at=filled_at,
+            reason=reason,
         )
 
         # Feed the local FIFO ledger so closing sells realize PnL back to the
@@ -329,12 +359,10 @@ class KrakenExecutor:
             except Exception as exc:  # noqa: BLE001 - a failed poll is retried next cycle
                 logger.warning("order status poll failed", order_id=order_id, error=str(exc))
                 continue
-            status = _STATUS_MAP.get(str(raw.get("status", "open")), "pending")
+            status, filled_qty, reason = _resolve_status(raw, pending.quantity)
             if status == "pending":
                 continue
             fill_price = raw.get("average") or raw.get("price")
-            default_qty = pending.quantity if status == "filled" else 0.0
-            filled_qty = float(raw.get("filled") or raw.get("amount") or default_qty)
             result = OrderResult(
                 order_id=order_id,
                 symbol=pending.symbol,
@@ -342,6 +370,7 @@ class KrakenExecutor:
                 quantity=filled_qty,
                 price=float(fill_price) if fill_price is not None else None,
                 status=status,
+                reason=reason,
             )
             if status == "filled":
                 result.filled_at = _parse_ms_timestamp(raw.get("updated") or raw.get("closedAt"))
@@ -535,6 +564,8 @@ def _parse_ms_timestamp(value: Any) -> datetime | None:
     return datetime.fromtimestamp(ms / 1000.0, tz=UTC)
 
 
-def create_kraken_executor(client: ExchangeClient, quote_currency: str = "USDT") -> KrakenExecutor:
+def create_kraken_executor(
+    client: ExchangeClient, quote_currency: str = "USDT", venue: str = "kraken"
+) -> KrakenExecutor:
     """Wrap an existing CCXT client in a KrakenExecutor."""
-    return KrakenExecutor(client, quote_currency=quote_currency)
+    return KrakenExecutor(client, quote_currency=quote_currency, venue=venue)

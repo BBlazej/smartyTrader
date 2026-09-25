@@ -10,6 +10,7 @@ import pytest
 from src.core.config import RiskSettings
 from src.core.models import OrderSide, Position
 from src.core.rehydration import (
+    executor_venue,
     rehydrate_from_storage,
     rehydrate_paper_executor,
     rehydrate_risk_engine,
@@ -607,3 +608,54 @@ class TestVenueRehydration:
             assert executor.cash == pytest.approx(1_000.0)
         finally:
             await storage.close()
+
+
+class TestVenueSwitches:
+    """§7.61: an agent switched between executors never restores the other's history."""
+
+    async def test_venue_to_paper_restores_the_paper_book(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            storage.bind_venue("paper")
+            await _fill(storage, "paper-1", "BTC/USDT", "buy", 1.0, 100.0)
+            held = Position(
+                symbol="BTC/USDT", quantity=1.0, avg_entry_price=100.0, current_price=100.0
+            )
+            await storage.save_portfolio_snapshot(
+                cash=900.0, positions_json=_positions_json(held), total_value=1_000.0
+            )
+            storage.bind_venue("kraken-live")
+            await _fill(storage, "K-1", "ETH/USDT", "buy", 3.0, 10.0)
+            await storage.save_portfolio_snapshot(cash=12.0, positions_json="[]", total_value=42.0)
+
+            paper = PaperExecutor(initial_cash=5.0, slippage_pct=0.0)
+            assert await rehydrate_paper_executor(paper, storage) is True
+            assert paper.cash == pytest.approx(900.0)
+            assert [p.symbol for p in await paper.get_positions()] == ["BTC/USDT"]
+            assert paper._tracker.quantity("ETH/USDT") == 0.0  # venue fill not replayed
+        finally:
+            await storage.close()
+
+    async def test_sandbox_fills_never_reach_the_live_ledger(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            storage.bind_venue("binance-sandbox")
+            await _fill(storage, "S-1", "BTC/USDT", "buy", 1.0, 100.0)
+            await _fill(storage, "S-2", "BTC/USDT", "buy", 1.0, 100.0, status="pending")
+
+            client = AsyncMock()
+            client.fetch_positions.side_effect = Exception("not supported")
+            client.fetch_balance.return_value = {"total": {"BTC": 5.0}}
+            live = KrakenExecutor(client, venue="binance-live")
+            await rehydrate_venue_executor(live, storage)
+            assert await live.get_positions() == []
+            assert live._open_orders == {}
+        finally:
+            await storage.close()
+
+    def test_executor_venue_only_accepts_labels(self) -> None:
+        assert executor_venue(PaperExecutor()) == "paper"
+        assert executor_venue(object()) is None
+        assert executor_venue(AsyncMock()) is None  # mocks never stamp rows

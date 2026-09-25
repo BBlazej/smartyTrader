@@ -70,7 +70,8 @@ def _build_data_and_execution(settings: Settings) -> tuple[object, object, str]:
                 api_key=api_key,
                 api_secret=api_secret,
             ).client
-            executor = create_kraken_executor(order_client)
+            # e.g. "kraken-live" / "binance-sandbox" — tags its rows (§7.61).
+            executor = create_kraken_executor(order_client, venue=mode.lower())
             return provider, executor, mode
 
     executor = PaperExecutor(

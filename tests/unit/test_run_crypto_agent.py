@@ -12,6 +12,13 @@ from scripts.run_crypto_agent import _build_data_and_execution, run
 from src.core.runner import load_dotenv
 
 
+def _storage_mock() -> AsyncMock:
+    """Async Storage stand-in; ``bind_venue`` is the one sync method (§7.61)."""
+    storage = AsyncMock()
+    storage.bind_venue = MagicMock()
+    return storage
+
+
 class TestLoadDotenv:
     def test_loads_simple_pairs(self, tmp_path: object) -> None:
         env_file = os.path.join(str(tmp_path), "test.env")
@@ -286,7 +293,7 @@ class TestEnabledSemantics:
     async def test_run_once_runs_exactly_one_cycle_then_shuts_down(self) -> None:
         settings = _run_settings(enabled=True)
         fake_agent = _FakeAgent()
-        storage = AsyncMock()
+        storage = _storage_mock()
         provider = MagicMock()
         provider.close = AsyncMock()
         executor = MagicMock()
@@ -321,7 +328,7 @@ class TestEnabledSemantics:
     async def test_run_once_failure_still_releases_resources(self) -> None:
         settings = _run_settings(enabled=True)
         fake_agent = _FakeAgent(fail_cycle=True)
-        storage = AsyncMock()
+        storage = _storage_mock()
         provider = MagicMock()
         provider.close = AsyncMock()
         executor = MagicMock()
@@ -359,7 +366,7 @@ class TestScheduledModeLifecycle:
         settings.storage.snapshot_retention_days = 30
         settings.storage.prune_interval_minutes = 1440
         fake_agent = _FakeAgent()
-        storage = AsyncMock()
+        storage = _storage_mock()
         storage.prune.return_value = {"market_snapshots": 0}
         provider = MagicMock()
         provider.close = AsyncMock()
@@ -408,7 +415,7 @@ class TestStartupPruning:
         settings = _run_settings(enabled=True)
         settings.storage.snapshot_retention_days = 30
         fake_agent = _FakeAgent()
-        storage = AsyncMock()
+        storage = _storage_mock()
         storage.prune.return_value = {"market_snapshots": 3}
         provider = MagicMock()
         provider.close = AsyncMock()

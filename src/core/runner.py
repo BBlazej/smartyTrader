@@ -39,7 +39,7 @@ from .config import Settings
 from .control_config import parse_and_apply
 from .decision_pipeline import DecisionPipeline
 from .llm_client import LLMClient
-from .rehydration import rehydrate_from_storage
+from .rehydration import executor_venue, rehydrate_from_storage
 from .retention import prune_storage
 from .risk_engine import RiskEngine
 from .storage import Storage
@@ -218,6 +218,9 @@ async def run_agent(
         log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
 
     provider, executor = build_components()
+    # Tag this run's order/portfolio rows with the executor's venue (§7.61), so a
+    # later paper <-> venue (or sandbox -> live) switch never replays foreign history.
+    storage.bind_venue(executor_venue(executor))
 
     # Rebuild the paper book and risk trackers from persisted state so a
     # restart never silently resets cash, positions or the loss guards (§7.7).

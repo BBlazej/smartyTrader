@@ -839,3 +839,79 @@ class TestClosingFills:
             assert (await storage.get_recent_closing_fills())[0].realized_pnl == -1.0
         finally:
             await storage.close()
+
+
+class TestVenueTagging:
+    """§7.61: order/portfolio rows carry the execution venue; replay reads filter on it."""
+
+    async def test_filled_quantity_is_persisted_on_reconcile(self, storage: Storage) -> None:
+        await storage.save_order("p-1", "BTC/USDT", "buy", 1.0, 100.0, "pending")
+        assert await storage.update_order_status("p-1", "filled", price=101.0, quantity=0.3)
+        (row,) = await storage.get_filled_orders()
+        assert row.quantity == pytest.approx(0.3)
+
+    async def test_writes_are_stamped_and_reads_filter(self, tmp_db_path: str) -> None:
+        storage = Storage(tmp_db_path, agent="crypto")
+        await storage.initialize()
+        try:
+            await storage.save_order("legacy", "BTC/USDT", "buy", 1.0, 1.0, "filled")
+            storage.bind_venue("paper")
+            await storage.save_order("paper-1", "BTC/USDT", "buy", 1.0, 1.0, "filled")
+            await storage.save_portfolio_snapshot(
+                cash=100.0, positions_json="[]", total_value=100.0
+            )
+            storage.bind_venue("kraken-live")
+            await storage.save_order("K-1", "BTC/USDT", "buy", 1.0, 1.0, "filled")
+            await storage.save_order("K-2", "BTC/USDT", "buy", 1.0, 1.0, "pending")
+            await storage.save_portfolio_snapshot(cash=7.0, positions_json="[]", total_value=7.0)
+
+            ids = lambda rows: [r.order_id for r in rows]
+            assert ids(await storage.get_filled_orders(venue="paper")) == ["legacy", "paper-1"]
+            assert ids(await storage.get_filled_orders(venue="kraken-live")) == ["legacy", "K-1"]
+            assert ids(await storage.get_filled_orders()) == ["legacy", "paper-1", "K-1"]
+            assert ids(await storage.get_pending_orders(venue="paper")) == []
+            assert ids(await storage.get_pending_orders(venue="kraken-live")) == ["K-2"]
+
+            assert (await storage.get_latest_portfolio_snapshot(venue="paper")).cash == 100.0
+            assert (await storage.get_latest_portfolio_snapshot()).cash == 7.0
+            assert (await storage.get_latest_portfolio_snapshot()).venue == "kraken-live"
+        finally:
+            await storage.close()
+
+    async def test_migration_adds_venue_and_tags_paper_orders(self, tmp_db_path: str) -> None:
+        import sqlite3
+
+        conn = sqlite3.connect(tmp_db_path)
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
+            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
+            "filled_at TIMESTAMP, created_at TIMESTAMP, agent VARCHAR(20), realized_pnl FLOAT)"
+        )
+        conn.execute(
+            "CREATE TABLE portfolio_snapshots (id INTEGER PRIMARY KEY, cash FLOAT, "
+            "positions_json TEXT, total_value FLOAT, unrealized_pnl FLOAT, timestamp TIMESTAMP, "
+            "agent VARCHAR(20))"
+        )
+        for oid in ("paper-abc", "OXYZ-1"):
+            conn.execute(
+                "INSERT INTO orders (order_id, symbol, side, quantity, price, status) "
+                "VALUES (?, 'BTC/USDT', 'buy', 1.0, 10.0, 'filled')",
+                (oid,),
+            )
+        conn.execute(
+            "INSERT INTO portfolio_snapshots (cash, positions_json, total_value, unrealized_pnl, "
+            "timestamp) VALUES (5, '[]', 5, 0, '2026-09-01 00:00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        for _ in range(2):  # idempotent
+            storage = Storage(tmp_db_path)
+            await storage.initialize()
+            try:
+                venues = {o.order_id: o.venue for o in await storage.get_recent_orders()}
+                assert venues == {"paper-abc": "paper", "OXYZ-1": None}
+                snap = await storage.get_latest_portfolio_snapshot(venue="xtb-demo")
+                assert snap is not None and snap.venue is None  # legacy rows match any venue
+            finally:
+                await storage.close()
