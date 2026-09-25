@@ -583,3 +583,10 @@ Findings from `external_4.md` (2026-09-24), tagged `[R4-xx]`.
    - **L10/L11 (housekeeping):** AGENTS.md pidfile path corrected to `data/<agent>_agent.pid`; a storage migration deletes exactly the pre-find-#16 `agent_control` rows `crypto_agent`/`stocks_agent` (the local DB had one); the stale untracked `build/` copy of pre-§7.36 code was removed.
    - **Tests:** `TestFeeAwareSizing` (cash-bound buy fills under fee+slippage while the naive plan is rejected; cost factor ignores mocks; SELL returns exact holdings and leaves no dust; buys round down), `TestDailyRolloverAtCheck` (new-day first check re-baselines; intra-day drop still caught; restored baseline kept), sub-$1 indicator + `_round_price` tests, `TestSymbolMap` (orders/closes use venue symbols; positions map back with levels; unmapped pass through), `TestXTBSymbolMap` config validation, `TestOrphanedControlRows`. 788 tests passing.
 
+### §7.60 — Continuous integration — ✅ complete [R4-L12]
+
+   - **Problem:** no CI; the only test runs were on a long-lived local venv (Python 3.14) while the image runs 3.11, so documented test counts weren't independently reproducible.
+   - **Done ✅:** `.github/workflows/ci.yml` — on pushes to `main` and on PRs: Python 3.11, `pip install -e ".[dev,stocks]"` (the image installs `[stocks]`), `ruff check .`, `ruff format --check .`, `pytest -q`; read-only token, 15-min timeout, pip cache keyed on `pyproject.toml`. No secrets needed (tests are offline by rule).
+   - **Found on the way (find #20):** the clean-room 3.11 run failed at collection — `sqlalchemy>=2.0` resolved to 2.1.1, which no longer installs `greenlet` implicitly, so the async engine raised `ImportError` at Storage init. That would have hit any fresh Docker image build too; the long-lived venv (2.0.52) hid it. Dependency is now `sqlalchemy[asyncio]>=2.0`.
+   - **Verification:** the job's exact steps were run locally in a fresh `uv` venv on CPython 3.11.15 (SQLAlchemy 2.1.1, greenlet 3.5.6): lint + format clean, 788 passed, no warnings. The workflow itself runs on GitHub from the next push.
+

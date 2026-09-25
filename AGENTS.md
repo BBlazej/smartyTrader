@@ -27,6 +27,8 @@ ruff format .       # Format (100 char line limit)
 
 Tests use `pytest-asyncio` in auto mode. Mock external APIs — no real network calls in unit tests.
 
+CI (`.github/workflows/ci.yml`, §7.60) runs exactly these three checks on **Python 3.11** (the Docker image's version; local venvs may be newer) with `pip install -e ".[dev,stocks]"` — keep all three green before committing. `sqlalchemy[asyncio]` is required (greenlet): SQLAlchemy 2.1 no longer installs it implicitly.
+
 ### Testing Strategy
 
 - **Unit tests** — Every pure function/method; mock all external deps; target >90% coverage on `core/`

@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 465 tests, no network needed
+pytest                      # 788 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -132,6 +132,7 @@ scripts/
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
 Dockerfile                    # Slim image (python:3.11, non-root) for all services (§7.15 P5)
 docker-compose.yml            # agent-crypto/-stocks + dashboard + on-demand backtester (§7.15 P5)
+.github/workflows/ci.yml      # lint + format check + pytest on Python 3.11 (§7.60)
 tests/
 ├── unit/                     # Fast, no network
 └── integration/              # Full pipeline, mocked provider, real SQLite
@@ -176,6 +177,8 @@ ruff format .                   # format (100-char lines)
 ```
 
 Tests mock all external dependencies — **no real network calls** in the suite.
+CI (`.github/workflows/ci.yml`, §7.60) runs `ruff check`, `ruff format --check` and `pytest`
+on Python 3.11 — the Docker image's version — for every push to `main` and every PR.
 
 ## Safety rules
 

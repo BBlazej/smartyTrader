@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "ccxt>=4.0",
     "httpx>=0.27",
-    "sqlalchemy>=2.0",
+    # [asyncio] pulls in greenlet, which the async engine needs — SQLAlchemy 2.1
+    # stopped installing it implicitly (a fresh install/image crashed at Storage init).
+    "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
     "pydantic>=2.0",

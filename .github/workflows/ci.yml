@@ -1,0 +1,40 @@
+# Minimal CI (PLAN §7.60 / external_4.md L12): lint, format check and the full test
+# suite on Python 3.11 — the version the Docker image runs — so the test counts the
+# docs quote are reproducible off any one developer's machine. Tests are offline by
+# project rule (all external APIs mocked), so no secrets are needed.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install (dev + stocks extras, as the image installs [stocks])
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,stocks]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Tests
+        run: pytest -q

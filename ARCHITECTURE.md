@@ -677,7 +677,7 @@ Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a 
 dependencies = [
     "ccxt>=4.0",
     "httpx>=0.27",
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",  # [asyncio] → greenlet; 2.1 no longer installs it implicitly
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
     "pydantic>=2.0",

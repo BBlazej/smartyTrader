@@ -192,3 +192,14 @@ fixed unless explicitly marked.
     a traded cancel/expiry is reported `filled` at the filled amount (ledger fed once), and
     `update_order_status(quantity=…)` persists it. ccxt's `expired` status — previously
     unmapped and therefore re-polled as `pending` forever — now maps to `cancelled`.
+
+## Found while implementing §7.60 (CI, 2026-09-25)
+
+20. **Fresh installs crashed at Storage init — `greenlet` missing** (`pyproject.toml`):
+    the project depended on plain `sqlalchemy>=2.0`. SQLAlchemy 2.0.x installed `greenlet`
+    implicitly on common platforms, so the long-lived dev venv (2.0.52) never noticed;
+    2.1 stopped doing that, and a fresh resolve (2.1.1) — including any new Docker image
+    build — raised `ImportError: The SQLAlchemy asyncio module requires … greenlet` on the
+    first async engine use. Surfaced by the first clean-room Python 3.11 run of the CI job.
+    **Status: fixed in §7.60** — dependency is now `sqlalchemy[asyncio]>=2.0`; CI installs
+    fresh on every run, so an implicit dependency can't hide like this again.
