@@ -29,6 +29,15 @@ Design notes
   order through it.
 * Fills are confirmed by polling ``tradeTransactionStatus`` briefly; an order
   still in flight returns ``pending`` and is treated like paper's accepted flow.
+* **Fill prices come from the venue (§7.62).** ``tradeTransactionStatus`` only
+  carries bid/ask, and instant orders fill at market — not at the price we sent.
+  Once a transaction is ``filled`` the client reads the resulting trade record
+  (``getTrades`` ``open_price`` for opens, ``getTradesHistory`` ``close_price`` for
+  closes) and returns that price with ``price_source: "venue"``. The order is
+  already executed at that point, so the lookup is fail-soft: no match, an error
+  or an implausible price (> ``_MAX_FILL_DEVIATION`` from the request — almost
+  surely a wrong record) falls back to the requested price, ``price_source:
+  "requested"``, with a warning.
 * Positions carry live marks fetched via ``getTickPrices`` (bid for longs, ask
   for shorts) so unrealized PnL is real even without the streaming channel.
 * **Volume caveat:** xAPI sizes positions in *lots* (``volume``); for XTB
@@ -42,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable
 from typing import Any, Protocol
 
 import structlog
@@ -67,6 +77,39 @@ _REQUEST_STATUS_MAP: dict[int, str] = {
     3: "filled",  # ACCEPTED — executed
     4: "rejected",  # REJECTED
 }
+
+
+#: A looked-up fill further than this from the requested price is treated as a
+#: mismatched trade record, not a fill (§7.62): instant orders fill near the mark.
+_MAX_FILL_DEVIATION = 0.20
+
+#: How far back ``getTradesHistory`` is searched for a just-closed trade (§7.62).
+_HISTORY_LOOKBACK_SECONDS = 24 * 3600
+
+
+def _record_ids(record: dict[str, Any]) -> set[int]:
+    """Every order number a trade record carries (``order``/``order2``/``position``).
+
+    Which of them echoes a transaction's ``order`` differs between opens and closes
+    (and is poorly documented since xapi.pl went dark), so matches try all three.
+    """
+    ids: set[int] = set()
+    for key in ("order", "order2", "position"):
+        try:
+            value = int(record.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value:
+            ids.add(value)
+    return ids
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 class XTBError(RuntimeError):
@@ -242,6 +285,52 @@ class XApiClient:
                 await asyncio.sleep(self._poll_delay)
         return mapped
 
+    async def _open_fill_price(self, order_id: int) -> float | None:
+        """``open_price`` of the trade an OPEN transaction created (§7.62)."""
+        records = await self._command("getTrades", {"openedOnly": True}) or []
+        for record in records:
+            if order_id in _record_ids(record):
+                return _positive_float(record.get("open_price"))
+        return None
+
+    async def _close_fill_price(self, close_order: int, trade_order: int) -> float | None:
+        """``close_price`` of a just-closed trade from recent history (§7.62).
+
+        Prefers the record echoing the CLOSE transaction's number; otherwise the most
+        recently closed record of the position (partial closes keep its number).
+        """
+        start_ms = int((time.time() - _HISTORY_LOOKBACK_SECONDS) * 1000)
+        records = await self._command("getTradesHistory", {"start": start_ms, "end": 0}) or []
+        candidates = [r for r in records if close_order in _record_ids(r)] or [
+            r for r in records if trade_order in _record_ids(r)
+        ]
+        if not candidates:
+            return None
+        latest = max(candidates, key=lambda r: _positive_float(r.get("close_time")) or 0.0)
+        return _positive_float(latest.get("close_price"))
+
+    async def _venue_price(
+        self, lookup: Awaitable[float | None], requested: float, **context: Any
+    ) -> tuple[float, str]:
+        """Resolve a filled transaction's real price; fall back to ``requested`` (§7.62)."""
+        try:
+            price = await lookup
+        except Exception as exc:  # noqa: BLE001 - the order already executed; never fail it
+            logger.warning("xAPI fill price lookup failed", error=str(exc), **context)
+            return requested, "requested"
+        if price is None:
+            logger.warning("xAPI fill price not found; booking requested price", **context)
+            return requested, "requested"
+        if requested > 0 and abs(price / requested - 1.0) > _MAX_FILL_DEVIATION:
+            logger.warning(
+                "xAPI fill price implausible vs request; booking requested price",
+                venue_price=price,
+                requested=requested,
+                **context,
+            )
+            return requested, "requested"
+        return price, "venue"
+
     # ── the XTBClient protocol (consumed by XTBExecutor) ──────
 
     async def create_order(
@@ -284,12 +373,17 @@ class XApiClient:
 
         order_id = int(data.get("order", 0))
         status = await self._await_fill_status(order_id)
-        return {
+        result: dict[str, Any] = {
             "order_id": str(order_id),
             "status": status,
             "quantity": float(quantity),
             "price": float(price),
         }
+        if status == "filled":
+            result["price"], result["price_source"] = await self._venue_price(
+                self._open_fill_price(order_id), float(price), order=order_id, symbol=symbol
+            )
+        return result
 
     async def get_open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Open trades (``getTrades`` openedOnly) with what closing needs (§7.40).
@@ -355,12 +449,21 @@ class XApiClient:
             return {"order_id": "", "status": "rejected", "quantity": float(volume)}
         close_order = int(data.get("order", 0))
         status = await self._await_fill_status(close_order)
-        return {
+        result: dict[str, Any] = {
             "order_id": str(close_order),
             "status": status,
             "quantity": float(volume),
             "price": float(price),
         }
+        if status == "filled":
+            result["price"], result["price_source"] = await self._venue_price(
+                self._close_fill_price(close_order, int(order)),
+                float(price),
+                order=close_order,
+                trade=int(order),
+                symbol=symbol,
+            )
+        return result
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         """Delete a pending order (xAPI ``tradeTransaction`` type=DELETE).

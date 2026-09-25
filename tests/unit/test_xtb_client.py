@@ -86,6 +86,10 @@ class TestCreateOrder:
                 LOGIN_OK,
                 {"status": True, "returnData": {"order": 123}},
                 {"status": True, "returnData": {"requestStatus": 3}},
+                {
+                    "status": True,
+                    "returnData": [{"order": 124, "order2": 123, "open_price": 210.9}],
+                },
             ]
         )
         result = await _client(t).create_order("AAPL", "buy", 2.0, price=210.5)
@@ -96,11 +100,14 @@ class TestCreateOrder:
         assert info["cmd"] == 0 and info["type"] == 0
         assert info["symbol"] == "AAPL"
         assert info["price"] == 210.5 and info["volume"] == 2.0
+        # §7.62: the booked price is the venue's open_price, not the requested 210.5.
+        assert t.sent[3] == {"command": "getTrades", "arguments": {"openedOnly": True}}
         assert result == {
             "order_id": "123",
             "status": "filled",
             "quantity": 2.0,
-            "price": 210.5,
+            "price": 210.9,
+            "price_source": "venue",
         }
 
     async def test_sell_uses_sell_cmd(self) -> None:
@@ -262,13 +269,26 @@ class TestCloseTrade:
                 LOGIN_OK,
                 {"status": True, "returnData": {"order": 900}},
                 {"status": True, "returnData": {"requestStatus": 3}},
+                {
+                    "status": True,
+                    "returnData": [
+                        {"order": 555, "order2": 900, "close_price": 211.7, "close_time": 5}
+                    ],
+                },
             ]
         )
         result = await _client(t).close_trade(555, "AAPL", 0, 1.5, price=212.0)
         info = t.sent[1]["arguments"]["tradeTransInfo"]
         assert info["type"] == 2 and info["order"] == 555 and info["cmd"] == 0
         assert info["volume"] == 1.5 and info["price"] == 212.0
-        assert result == {"order_id": "900", "status": "filled", "quantity": 1.5, "price": 212.0}
+        assert t.sent[3]["command"] == "getTradesHistory"
+        assert result == {
+            "order_id": "900",
+            "status": "filled",
+            "quantity": 1.5,
+            "price": 211.7,
+            "price_source": "venue",
+        }
 
     async def test_close_without_price_uses_bid_for_longs(self) -> None:
         t = FakeTransport(
@@ -309,3 +329,74 @@ class TestCloseTrade:
         )
         result = await _client(t).create_order("AAPL", "buy", 1.0, price=1.0)
         assert result["status"] == "pending"  # 5 is not a documented REQUEST_STATUS
+
+
+def _order_flow(*lookup: Any) -> FakeTransport:
+    """login → tradeTransaction(order 50) → ACCEPTED → the given lookup responses."""
+    return FakeTransport(
+        [
+            LOGIN_OK,
+            {"status": True, "returnData": {"order": 50}},
+            {"status": True, "returnData": {"requestStatus": 3}},
+            *lookup,
+        ]
+    )
+
+
+class TestVenueFillPrice:
+    """§7.62: fills are booked at the venue's price; any lookup problem falls back."""
+
+    async def test_open_matched_by_any_order_number(self) -> None:
+        for key in ("order", "order2", "position"):
+            t = _order_flow({"status": True, "returnData": [{key: 50, "open_price": 99.4}]})
+            result = await _client(t).create_order("AAPL", "buy", 1.0, price=100.0)
+            assert (result["price"], result["price_source"]) == (99.4, "venue"), key
+
+    async def test_no_matching_trade_books_requested_price(self) -> None:
+        t = _order_flow({"status": True, "returnData": [{"order": 7, "open_price": 99.4}]})
+        result = await _client(t).create_order("AAPL", "buy", 1.0, price=100.0)
+        assert (result["status"], result["price"], result["price_source"]) == (
+            "filled",
+            100.0,
+            "requested",
+        )
+
+    async def test_implausible_price_is_treated_as_a_mismatch(self) -> None:
+        t = _order_flow({"status": True, "returnData": [{"order2": 50, "open_price": 150.0}]})
+        result = await _client(t).create_order("AAPL", "buy", 1.0, price=100.0)
+        assert (result["price"], result["price_source"]) == (100.0, "requested")
+
+    async def test_lookup_error_never_fails_the_executed_order(self) -> None:
+        t = _order_flow(
+            {"status": False, "errorCode": "EX", "errorDescr": "boom"},
+        )
+        result = await _client(t).create_order("AAPL", "buy", 1.0, price=100.0)
+        assert (result["status"], result["price"], result["price_source"]) == (
+            "filled",
+            100.0,
+            "requested",
+        )
+
+    async def test_unfilled_order_is_not_looked_up(self) -> None:
+        responses: list[Any] = [LOGIN_OK, {"status": True, "returnData": {"order": 9}}]
+        responses += [{"status": True, "returnData": {"requestStatus": 4}}]
+        t = FakeTransport(responses)
+        result = await _client(t).create_order("AAPL", "buy", 1.0, price=10.0)
+        assert result["status"] == "rejected" and "price_source" not in result
+        assert [p["command"] for p in t.sent] == [
+            "login",
+            "tradeTransaction",
+            "tradeTransactionStatus",
+        ]
+
+    async def test_close_falls_back_to_latest_record_of_the_position(self) -> None:
+        history = [
+            {"position": 555, "close_price": 90.0, "close_time": 1_000},  # older partial close
+            {"position": 555, "close_price": 101.2, "close_time": 2_000},
+            {"position": 777, "close_price": 5.0, "close_time": 3_000},  # another trade
+        ]
+        t = _order_flow({"status": True, "returnData": history})
+        result = await _client(t).close_trade(555, "AAPL", 0, 1.0, price=100.0)
+        assert (result["price"], result["price_source"]) == (101.2, "venue")
+        start = t.sent[3]["arguments"]["start"]
+        assert t.sent[3]["arguments"]["end"] == 0 and start > 1_600_000_000_000  # epoch ms

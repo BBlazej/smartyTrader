@@ -385,3 +385,61 @@ class TestSymbolMap:
         mock_client.create_order.return_value = {"order_id": "1", "status": "filled"}
         await executor.place_order("AAPL", OrderSide.BUY, 1.0, price=100.0)
         assert mock_client.create_order.await_args.args[0] == "AAPL"
+
+
+class TestVenueFillPriceBooking:
+    """§7.62: the executor books the client's venue price, not the requested one."""
+
+    async def test_open_books_venue_price_into_result_and_ledger(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "quantity": 2.0,
+            "price": 101.0,
+            "price_source": "venue",
+        }
+        buy = await executor.place_order("AAPL", OrderSide.BUY, 2.0, price=100.0, decision_id=3)
+        assert buy.price == 101.0
+
+        mock_client.get_open_trades.return_value = [
+            {"order": 11, "symbol": "AAPL", "cmd": 0, "volume": 2.0}
+        ]
+        mock_client.close_trade.return_value = {
+            "order_id": "12",
+            "status": "filled",
+            "price": 111.0,
+        }
+        sell = await executor.place_order("AAPL", OrderSide.SELL, 2.0, price=110.0)
+        # Basis 101 (venue), exit 111 (venue): 2 × 10 — not 2 × 10 from 100 → 110 by luck.
+        assert sell.price == 111.0
+        assert sell.realized_pnl == pytest.approx(20.0)
+
+    async def test_multi_trade_close_books_vwap(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "order_id": "1",
+            "status": "filled",
+            "price": 100.0,
+        }
+        await executor.place_order("AAPL", OrderSide.BUY, 3.0, price=100.0)
+        mock_client.get_open_trades.return_value = [
+            {"order": 1, "symbol": "AAPL", "cmd": 0, "volume": 1.0},
+            {"order": 2, "symbol": "AAPL", "cmd": 0, "volume": 2.0},
+        ]
+        mock_client.close_trade.side_effect = [
+            {"order_id": "a", "status": "filled", "price": 110.0},
+            {"order_id": "b", "status": "filled", "price": 113.0},
+        ]
+        sell = await executor.place_order("AAPL", OrderSide.SELL, 3.0, price=112.0)
+        assert sell.price == pytest.approx((110.0 * 1 + 113.0 * 2) / 3)
+        assert sell.realized_pnl == pytest.approx(10.0 + 2 * 13.0)
+
+    async def test_missing_client_price_falls_back_to_requested(
+        self, executor: XTBExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"order_id": "1", "status": "filled"}
+        buy = await executor.place_order("AAPL", OrderSide.BUY, 1.0, price=100.0)
+        assert buy.price == 100.0

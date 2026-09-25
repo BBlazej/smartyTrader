@@ -197,27 +197,31 @@ class XTBExecutor:
         order_id = str(raw.get("order_id") or raw.get("id") or "")
         status = _STATUS_MAP.get(str(raw.get("status", "pending")), "pending")
         filled_qty = float(raw.get("quantity", quantity))
+        # The venue's fill price when the client could read it (§7.62), else the
+        # requested one — instant orders fill at market, not at what we sent.
+        fill_price = raw.get("price") if raw.get("price") is not None else price
 
         result = OrderResult(
             order_id=order_id,
             symbol=symbol,
             side=side,
             quantity=filled_qty,
-            price=float(price) if price is not None else None,
+            price=float(fill_price) if fill_price is not None else None,
             status=status,
             filled_at=None,
         )
 
-        # xAPI fills the requested price; track it locally so closing sells
-        # realize PnL back to their entry decisions (§7.8).
-        if status == "filled" and price is not None:
+        # Track the fill locally so closing sells realize PnL back to their entry
+        # decisions (§7.8).
+        if status == "filled" and fill_price is not None:
+            fill = float(fill_price)
             if side == OrderSide.BUY:
-                self._tracker.on_buy(symbol, filled_qty, float(price), decision_id=decision_id)
+                self._tracker.on_buy(symbol, filled_qty, fill, decision_id=decision_id)
                 # Local levels only — enforcement is the pipeline's per-cycle
                 # check, not a venue-side stop order (§7.9).
                 self._exit_levels[symbol] = (stop_loss, take_profit)
             elif self._tracker.quantity(symbol) > 0:
-                outcome = self._tracker.on_sell(symbol, filled_qty, float(price))
+                outcome = self._tracker.on_sell(symbol, filled_qty, fill)
                 result.realized_pnl = outcome.gross_pnl
                 result.closed_entries = outcome.closed_entries
             else:
@@ -244,12 +248,14 @@ class XTBExecutor:
         Any remainder beyond the open volume is dropped (never flipped into a new
         opposite position). Filled volume flows through the FIFO ledger — ``on_sell``
         for closed longs, ``cover`` for closed shorts — for realized PnL + entry
-        attribution (gross of commission, booked at the requested price, find #8).
+        attribution, gross of commission. Booked at the volume-weighted average of the
+        venue's per-trade close prices (§7.62; the client falls back to the requested
+        price per trade when it can't read one).
         """
         remaining = quantity
         closed_volume = 0.0
+        closed_notional = 0.0
         order_ids: list[str] = []
-        fill_price = price
         failure: str | None = None
         for trade in trades:
             if remaining <= 1e-12:
@@ -272,10 +278,16 @@ class XTBExecutor:
                 failure = f"close of trade {trade['order']} came back {status}"
                 break
             order_ids.append(str(raw.get("order_id") or ""))
-            if raw.get("price") is not None:
-                fill_price = float(raw["price"])
+            trade_price = raw.get("price") if raw.get("price") is not None else price
+            if trade_price is not None:
+                closed_notional += float(trade_price) * volume
             closed_volume += volume
             remaining -= volume
+
+        # VWAP across the closed trades; the requested price only when no leg priced.
+        fill_price = (
+            closed_notional / closed_volume if closed_volume > 0 and closed_notional > 0 else price
+        )
 
         if remaining > 1e-12 and failure is None:
             logger.warning(

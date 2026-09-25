@@ -44,7 +44,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 788 tests, no network needed
+pytest                      # 797 tests, no network needed
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -240,7 +240,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XT
 execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
 xStation verification code, instant orders + fill-status polling, live position marks;
 opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**788 tests passing at ~94% coverage.**
+**797 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
@@ -259,5 +259,4 @@ for the full list — reordered after the full-codebase reviews; detailed findin
 | `HISTORY.md` | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
 | `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
-| `nightly_finds.md` | bugs/gaps discovered during development |
 | `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase architecture & code reviews |

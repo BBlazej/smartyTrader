@@ -9,7 +9,6 @@ This document describes **how the system is built**: module layout, data flow, s
 - [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
 - [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
 - `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
-- `nightly_finds.md` — bugs/gaps discovered during development (numbered findings)
 - `review.MD` / `review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
 
 ## Overview
@@ -238,7 +237,7 @@ class Executor(Protocol):
 ```
 
 - `kraken_executor.py` — keyed Kraken via ccxt (mode `<exchange>-sandbox` where ccxt has one; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); real `fetch_free_balance` / fill payload parsing; Kraken-spot `fetch_positions` rejection handled (warn once, return `[]`).
-- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor.
+- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor. Fills are booked at the **venue's** price (§7.62): once `tradeTransactionStatus` says ACCEPTED the client reads the trade record (`getTrades` `open_price` / `getTradesHistory` `close_price`) and returns it with `price_source: "venue"`; fail-soft fallback to the requested price (`"requested"`) on no match, an error, or a > 20 % deviation.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
 ## Risk engine (`core/risk_engine.py`)
@@ -727,4 +726,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **788 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **797 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
