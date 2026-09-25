@@ -1,6 +1,9 @@
 # CHANGE.md — Multi-strategy trading with a research layer (proposal)
 
 **Status:** proposal, under discussion — nothing here is implemented. Started 2026-09-26.
+**Decided so far (2026-09-26):** Q3 — "long-term" means **days to weeks** (position trading,
+not months-long investing); Q4 — risk limits move to **per-style (per-sleeve) limits** (§4.8).
+Q1 (stock broker) open — comparison in §8.
 **Scope:** turn today's single-style swing trader into a system that runs several trading
 *styles* side by side (short-term swing + longer-term position trades), measures which one
 actually earns money, shifts capital toward what works, and widens what the agents look at
@@ -81,11 +84,11 @@ flowchart LR
   end
   subgraph Trading["Trading layer (per strategy sleeve)"]
     S1["Sleeve: swing\n(1h crypto / 1d stocks)"]
-    S2["Sleeve: position\n(1d / 1w, wider stops)"]
+    S2["Sleeve: position\n(4h / 1d, holds days–weeks)"]
   end
   ALLOC["Allocator\n(deterministic, weekly)"]
   PERF["Performance ledger\n+ baselines"]
-  RISK["Risk engine\n(portfolio + per-sleeve)"]
+  RISK["Risk engine\n(per-sleeve limits +\nloose agent backstop)"]
   EXE["Executor\n(paper / venue)"]
 
   WL -->|symbols + context cards| S1 & S2
@@ -103,19 +106,19 @@ pipeline, not a new process.
 ```yaml
 # illustrative — not final
 strategies:
-  crypto_swing:
+  crypto_swing:              # holds of hours to ~3 days
     agent: crypto
     timeframe: "1h"
     playbook: swing          # prompt variant: momentum/mean-reversion, tight SL/TP
     holding: { max_hours: 72 }            # time stop: close stale trades
     risk: { max_position_pct: 0.05, max_stop_distance_pct: 0.08 }
     budget: { initial_weight: 0.5, min_weight: 0.15, max_weight: 0.70 }
-  crypto_position:
+  crypto_position:          # holds of days to weeks (Q3)
     agent: crypto
-    timeframe: "1d"
-    playbook: position       # trend-following, wide stops, few trades
-    holding: { max_days: 90 }
-    risk: { max_position_pct: 0.10, max_stop_distance_pct: 0.25 }
+    timeframe: "4h"          # or "1d"
+    playbook: position       # trend-following, wider stops, few trades
+    holding: { max_days: 28 }
+    risk: { max_position_pct: 0.10, max_stop_distance_pct: 0.20 }
     budget: { initial_weight: 0.5, min_weight: 0.15, max_weight: 0.70 }
 ```
 
@@ -125,12 +128,8 @@ strategies:
   possible later (FIFO lots already carry `decision_id`), but not worth it for v1.
 - **Time stops:** new deterministic exit next to SL/TP — close when `max_hours/max_days` is
   exceeded. This is what makes "short-term" actually short.
-- **Per-sleeve risk:** each sleeve gets its own position cap, stop geometry and a sleeve
-  drawdown kill-switch (weight → 0 until an operator re-enables it). The existing
-  portfolio-level rules (daily loss, max drawdown, max positions) stay on top, unchanged.
-- **Long-term sleeve caveat:** today's 5 % portfolio drawdown latch would stop a position
-  sleeve in any normal crypto dip. Portfolio limits need re-thinking together with sleeves
-  (open question Q4), not silently loosened.
+- **Per-sleeve risk:** each sleeve carries its own full set of limits (§4.8, decided Q4) —
+  the swing sleeve can stay tight while the position sleeve rides normal multi-day swings.
 
 ### 4.2 Performance ledger & baselines
 
@@ -202,8 +201,10 @@ These are rules, not LLM judgement.
 ### 4.6 Storage changes (summary)
 
 `strategy` column on `llm_decisions`/`orders`/`portfolio_snapshots` (migration, scoped reads);
-new tables `strategy_allocations` (audited rebalances), `news_items`, `context_cards`,
-`watchlist` (symbol, source, added_at, expires_at). All additive, idempotent migrations as today.
+new tables `strategy_allocations` (audited rebalances), `sleeve_snapshots` (per-sleeve equity
+for §4.8), `news_items`, `context_cards`, `watchlist` (symbol, source, added_at, expires_at);
+`drawdown_resets` gains a `strategy` key so the audited CLI re-baseline (§7.53) works per sleeve.
+All additive, idempotent migrations as today.
 
 ### 4.7 LLM budget
 
@@ -212,6 +213,32 @@ swing sleeve 5 symbols × hourly = 5 calls/h; position sleeve 5 symbols × daily
 summarizer batched every few hours. That fits; **10+ hourly symbols probably doesn't**. Options:
 cap dynamic symbols, stagger bars, run the summarizer on a smaller/faster model (separate
 `llm` config block), and log per-call latency to size it with data rather than guesses.
+
+### 4.8 Per-sleeve risk limits (decided — Q4)
+
+Today's seven rules evaluate the **whole agent book**. With sleeves they evaluate the
+**sleeve's own book**:
+
+- **Sleeve equity** = allocated capital (weight × agent equity at the last rebalance) +
+  the sleeve's realized PnL since then + unrealized PnL of its open positions. Persisted per
+  cycle in `sleeve_snapshots`, so it survives restarts exactly like portfolio snapshots (§7.7).
+- **Per-sleeve rules** (config per sleeve, same semantics as today): min confidence, max
+  position % *of sleeve equity*, max open positions, daily loss vs the sleeve's start-of-day
+  equity, max drawdown vs the sleeve's own peak (high-water mark seeded from
+  `sleeve_snapshots`), consecutive-loss cooldown, stop required + geometry
+  (`max_stop_distance_pct`), optional risk-per-trade.
+- **Illustrative defaults:** swing — daily loss 2 %, drawdown 6 %, stop ≤ 8 %; position —
+  daily loss 4 %, drawdown 15 %, stop ≤ 20 %. To be tuned on paper results, not guessed further.
+- **A sleeve that trips its drawdown latch** stops opening positions (its open positions are
+  still managed; exits are never gated, §7.47); the allocator treats it as weight 0 until an
+  operator re-baselines it via the audited CLI (§7.53, per sleeve).
+- **Cash is shared at the venue**, so sizing clamps to *both* the sleeve's budget and the
+  agent's actual free cash; a sleeve can never spend another sleeve's budget.
+- **Recommended outer backstop (please confirm):** keep *one* loose agent-wide breaker —
+  e.g. agent equity −20 % from peak → no new entries in any sleeve. Per-sleeve limits don't
+  protect against several sleeves losing at once (correlated crypto moves), and a bug in sleeve
+  accounting shouldn't be able to lose the whole account. It sits far outside the sleeves' own
+  limits, so it never interferes in normal operation.
 
 ## 5. Prerequisites (from current open gaps)
 
@@ -260,22 +287,43 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 
 ## 8. Open questions (need your decisions)
 
-1. **Stock broker:** IBKR, Alpaca, or paper-only for now? (Blocks stocks sleeves.)
+1. **Stock broker:** IBKR, Alpaca, or paper-only for now? (Blocks stocks sleeves.) —
+   *open*; comparison below.
 2. **Which sleeves first?** Suggest crypto swing (1 h) + crypto position (1 d) — same venue,
    24/7 data, fastest feedback. Stocks after the broker question.
-3. **Horizons:** is "long-term" days–weeks (position trading) or months+ (investing)? Months+
-   needs fundamentals and a very different risk profile — suggest out of scope for v1.
-4. **Portfolio limits with a long-term sleeve:** keep 5 % drawdown / 2 % daily loss
-   portfolio-wide, or move to per-sleeve limits with a looser portfolio cap?
+3. ~~Horizons~~ — **decided:** "long-term" = days to weeks (position sleeve on 4 h/1 d bars,
+   time stop ≈ 4 weeks). Months-long investing stays a non-goal.
+4. ~~Portfolio limits~~ — **decided:** per-sleeve limits (§4.8). Still to confirm: the
+   recommended loose agent-wide backstop.
 5. **Universe size:** how many dynamic symbols per agent (LLM budget suggests ≤ 5–8 hourly)?
 6. **News sources:** free only (RSS, EDGAR, calendars) or paid APIs acceptable? Polish sources
    (ESPI/EBI) needed?
 7. **Hardware:** is a second, smaller local model for summarization acceptable?
+
+### Q1 — IBKR vs Alpaca (for a Poland-based user)
+
+| | **Interactive Brokers (IBKR)** | **Alpaca** |
+|---|---|---|
+| Availability from Poland | Yes — served by IB Ireland (EU-regulated, passported) | Paper-only account: email sign-up, no funding. Live: many non-US countries, Poland not confirmed — ask their support |
+| Paper trading | Free, $1M simulated; requires an **open and funded IBKR Pro** live account first | Free, $100k simulated, instant, no funding |
+| Markets | 160+ markets: US, **GPW (Warsaw)**, EU exchanges, ETFs, bonds | US stocks & ETFs (+ crypto); no GPW |
+| API | TWS API over a locally running **IB Gateway/TWS** app (ports 4002 paper / 4001 live), or the Web API; periodic re-login (2FA) — more moving parts | Plain **REST + WebSocket** with API keys; paper and live are the same API on different URLs |
+| Market data | Paid per-exchange subscriptions for real-time (paper shares the live account's); delayed data free | Free IEX-only feed (partial volume); full SIP $99/month |
+| Costs | Low per-share commissions (tiered), cheap FX; PLN base currency possible | Commission-free US stocks; USD-only deposits for internationals |
+| Fit with our code | New executor + client + a gateway process (extra Docker service) | New executor + client; simplest integration |
+| Taxes (PL) | No PIT-8C — self-report PIT-38; W-8BEN for US withholding | Same |
+
+**Recommendation:** use **Alpaca paper** to build and validate the stocks sleeves now (zero
+cost, no funding, fastest loop — yfinance can stay the data source, or Alpaca's free IEX bars).
+Choose **IBKR** as the eventual live broker if real-money stocks from Poland are the goal (it
+certainly accepts Polish residents and covers GPW). Executors sit behind one `Executor`
+protocol, so starting on Alpaca paper and adding IBKR later costs one extra executor, not a
+redesign.
 
 ## 9. Non-goals (v1)
 
 - High-frequency / sub-15-minute trading (latency, polling, fees make it a losing game here).
 - Short selling / margin / derivatives (spot long-only stays; §7.47/§7.48 semantics unchanged).
 - The LLM choosing allocations, sizing, or overriding risk rules.
-- Fundamental valuation models for months-long investing.
+- Months-long investing and fundamental valuation models (Q3: "long-term" = days to weeks).
 - Social-media firehoses as a primary signal.
