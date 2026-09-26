@@ -224,13 +224,17 @@ class TestYFinanceSource:
 
 class TestPeriodMap:
     def test_known_timeframes(self) -> None:
-        assert YFinanceSource._PERIOD_MAP["1h"] == ("1d", "1h")
+        assert YFinanceSource._PERIOD_MAP["1h"] == ("1mo", "1h")
         assert YFinanceSource._PERIOD_MAP["1d"] == ("6mo", "1d")
         assert YFinanceSource._PERIOD_MAP["1w"] == ("1y", "1wk")
 
     def test_daily_period_deep_enough_for_macd(self) -> None:
         """§7.11: "1mo" ≈ 21 daily closes — below MACD's 26-close minimum."""
         assert YFinanceSource._PERIOD_MAP["1d"][0] == "6mo"
+
+    def test_hourly_period_deep_enough_for_macd(self) -> None:
+        """§7.67: "1d" fetched ~7 hourly bars — RSI/MACD/Bollinger silently absent."""
+        assert YFinanceSource._PERIOD_MAP["1h"][0] == "1mo"
 
     def test_unknown_timeframe_defaults(self) -> None:
         period, interval = YFinanceSource._PERIOD_MAP.get("99x", ("3mo", "1d"))
@@ -284,3 +288,40 @@ class TestNaNHandling:
         rows = YFinanceSource._to_rows(_NaNFrame(), limit=1)
         assert len(rows) == 1
         assert rows[0][4] == 11.0  # the last *surviving* close
+
+
+class TestShallowDepthWarning:
+    """§7.67: a fetch too shallow to feed MACD must be loud, once."""
+
+    @staticmethod
+    def _rows(n: int) -> list[list]:
+        base = 1_700_000_000_000
+        return [[base + i * 3_600_000, 10.0, 11.0, 9.0, 10.5, 100.0] for i in range(n)]
+
+    async def test_shallow_book_warns_once_per_symbol_timeframe(
+        self, mock_source: AsyncMock, provider: XTBProvider
+    ) -> None:
+        from unittest.mock import patch as _patch
+
+        mock_source.fetch_ohlcv.return_value = self._rows(10)  # < 26 → MACD absent
+        with _patch("src.data.xtb_provider.logger") as log:
+            await provider.fetch_snapshot("AAPL", "1h")
+            await provider.fetch_snapshot("AAPL", "1h")  # deduped
+
+        warns = [
+            c for c in log.warning.call_args_list if "depth below MACD minimum" in str(c.args[0])
+        ]
+        assert len(warns) == 1
+        kwargs = warns[0].kwargs
+        assert kwargs["symbol"] == "AAPL" and kwargs["timeframe"] == "1h"
+        assert kwargs["candles"] == 10
+
+    async def test_deep_book_stays_silent(
+        self, mock_source: AsyncMock, provider: XTBProvider
+    ) -> None:
+        from unittest.mock import patch as _patch
+
+        mock_source.fetch_ohlcv.return_value = self._rows(30)
+        with _patch("src.data.xtb_provider.logger") as log:
+            await provider.fetch_snapshot("AAPL", "1d")
+        assert not [c for c in log.warning.call_args_list if "MACD" in str(c)]

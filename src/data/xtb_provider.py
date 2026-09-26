@@ -50,9 +50,15 @@ class XTBProvider:
     connection or a real yfinance / xAPI instance.
     """
 
+    #: MACD's minimum close count (mirrors ``indicators._compute_macd``); shallower
+    #: books silently lose MACD in the prompt (§7.67).
+    _MACD_MIN_CLOSES = 26
+
     def __init__(self, source: StockDataSource, candles_limit: int = 100) -> None:
         self._source = source
         self._candles_limit = candles_limit
+        # (symbol, timeframe) pairs already warned about shallow depth (§7.67).
+        self._shallow_warned: set[tuple[str, str]] = set()
 
     @property
     def source(self) -> StockDataSource:
@@ -84,6 +90,20 @@ class XTBProvider:
         if raw is None:
             raw = []
         candles = [self._to_candle(row) for row in raw]
+        # §7.67: a timeframe whose fetch depth cannot feed MACD used to leave the
+        # prompt silently without indicators — name it once per (symbol, timeframe).
+        if candles and len(candles) < self._MACD_MIN_CLOSES:
+            key = (symbol, timeframe)
+            if key not in self._shallow_warned:
+                self._shallow_warned.add(key)
+                logger.warning(
+                    "candle depth below MACD minimum — indicators will be missing",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    candles=len(candles),
+                    min_candles=self._MACD_MIN_CLOSES,
+                    note="check the data source's period map for this timeframe (§7.67)",
+                )
         return MarketSnapshot(symbol=symbol, timeframe=timeframe, candles=candles)
 
     async def fetch_history(
@@ -130,11 +150,13 @@ class YFinanceSource:
     """
 
     # timeframe → (yfinance period, yfinance interval).
-    # Daily bars must be deep enough for MACD (needs ≥ 26 closes + signal window):
-    # the old "1mo" request ≈ 21 closes silently left the stocks prompt without
-    # MACD while crypto (100 candles) had it (§7.11). "6mo" ≈ 126 trading days.
+    # Every request must be deep enough for MACD (needs ≥ 26 closes + signal window):
+    # the old daily "1mo" ≈ 21 closes silently left the stocks prompt without MACD
+    # (§7.11), and "1d" for hourly bars fetched ~7 bars — the same trap one level
+    # down (§7.67). yfinance serves hourly data up to ~730 days back; "1mo" gives
+    # ≈ 21 sessions × 7 US bars ≈ 145 candles.
     _PERIOD_MAP: ClassVar[dict[str, tuple[str, str]]] = {
-        "1h": ("1d", "1h"),
+        "1h": ("1mo", "1h"),
         "1d": ("6mo", "1d"),
         "1w": ("1y", "1wk"),
     }
