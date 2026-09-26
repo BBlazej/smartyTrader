@@ -1670,3 +1670,72 @@ class TestMinimumCommissionSizing:
         executor.fx_fee_pct = 0.0025
         executor.min_commission = 1.0
         assert buy_cost_factor(executor) == pytest.approx(1.001 * (1 + 0.0008 + 0.0025))
+
+
+class TestLLMCostProfilePersistence:
+    """§7.69: the LLM call's latency + token usage ride onto the decision row."""
+
+    async def test_metrics_saved_with_decision(
+        self, tmp_path, risk_settings, sample_candles
+    ) -> None:
+        from src.core.llm_client import LLMCallMetrics
+        from src.core.storage import Storage
+
+        store = Storage(str(tmp_path / "cost.db"), agent="crypto")
+        await store.initialize()
+        try:
+            provider = AsyncMock()
+            provider.fetch_snapshot.return_value = MarketSnapshot(
+                symbol="BTC/USDT", timeframe="1h", candles=sample_candles
+            )
+            llm = AsyncMock()
+            llm.ask_trade_signal.return_value = TradeSignal(
+                symbol="BTC/USDT", action=Action.HOLD, confidence=0.7, reasoning="flat"
+            )
+            llm.last_metrics = LLMCallMetrics(
+                latency_ms=4321.5, prompt_tokens=1500, completion_tokens=300, attempts=1
+            )
+            pipeline = DecisionPipeline(
+                provider=provider,
+                llm_client=llm,
+                risk_engine=RiskEngine(risk_settings),
+                executor=PaperExecutor(),
+                storage=store,
+            )
+            await pipeline.run("BTC/USDT")
+
+            (row,) = await store.get_recent_decisions(limit=1)
+            assert row.llm_latency_ms == pytest.approx(4321.5)
+            assert row.llm_prompt_tokens == 1500
+            assert row.llm_completion_tokens == 300
+        finally:
+            await store.close()
+
+    async def test_mock_client_without_metrics_stores_nulls(
+        self, tmp_path, risk_settings, sample_candles
+    ) -> None:
+        from src.core.storage import Storage
+
+        store = Storage(str(tmp_path / "cost2.db"), agent="crypto")
+        await store.initialize()
+        try:
+            provider = AsyncMock()
+            provider.fetch_snapshot.return_value = MarketSnapshot(
+                symbol="BTC/USDT", timeframe="1h", candles=sample_candles
+            )
+            llm = AsyncMock()  # plain AsyncMock: last_metrics is a MagicMock, not metrics
+            llm.ask_trade_signal.return_value = TradeSignal(
+                symbol="BTC/USDT", action=Action.HOLD, confidence=0.7, reasoning="flat"
+            )
+            pipeline = DecisionPipeline(
+                provider=provider,
+                llm_client=llm,
+                risk_engine=RiskEngine(risk_settings),
+                executor=PaperExecutor(),
+                storage=store,
+            )
+            await pipeline.run("BTC/USDT")
+            (row,) = await store.get_recent_decisions(limit=1)
+            assert row.llm_latency_ms is None
+        finally:
+            await store.close()

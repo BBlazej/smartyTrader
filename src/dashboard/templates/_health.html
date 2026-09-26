@@ -10,6 +10,7 @@
         {% if a.close_all_requested %}<span class="badge b-warn">close-all pending</span>{% endif %}
         {% if a.has_overrides %}<span class="badge b-warn" title="safe config overrides stored">overrides active</span>{% endif %}
         {% if a.fallbacks %}<span class="badge b-offline" title="decisions where the LLM was unreachable and the cycle fell back to HOLD">LLM fallbacks {{ a.fallbacks }}/{{ a.recent_decisions }} recent</span>{% endif %}
+        {% if a.llm_stats and a.llm_stats.count %}<span class="badge" title="per-decision LLM latency incl. retries, over the last {{ a.llm_stats.count }} timed decisions (§7.69); tokens/decision from the completion's usage block">LLM p50 {{ (a.llm_stats.p50_ms / 1000) | round(1) }}s · p95 {{ (a.llm_stats.p95_ms / 1000) | round(1) }}s{% if a.llm_stats.avg_completion_tokens is not none %} · ~{{ a.llm_stats.avg_completion_tokens | round(0) | int }} tok out{% endif %}</span>{% endif %}
       </div>
       <div class="muted" style="margin-top:.6rem;">
         last cycle: {{ a.last_cycle_at | rel }}{% if a.last_cycle_at %}<br>{{ a.last_cycle_at | short }}{% endif %}

@@ -358,3 +358,62 @@ class TestClose:
         with patch.object(client._client, "aclose", new=AsyncMock()) as mock_close:
             await client.close()
             mock_close.assert_called_once()
+
+
+def _resp_usage(content: str, usage: dict | None) -> MagicMock:
+    mock_response = MagicMock()
+    payload: dict = {"choices": [{"message": {"content": content}}]}
+    if usage is not None:
+        payload["usage"] = usage
+    mock_response.json.return_value = payload
+    mock_response.raise_for_status = MagicMock()
+    return mock_response
+
+
+class TestCallMetrics:
+    """§7.69: every ask_trade_signal records latency + token usage."""
+
+    async def test_successful_call_records_usage(self, client: LLMClient) -> None:
+        with patch.object(
+            client._client,
+            "post",
+            new=AsyncMock(
+                return_value=_resp_usage(
+                    _SIG, {"prompt_tokens": 1234, "completion_tokens": 210, "total_tokens": 1444}
+                )
+            ),
+        ):
+            await client.ask_trade_signal("sys", "user")
+
+        metrics = client.last_metrics
+        assert metrics is not None
+        assert metrics.attempts == 1
+        assert metrics.latency_ms > 0
+        assert metrics.prompt_tokens == 1234
+        assert metrics.completion_tokens == 210
+
+    async def test_missing_usage_block_records_none_tokens(self, client: LLMClient) -> None:
+        with patch.object(client._client, "post", new=AsyncMock(return_value=_resp(_SIG))):
+            await client.ask_trade_signal("sys", "user")
+        metrics = client.last_metrics
+        assert metrics is not None
+        assert metrics.prompt_tokens is None
+        assert metrics.completion_tokens is None
+
+    async def test_garbage_usage_block_tolerated(self, client: LLMClient) -> None:
+        resp = _resp_usage(_SIG, {"prompt_tokens": "nonsense", "completion_tokens": None})
+        with patch.object(client._client, "post", new=AsyncMock(return_value=resp)):
+            await client.ask_trade_signal("sys", "user")
+        assert client.last_metrics.prompt_tokens is None
+
+    async def test_fallback_metrics_count_all_attempts(self, client: LLMClient) -> None:
+        with patch.object(
+            client._client, "post", new=AsyncMock(side_effect=Exception("connection refused"))
+        ):
+            signal = await client.ask_trade_signal("sys", "user")
+        assert signal.is_fallback is True
+        metrics = client.last_metrics
+        assert metrics is not None
+        assert metrics.attempts == 2  # settings.max_retries
+        assert metrics.latency_ms > 0  # includes the failed attempts + backoff
+        assert metrics.prompt_tokens is None

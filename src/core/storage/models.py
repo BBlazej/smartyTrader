@@ -62,6 +62,11 @@ class LLMDecisionRow(Base):
     # True for LLM-unavailable HOLD fallbacks — persisted for audit, excluded
     # from prompt context (§7.8).
     is_fallback: Mapped[bool] = mapped_column(default=False)
+    # Per-decision LLM cost profile (§7.69): whole-call latency incl. retries and
+    # the completion's usage counts (NULL when the server omits them).
+    llm_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_prompt_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    llm_completion_tokens: Mapped[int | None] = mapped_column(nullable=True)
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     # Owning agent (§7.39): ``crypto`` / ``stocks``. Both agents share one DB, so every
     # read that feeds an agent's own state (prompt history, loss-streak rehydration)

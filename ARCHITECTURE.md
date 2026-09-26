@@ -353,6 +353,9 @@ erDiagram
         text risk_reason
         float realized_pnl "net-of-fee; backfilled FIFO onto the entry decision"
         bool is_fallback "LLM-unavailable HOLD — audit only, never re-fed into prompts"
+        float llm_latency_ms "whole-call latency incl. retries (§7.69)"
+        int llm_prompt_tokens "from the completion's usage block (§7.69)"
+        int llm_completion_tokens "NULL when the server omits usage (§7.69)"
         datetime timestamp
         string agent "crypto / stocks — owning agent (§7.39)"
     }

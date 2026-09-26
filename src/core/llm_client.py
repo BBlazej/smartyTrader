@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -40,8 +42,28 @@ TRADE_SIGNAL_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+@dataclass(frozen=True)
+class LLMCallMetrics:
+    """One ``ask_trade_signal`` call's cost profile (§7.69).
+
+    ``latency_ms`` is the *whole* call — every retry included — because that is
+    what a decision cycle actually pays; token counts come from the completion's
+    OpenAI-compatible ``usage`` block (``None`` when the server omits it). The
+    pipeline persists these onto the decision row and the dashboard shows p50/p95,
+    which is how CHANGE.md's watchlist gets sized.
+    """
+
+    latency_ms: float
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    attempts: int
+
+
 class LLMClient:
     """Thin async client over LM Studio's OpenAI-compatible endpoint."""
+
+    #: Metrics of the most recent ``ask_trade_signal`` call (§7.69).
+    last_metrics: LLMCallMetrics | None = None
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
@@ -73,6 +95,7 @@ class LLMClient:
         which makes the response stable to parse.
         """
         last_error: Exception | None = None
+        call_started = time.perf_counter()
 
         # Default to the shared schema when enabled, but allow an explicit override.
         effective_schema = (
@@ -110,6 +133,10 @@ class LLMClient:
                 data = resp.json()
                 choice = data["choices"][0]
                 raw_content = choice["message"]["content"]
+                # Token usage of the winning completion (§7.69); LM Studio serves
+                # the OpenAI-compatible ``usage`` block, but older builds may not.
+                usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+                attempt_latency_ms = (time.perf_counter() - call_started) * 1000.0
                 if choice.get("finish_reason") == "length":
                     # Cut off at max_tokens — usually a long reasoning block ate
                     # the budget before the JSON (§7.57). Name it in the log so
@@ -134,12 +161,21 @@ class LLMClient:
                     "llm_exchange",
                     model=self.settings.model,
                     attempt=attempt,
+                    latency_ms=round(attempt_latency_ms, 1),
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     response=raw_content,
                 )
 
                 signal = _parse_signal(raw_content)
+                self.last_metrics = LLMCallMetrics(
+                    latency_ms=attempt_latency_ms,
+                    prompt_tokens=_optional_int(usage.get("prompt_tokens")),
+                    completion_tokens=_optional_int(usage.get("completion_tokens")),
+                    attempts=attempt,
+                )
                 logger.debug("llm signal parsed", action=signal.action.value, attempt=attempt)
                 return signal
 
@@ -159,6 +195,12 @@ class LLMClient:
 
         # All retries exhausted — return safe HOLD fallback. Marked so it is
         # persisted for audit but never re-fed into later prompts (§7.8).
+        self.last_metrics = LLMCallMetrics(
+            latency_ms=(time.perf_counter() - call_started) * 1000.0,
+            prompt_tokens=None,
+            completion_tokens=None,
+            attempts=self.settings.max_retries,
+        )
         logger.error("llm_retries_exhausted", last_error=str(last_error))
         return TradeSignal(
             symbol="UNKNOWN",
@@ -167,6 +209,14 @@ class LLMClient:
             reasoning=f"LLM unavailable after {self.settings.max_retries} retries: {last_error}",
             is_fallback=True,
         )
+
+
+def _optional_int(value: Any) -> int | None:
+    """Coerce a ``usage`` count to int, tolerating absent/garbage values (§7.69)."""
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_chat_url(endpoint: str) -> str:

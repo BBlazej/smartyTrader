@@ -31,6 +31,9 @@ class DecisionMixin:
         realized_pnl: float | None = None,
         is_fallback: bool = False,
         agent: str | None = None,
+        llm_latency_ms: float | None = None,
+        llm_prompt_tokens: int | None = None,
+        llm_completion_tokens: int | None = None,
     ) -> int:
         async with await self._session() as session:
             row = LLMDecisionRow(
@@ -44,6 +47,9 @@ class DecisionMixin:
                 risk_reason=risk_reason,
                 realized_pnl=realized_pnl,
                 is_fallback=is_fallback,
+                llm_latency_ms=llm_latency_ms,
+                llm_prompt_tokens=llm_prompt_tokens,
+                llm_completion_tokens=llm_completion_tokens,
                 agent=self._agent_scope(agent),
             )
             session.add(row)
@@ -192,3 +198,50 @@ class DecisionMixin:
             stmt = stmt.order_by(LLMDecisionRow.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def get_llm_latency_stats(
+        self, limit: int = 100, agent: str | None = None
+    ) -> dict[str, float | int | None]:
+        """Latency/token percentiles over the last ``limit`` LLM-timed decisions (§7.69).
+
+        Feeds the dashboard's p50/p95 badges and CHANGE.md's watchlist sizing: how
+        many symbols fit a decision interval is a function of p95 latency, so the
+        numbers must come from real per-decision calls, not one-off benchmarks.
+        Rows without timing (pre-§7.69 history) are ignored; ``count`` says how
+        many samples back the percentiles.
+        """
+        async with await self._session() as session:
+            stmt = (
+                select(
+                    LLMDecisionRow.llm_latency_ms,
+                    LLMDecisionRow.llm_prompt_tokens,
+                    LLMDecisionRow.llm_completion_tokens,
+                )
+                .where(LLMDecisionRow.llm_latency_ms.isnot(None))
+                .order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc())
+                .limit(limit)
+            )
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            result = await session.execute(stmt)
+            rows = list(result.all())
+
+        latencies = sorted(float(r[0]) for r in rows if r[0] is not None)
+        prompt = [int(r[1]) for r in rows if r[1] is not None]
+        completion = [int(r[2]) for r in rows if r[2] is not None]
+
+        def pct(values: list[float], q: float) -> float | None:
+            if not values:
+                return None
+            idx = min(len(values) - 1, max(0, round(q * (len(values) - 1))))
+            return values[idx]
+
+        return {
+            "count": len(latencies),
+            "p50_ms": pct(latencies, 0.50),
+            "p95_ms": pct(latencies, 0.95),
+            "max_ms": latencies[-1] if latencies else None,
+            "avg_prompt_tokens": (sum(prompt) / len(prompt)) if prompt else None,
+            "avg_completion_tokens": (sum(completion) / len(completion)) if completion else None,
+        }

@@ -129,7 +129,8 @@ scripts/
 ├── run_dashboard.py          # Web dashboard server (monitor + control + safe config) (§7.15)
 ├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
 ├── rebaseline_drawdown.py    # Audited CLI drawdown peak re-baseline — the latch's only exit (§7.53)
-└── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
+├── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
+└── benchmark_llm.py          # LLM decision-latency benchmark on real prompts — p50/p95 + watchlist sizing (§7.69)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
 Dockerfile                    # Slim image (python:3.11, non-root) for all services (§7.15 P5)

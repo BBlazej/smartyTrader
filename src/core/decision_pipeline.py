@@ -15,7 +15,7 @@ from ..analysis.indicators import compute_indicators
 from ..analysis.prompt_builder import DEFAULT_SYSTEM_PROMPT, build_user_prompt
 from .config import RiskSettings
 from .costs import CostModel
-from .llm_client import LLMClient
+from .llm_client import LLMCallMetrics, LLMClient
 from .models import (
     OHLCV,
     Action,
@@ -310,6 +310,10 @@ class DecisionPipeline:
             user_prompt=user_prompt,
         )
         signal.symbol = symbol  # Ensure symbol is set
+        # Per-decision LLM cost profile (§7.69) — persisted onto the decision row.
+        llm_metrics = getattr(self.llm_client, "last_metrics", None)
+        if not isinstance(llm_metrics, LLMCallMetrics):
+            llm_metrics = None  # mocks / custom clients without metrics
 
         # Step 5 — Risk check.
         # The proposed order size is computed *before* the gate so the risk
@@ -330,7 +334,7 @@ class DecisionPipeline:
         # outcome path — rejected, HOLD, or executed — records it, and an order
         # placed next can link back to its decision row (§7.8: entry attribution
         # needs the id *before* the fill happens).
-        decision_id = await self._persist_decision(signal, risk_result, snapshot)
+        decision_id = await self._persist_decision(signal, risk_result, snapshot, llm_metrics)
         if not signal.is_fallback:
             # A fallback HOLD is not a decision: the next cycle retries the bar.
             decided_at = snapshot.fetched_at
@@ -519,6 +523,7 @@ class DecisionPipeline:
         signal: TradeSignal,
         risk_result: RiskResult | None,
         snapshot: MarketSnapshot | None,
+        llm_metrics: LLMCallMetrics | None = None,
     ) -> int | None:
         """Persist this cycle's decision (+ market snapshot); returns the row id.
 
@@ -541,6 +546,9 @@ class DecisionPipeline:
                 risk_verdict=verdict,
                 risk_reason=reason,
                 is_fallback=signal.is_fallback,
+                llm_latency_ms=llm_metrics.latency_ms if llm_metrics else None,
+                llm_prompt_tokens=llm_metrics.prompt_tokens if llm_metrics else None,
+                llm_completion_tokens=llm_metrics.completion_tokens if llm_metrics else None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to persist decision", symbol=signal.symbol, error=str(exc))

@@ -936,3 +936,83 @@ class TestVenueTagging:
                 assert snap is not None and snap.venue is None  # legacy rows match any venue
             finally:
                 await storage.close()
+
+
+class TestLLMLatencyStats:
+    """§7.69: per-decision latency/token columns and the p50/p95 query."""
+
+    @pytest.mark.asyncio
+    async def test_save_decision_with_metrics(self, storage: Storage) -> None:
+        decision_id = await storage.save_llm_decision(
+            symbol="BTC/EUR",
+            action="hold",
+            confidence=0.7,
+            reasoning="x",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+            llm_latency_ms=1234.5,
+            llm_prompt_tokens=900,
+            llm_completion_tokens=120,
+        )
+        rows = await storage.get_recent_decisions(include_fallback=True)
+        assert rows[0].id == decision_id
+        assert rows[0].llm_latency_ms == pytest.approx(1234.5)
+        assert rows[0].llm_prompt_tokens == 900
+        assert rows[0].llm_completion_tokens == 120
+
+    @pytest.mark.asyncio
+    async def test_stats_percentiles_ignore_untimed_rows(self, storage: Storage) -> None:
+        for i in range(1, 11):
+            await storage.save_llm_decision(
+                symbol="BTC/EUR",
+                action="hold",
+                confidence=0.7,
+                reasoning="x",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+                llm_latency_ms=float(i * 1000),
+            )
+        await storage.save_llm_decision(  # pre-§7.69 row without timing — ignored
+            symbol="BTC/EUR",
+            action="hold",
+            confidence=0.7,
+            reasoning="x",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+        )
+        stats = await storage.get_llm_latency_stats()
+        assert stats["count"] == 10
+        assert stats["p50_ms"] == pytest.approx(5000.0)
+        assert stats["max_ms"] == pytest.approx(10_000.0)
+        assert stats["p95_ms"] == pytest.approx(10_000.0)
+
+    @pytest.mark.asyncio
+    async def test_stats_are_agent_scoped(self, storage: Storage) -> None:
+        # The fixture's Storage is unbound (reads across agents); rows are written
+        # with explicit agent= so the §7.39 scoping of the stats query is visible.
+        for agent, latency in (("crypto", 100.0), ("crypto", 200.0), ("stocks", 9_000.0)):
+            await storage.save_llm_decision(
+                symbol="X",
+                action="hold",
+                confidence=0.7,
+                reasoning="x",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+                agent=agent,
+                llm_latency_ms=latency,
+            )
+        crypto_stats = await storage.get_llm_latency_stats(agent="crypto")
+        assert crypto_stats["count"] == 2
+        assert crypto_stats["max_ms"] == pytest.approx(200.0)
+        stocks_stats = await storage.get_llm_latency_stats(agent="stocks")
+        assert stocks_stats["count"] == 1
+        unbound = await storage.get_llm_latency_stats()
+        assert unbound["count"] == 3

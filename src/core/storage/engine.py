@@ -128,6 +128,17 @@ class StorageBase:
                             "ADD COLUMN is_fallback INTEGER NOT NULL DEFAULT 0"
                         )
                     )
+            # Per-decision LLM latency/token columns (§7.69).
+            for column, sql_type in (
+                ("llm_latency_ms", "FLOAT NULL"),
+                ("llm_prompt_tokens", "INTEGER NULL"),
+                ("llm_completion_tokens", "INTEGER NULL"),
+            ):
+                if column not in existing:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(f"ALTER TABLE llm_decisions ADD COLUMN {column} {sql_type}")
+                        )
         # agent column (§7.39): added to the per-agent tables and backfilled — see
         # :meth:`_backfill_agent_column` for the attribution rules.
         for table in _AGENT_SCOPED_TABLES:

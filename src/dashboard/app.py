@@ -241,6 +241,11 @@ def create_dashboard_app(
             except Exception:  # noqa: BLE001 - a health card must never fail the page
                 recent = []
             fallbacks = sum(1 for d in recent if getattr(d, "is_fallback", False))
+            # §7.69: per-decision LLM latency percentiles (p50/p95) from stored rows.
+            try:
+                llm_stats = await storage.get_llm_latency_stats(limit=100, agent=agent)
+            except Exception:  # noqa: BLE001 - a health card must never fail the page
+                llm_stats = None
             rows.append(
                 {
                     "name": agent,
@@ -267,6 +272,7 @@ def create_dashboard_app(
                     "has_log": _agent_log_path(agent).exists(),
                     "fallbacks": fallbacks,
                     "recent_decisions": len(recent),
+                    "llm_stats": llm_stats,
                 }
             )
         return rows
