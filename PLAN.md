@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged directly here with a severity and a place in the order of work (`nightly_finds.md` was retired 2026-09-25; its "find #N" labels survive in HISTORY/git history). Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35, §7.37–§7.62, §7.64, §7.65 and §7.69 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35, §7.37–§7.62, §7.64, §7.65, §7.68 and §7.69 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
@@ -78,7 +78,7 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 
 ### Medium severity (open)
 
-> Order of work (2026-09-26, venues decided — **OKX Europe** for crypto, **Saxo** for stocks, CHANGE.md Q1; **crypto first**, ≈ €1,000 budget, free services only): ~~§7.64~~ (done) → ~~§7.65~~ (done) → §7.28 (OKX demo smoke run — needs the user's demo keys + LM Studio for the §7.69 benchmark pass) → CHANGE.md crypto screener + crypto sleeves → §7.66 (Saxo executor, SIM/paper only) → §7.68. These are the prerequisites of the CHANGE.md proposal (§5) and make paper numbers honest for the §4.3 gates.
+> Order of work (2026-09-26, venues decided — **OKX Europe** for crypto, **Saxo** for stocks, CHANGE.md Q1; **crypto first**, ≈ €1,000 budget, free services only): ~~§7.64~~ (done) → ~~§7.65~~ (done) → §7.28 (OKX demo smoke run — needs the user's demo keys + LM Studio for the §7.69 benchmark pass) → CHANGE.md crypto screener + crypto sleeves → §7.66 (Saxo executor, SIM/paper only; per-symbol exchange windows land with it). These are the prerequisites of the CHANGE.md proposal (§5) and make paper numbers honest for the §4.3 gates.
 
 66. **Stocks executor → Saxo OpenAPI (replaces the dead XTB path)** ⏳ [found 2026-09-26; broker decided 2026-09-26]
     - XTB disabled API access on 2025-03-14 ("XTB no longer offers API access"); our client targets `wss://ws.xapi.pro`, known only from third-party wrappers, and its module docs wrongly claim trading "now lives" there. Saxo (Danish bank, serves Slovakia) has a free developer **SIM** environment ($100k, no funding) and the same OpenAPI for live after app approval.
@@ -98,10 +98,6 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 67. **Hourly stock bars lack indicator history** ⏳ [found 2026-09-26]
     - `YFinanceSource._PERIOD_MAP["1h"] = ("1d", "1h")` fetches ~7 hourly bars — too few for RSI-14/MACD/Bollinger-20, so a `stocks_agent.timeframe: "1h"` prompt silently lacks indicators. The shipped `1d` setting is fine.
     - Fix: request a longer period for 1h (yfinance allows up to 730 days of hourly data, e.g. `"1mo"`), and warn at startup when a timeframe's fetched depth can't feed MACD.
-
-68. **Stocks trading window doesn't match the traded symbols** ⏳ [found 2026-09-26]
-    - `stocks_agent.market_hours: "09:00-16:30"` in `Europe/Warsaw` is the Warsaw exchange's session (inherited from the XTB/GPW origins), but `symbols` are US stocks (AAPL, MSFT), which trade 09:30–16:00 America/New_York (15:30–22:00 CET). With execution on, orders would go out while the US market is closed; holidays list is empty.
-    - Fix: `market_hours: "09:30-16:00"` + `market_timezone: "America/New_York"` (+ US exchange holidays) for US symbols; longer term, derive the window per symbol's exchange once the stock broker is chosen (CHANGE.md Q1).
 
 34. **Venue-side stop orders (OCO)** ⏳ [§7.9 follow-up]
     - SL/TP enforcement is local to the agent; venue-side OCO stop orders on Kraken/XTB remain future work.

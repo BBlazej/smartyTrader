@@ -51,6 +51,23 @@ class TestSettingsLoad:
 
         assert s.stocks_agent.enabled is False
 
+    def test_stocks_window_matches_the_traded_symbols(self, config_path: str) -> None:
+        """§7.68: US symbols ⇒ the NYSE window in America/New_York, not Warsaw."""
+        from datetime import date
+
+        from src.agents.stocks_agent import parse_holidays
+
+        s = Settings(config_path=config_path)
+        cfg = s.stocks_agent
+
+        assert cfg.market_hours == "09:30-16:00"
+        assert cfg.market_timezone == "America/New_York"
+        # Shipped symbols are US-listed — the window claim rests on that.
+        assert all("/" not in sym for sym in cfg.symbols)
+        holidays = parse_holidays(cfg.market_holidays)
+        assert date(2026, 11, 26) in holidays  # Thanksgiving
+        assert date(2027, 3, 26) in holidays  # Good Friday
+
     def test_env_override_endpoint(self, config_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LM_STUDIO_ENDPOINT", "http://custom:9999/v1/chat/completions")
         s = Settings(config_path=config_path)

@@ -581,14 +581,30 @@ stocks_agent:
   broker: xtb
   demo: true
   interval_minutes: 15
-  market_hours: "09:00-16:30"   # local wall-clock window for the exchange
-  market_timezone: "Europe/Warsaw"   # zone the window is in (so a UTC host stays correct)
+  # §7.68: the window must match the exchange of the symbols actually traded —
+  # these are US stocks (NYSE), not the Warsaw session the block inherited from
+  # the XTB/GPW origins. Regular hours 09:30–16:00 America/New_York.
+  market_hours: "09:30-16:00"   # local wall-clock window for the exchange
+  market_timezone: "America/New_York"   # zone the window is in (so a UTC host stays correct)
   # Exchange closure dates (§7.10, ISO YYYY-MM-DD). Weekends are always closed;
   # fill in holidays/one-off shutdowns here (validated at startup — bad entries
   # abort with an actionable error rather than silently disabling the guard).
-  market_holidays: []
-  #   - "2026-12-24"
-  #   - "2026-12-26"
+  # NYSE full-day closures for the rest of 2026 plus 2027 (§7.68) — extend as
+  # needed; half-day early closes are not expressible (the window guard only
+  # skips whole days).
+  market_holidays:
+    - "2026-11-26"   # Thanksgiving
+    - "2026-12-25"   # Christmas
+    - "2027-01-01"   # New Year's Day
+    - "2027-01-18"   # MLK Day
+    - "2027-02-15"   # Presidents' Day
+    - "2027-03-26"   # Good Friday
+    - "2027-05-31"   # Memorial Day
+    - "2027-06-18"   # Juneteenth (observed — June 19 is a Saturday)
+    - "2027-07-05"   # Independence Day (observed — July 4 is a Sunday)
+    - "2027-09-06"   # Labor Day
+    - "2027-11-25"   # Thanksgiving
+    - "2027-12-24"   # Christmas (observed — December 25 is a Saturday)
   symbols:
     - AAPL
     - MSFT
