@@ -59,7 +59,31 @@ def _backtester(**kwargs: object) -> DecisionReplayBacktester:
         initial_cash=float(kwargs.pop("initial_cash", 10_000.0)),
         fee_pct=float(kwargs.pop("fee_pct", 0.0)),
         slippage_pct=float(kwargs.pop("slippage_pct", 0.0)),
+        min_commission=float(kwargs.pop("min_commission", 0.0)),
+        fx_fee_pct=float(kwargs.pop("fx_fee_pct", 0.0)),
     )
+
+
+class TestVenueCostReplay:
+    """§7.65: the backtester replays with the venue's minimum commission + FX fee."""
+
+    async def test_minimum_commission_reduces_replay_pnl_both_sides(self) -> None:
+        candles = {"X": _candles([100.0, 110.0, 120.0])}
+        decisions = [
+            ReplayDecision(_ts(1, 12), "X", "buy", 0.8, stop_loss=90.0),
+            ReplayDecision(_ts(3, 12), "X", "sell", 0.7),
+        ]
+        flat = await _backtester().replay(decisions, candles, timeframe="1d")
+        assert flat.final_equity == pytest.approx(10_200.0)
+
+        # A flat 5/side minimum (no percentage): two sides cost 10 total.
+        costly = await _backtester(min_commission=5.0).replay(decisions, candles, timeframe="1d")
+        assert costly.final_equity == pytest.approx(10_200.0 - 10.0)
+
+    def test_cost_params_reach_the_executor(self) -> None:
+        bt = _backtester(min_commission=1.0, fx_fee_pct=0.0025)
+        assert bt._executor.min_commission == 1.0
+        assert bt._executor.fx_fee_pct == 0.0025
 
 
 class TestMetrics:

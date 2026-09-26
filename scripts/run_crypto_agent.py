@@ -34,7 +34,7 @@ from src.core.config import (
 from src.core.runner import RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.ccxt_provider import create_ccxt_provider, exchange_has_sandbox
 from src.execution.ccxt_executor import create_ccxt_executor
-from src.execution.paper_executor import PaperExecutor
+from src.execution.paper_executor import create_paper_executor
 from src.monitoring import setup_logging
 
 #: Keyed-venue credentials (§7.64): generic names — the exchange is config-driven.
@@ -84,11 +84,7 @@ def _build_data_and_execution(settings: Settings) -> tuple[object, object, str]:
             )
             return provider, executor, mode
 
-    executor = PaperExecutor(
-        initial_cash=settings.execution.initial_cash,
-        slippage_pct=settings.execution.paper_slippage_pct,
-        fee_pct=settings.execution.paper_fee_pct,
-    )
+    executor = create_paper_executor(settings, "crypto")
     return provider, executor, "paper"
 
 
@@ -121,8 +117,7 @@ def _make_components(settings: Settings) -> tuple[object, object]:
     if mode == "paper":
         log.info(
             f"using live public data + paper executor (no {API_KEY_ENV} set)",
-            fee_pct=settings.execution.paper_fee_pct,
-            slippage_pct=settings.execution.paper_slippage_pct,
+            **settings.execution.paper_cost_params("crypto"),
         )
     elif mode.endswith("-LIVE"):
         log.warning(

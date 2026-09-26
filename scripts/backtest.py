@@ -110,11 +110,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if candles:
                 candles_by_symbol[symbol] = candles
 
+        # Replay with the same per-venue cost profile the live agent would use
+        # (§7.65): ccxt candles replay the crypto agent's schedule, yfinance the
+        # stocks agent's.
+        cost_agent = "stocks" if args.provider == "yfinance" else "crypto"
+        costs = settings.execution.paper_cost_params(cost_agent)
         backtester = DecisionReplayBacktester(
             risk_settings=settings.risk,
             initial_cash=settings.execution.initial_cash,
-            fee_pct=settings.execution.paper_fee_pct,
-            slippage_pct=settings.execution.paper_slippage_pct,
+            fee_pct=costs["paper_fee_pct"],
+            slippage_pct=costs["paper_slippage_pct"],
+            min_commission=costs["paper_min_commission"],
+            fx_fee_pct=costs["paper_fx_fee_pct"],
         )
         report = await backtester.replay(decisions, candles_by_symbol, timeframe=timeframe)
 

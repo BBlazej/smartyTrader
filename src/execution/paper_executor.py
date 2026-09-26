@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from ..core.costs import CostModel
 from ..core.models import OrderResult, OrderSide, Position
 from .position_tracker import FillRecord, PositionTracker, replay_fills
 
@@ -25,15 +26,22 @@ class PaperExecutor:
         initial_cash: float = 100_000.0,
         slippage_pct: float = 0.001,
         fee_pct: float = 0.0,
+        min_commission: float = 0.0,
+        fx_fee_pct: float = 0.0,
     ) -> None:
         self.initial_cash = initial_cash
         self._cash = initial_cash
         self.slippage_pct = slippage_pct
-        # Per-side commission as a fraction of notional (e.g. 0.0026 = 0.26%).
+        # Per-side commission as a fraction of notional (e.g. 0.001 = 0.10%).
         # Deducted from cash on both buys and sells and from realized PnL, so
         # paper PnL is net-of-fee and comparable to the "win rate after fees" gate.
         # 0.0 (default) disables fees — used by tests that assert exact cash flow.
         self.fee_pct = fee_pct
+        # Per-venue cost schedule (§7.65): absolute per-side floor (book currency)
+        # and the FX fee for venues settling in a foreign currency. Like fee_pct,
+        # these are live attributes so safe-config overrides (§7.50) apply at once.
+        self.min_commission = min_commission
+        self.fx_fee_pct = fx_fee_pct
         # symbol → Position
         self._positions: dict[str, Position] = {}
         # FIFO cost-basis ledger over our own fills. It mirrors _positions but
@@ -46,6 +54,13 @@ class PaperExecutor:
     @property
     def cash(self) -> float:
         return self._cash
+
+    def _cost_model(self) -> CostModel:
+        """Commission schedule read from the live attributes (§7.65).
+
+        Rebuilt per fill so safe-config overrides that mutate ``fee_pct`` etc.
+        (§7.50) take effect without re-wiring the executor."""
+        return CostModel.from_attrs(self)
 
     async def get_cash(self) -> float:
         """Return current cash balance. Part of the Executor Protocol."""
@@ -128,7 +143,8 @@ class PaperExecutor:
         take_profit: float | None = None,
     ) -> OrderResult:
         cost = quantity * price
-        fee = cost * self.fee_pct
+        # Commission (floored by min_commission) plus the FX fee (§7.65).
+        fee = self._cost_model().total_fee(cost)
         total = cost + fee
 
         if total > self._cash:
@@ -199,7 +215,7 @@ class PaperExecutor:
             )
 
         proceeds = quantity * price
-        sell_fee = proceeds * self.fee_pct
+        sell_fee = self._cost_model().total_fee(proceeds)
         self._cash += proceeds - sell_fee
 
         # Realize *net* PnL via the shared FIFO tracker: each consumed lot
@@ -292,6 +308,25 @@ class PaperExecutor:
         """
         if symbol in self._positions:
             self._positions[symbol].current_price = new_price
+
+
+def create_paper_executor(settings: object, agent: str) -> PaperExecutor:
+    """Build the paper executor with ``agent``'s venue cost profile (§7.65).
+
+    Single wiring point for all three entry points (crypto runner, stocks runner,
+    backtest CLI): flat ``execution.paper_*`` defaults merged with the agent's
+    ``execution.paper_costs`` profile, so each paper book simulates the venue it
+    stands in for instead of one shared Kraken-era percentage.
+    """
+    execution = settings.execution  # type: ignore[attr-defined]
+    params = execution.paper_cost_params(agent)
+    return PaperExecutor(
+        initial_cash=execution.initial_cash,
+        slippage_pct=params["paper_slippage_pct"],
+        fee_pct=params["paper_fee_pct"],
+        min_commission=params["paper_min_commission"],
+        fx_fee_pct=params["paper_fx_fee_pct"],
+    )
 
 
 def _gen_order_id() -> str:

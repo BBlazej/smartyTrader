@@ -37,7 +37,7 @@ from src.core.config import (
 )
 from src.core.runner import RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
-from src.execution.paper_executor import PaperExecutor
+from src.execution.paper_executor import create_paper_executor
 from src.execution.xtb_client import XApiClient
 from src.execution.xtb_executor import XTBExecutor
 from src.monitoring import setup_logging
@@ -98,12 +98,8 @@ def _make_components(settings: Settings) -> tuple[object, object]:
                 symbol_map=xtb_cfg.symbol_map,
             )
 
-    executor = PaperExecutor(
-        initial_cash=settings.execution.initial_cash,
-        slippage_pct=settings.execution.paper_slippage_pct,
-        fee_pct=settings.execution.paper_fee_pct,
-    )
-    log.info("using paper executor")
+    executor = create_paper_executor(settings, "stocks")
+    log.info("using paper executor", **settings.execution.paper_cost_params("stocks"))
     return provider, executor
 
 

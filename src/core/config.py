@@ -200,21 +200,75 @@ class ExecutionSettings:
 
     Kept config-driven rather than hardcoded so paper PnL — which the LLM is
     shown and the live-readiness gates are compared against — reflects real
-    trading costs. Set both to ``0`` to model a fee-free, slip-free venue.
+    trading costs. Set all to ``0`` to model a fee-free, slip-free venue.
+
+    **Per-venue cost profiles (§7.65):** the flat ``paper_*`` fields are the
+    default schedule; ``paper_costs`` overrides them per runner component
+    (``crypto`` / ``stocks``), because each paper book should simulate the
+    venue it stands in for — OKX EU spot (taker 0.10%, no minimum) vs Saxo US
+    stocks (0.08% with a **min $1/side** plus 0.25% FX). ``paper_costs_for()``
+    resolves the effective schedule; runners and the backtester use it so
+    paper numbers are honest for the §4.3 gates.
     """
+
+    #: Overridable per-venue cost fields (§7.65).
+    _COST_FIELDS = (
+        "paper_fee_pct",
+        "paper_slippage_pct",
+        "paper_min_commission",
+        "paper_fx_fee_pct",
+    )
 
     def __init__(
         self,
         paper_fee_pct: float = 0.0,
         paper_slippage_pct: float = 0.001,  # per-side slippage (0.1%)
         initial_cash: float = 100_000.0,
+        # Absolute commission floor per side, in the paper book's settlement
+        # currency (§7.65). 0 = percentage-only venue.
+        paper_min_commission: float = 0.0,
+        # Applied per side when the chosen profile models a venue whose trades
+        # settle in a currency other than the account's (Saxo: 0.25% EUR↔USD).
+        paper_fx_fee_pct: float = 0.0,
+        # Per-component overrides, e.g. {"stocks": {"paper_min_commission": 1.0}}.
+        paper_costs: dict[str, dict] | None = None,
     ) -> None:
         self.paper_fee_pct = paper_fee_pct
         self.paper_slippage_pct = paper_slippage_pct
+        self.paper_min_commission = float(paper_min_commission)
+        self.paper_fx_fee_pct = float(paper_fx_fee_pct)
         # Starting bankroll for a *fresh* paper portfolio (§7.7: was hardcoded
-        # in PaperExecutor). After the first cycle the persisted portfolio
-        # snapshot wins — this only seeds an empty one.
+        # in PaperExecutor). After the first cycle the persisted snapshot
+        # wins — this only seeds an empty one.
         self.initial_cash = initial_cash
+        resolved: dict[str, dict[str, float]] = {}
+        for agent, overrides in (paper_costs or {}).items():
+            if not isinstance(agent, str) or not isinstance(overrides, dict):
+                # ValueError (not TypeError): these arrive from YAML, where a bad
+                # shape is a config error with an actionable message (§7.65).
+                raise ValueError(  # noqa: TRY004
+                    "execution.paper_costs must map component names to dicts of cost fields"
+                )
+            clean: dict[str, float] = {}
+            for field, value in overrides.items():
+                if field not in self._COST_FIELDS:
+                    raise ValueError(
+                        f"execution.paper_costs.{agent}: unknown field {field!r} "
+                        f"(allowed: {', '.join(self._COST_FIELDS)})"
+                    )
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                    raise ValueError(
+                        f"execution.paper_costs.{agent}.{field} must be a non-negative number"
+                    )
+                clean[field] = float(value)
+            resolved[agent] = clean
+        self.paper_costs: dict[str, dict[str, float]] = resolved
+
+    def paper_cost_params(self, agent: str | None = None) -> dict[str, float]:
+        """Effective cost params for ``agent``: flat defaults merged with its profile."""
+        params = {field: getattr(self, field) for field in self._COST_FIELDS}
+        params.update(self.paper_costs.get(agent or "", {}))
+        return params
 
 
 class StorageSettings:

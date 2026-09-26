@@ -34,6 +34,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from ..core.costs import base_currency
 from ..core.models import OrderResult, OrderSide, Position
 from .position_tracker import FillRecord, PositionTracker, replay_fills
 
@@ -53,6 +54,32 @@ _STATUS_MAP: dict[str, str] = {
 }
 
 _PARTIAL_FILL_REASON = "partially filled; remainder cancelled at the venue"
+
+
+def _base_currency_fee(raw: dict[str, Any], symbol: str) -> float:
+    """Sum of a ccxt payload's fees charged in *symbol*'s base currency (§7.65).
+
+    Reads ccxt's ``fees`` list (falling back to a singular ``fee`` dict); entries
+    naming another currency (quote-side sell fees) are ignored. Unparseable
+    payloads simply report no fee — booking stays gross, exactly as before.
+    """
+    fees = raw.get("fees")
+    if not isinstance(fees, list):
+        single = raw.get("fee")
+        fees = [single] if isinstance(single, dict) else []
+    base = base_currency(symbol)
+    total = 0.0
+    for entry in fees:
+        if not isinstance(entry, dict):
+            continue
+        cost = entry.get("cost")
+        try:
+            cost_f = float(cost) if cost is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if cost_f > 0 and base and str(entry.get("currency") or "").upper() == base:
+            total += cost_f
+    return total
 
 
 def _resolve_status(raw: dict[str, Any], requested: float) -> tuple[str, float, str | None]:
@@ -227,8 +254,9 @@ class CcxtExecutor:
         # entry decisions (§7.8). Skipped without a usable fill price.
         if status == "filled" and fill_price is not None:
             fill = float(fill_price)
+            booked_qty = self._net_buy_quantity(symbol, side, filled_qty, raw)
             result.realized_pnl, result.closed_entries = self._record_fill(
-                symbol, side, filled_qty, fill, decision_id
+                symbol, side, booked_qty, fill, decision_id
             )
             if side == OrderSide.BUY:
                 # Remember the plan; these are *not* venue-side stop orders —
@@ -284,6 +312,39 @@ class CcxtExecutor:
                 ),
             )
         return len(self._open_orders)
+
+    def _net_buy_quantity(
+        self, symbol: str, side: OrderSide, filled_qty: float, raw: dict[str, Any]
+    ) -> float:
+        """Ledger quantity for a fill: BUYs book *net* of a base-currency fee (§7.65).
+
+        OKX spot charges buy fees in the base currency — you receive slightly less
+        BTC than was filled — so booking the gross fill would drift the ledger above
+        the real balance (dust lots that never close). The reported ``OrderResult``
+        keeps the venue's gross fill (it matches the venue's own record); only the
+        FIFO ledger gets the net. Sells pay fees in the quote currency and are
+        unaffected.
+        """
+        if side != OrderSide.BUY:
+            return filled_qty
+        fee = _base_currency_fee(raw, symbol)
+        if fee <= 0:
+            return filled_qty
+        if fee > filled_qty:
+            logger.warning(
+                "reported base-currency fee exceeds fill; booking gross",
+                symbol=symbol,
+                fee=fee,
+                filled=filled_qty,
+            )
+            return filled_qty
+        logger.debug(
+            "booking buy net of base-currency fee (§7.65)",
+            symbol=symbol,
+            filled=filled_qty,
+            fee=fee,
+        )
+        return filled_qty - fee
 
     def _record_fill(
         self,
@@ -371,8 +432,11 @@ class CcxtExecutor:
                     )
                 else:
                     fill = float(fill_price)
+                    booked_qty = self._net_buy_quantity(
+                        pending.symbol, pending.side, filled_qty, raw
+                    )
                     result.realized_pnl, result.closed_entries = self._record_fill(
-                        pending.symbol, pending.side, filled_qty, fill, pending.decision_id
+                        pending.symbol, pending.side, booked_qty, fill, pending.decision_id
                     )
                     if pending.side == OrderSide.BUY:
                         # The entry plan was captured when the order was placed;

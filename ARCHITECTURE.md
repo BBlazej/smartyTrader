@@ -100,6 +100,7 @@ src/
 │   ├── models.py             # Pydantic models + Executor Protocol (single source of truth for contracts)
 │   ├── config.py             # YAML + env settings loader (Settings validates config/settings.yaml)
 │   ├── llm_client.py         # LM Studio HTTP client (retry, think-tolerant JSON parse §7.57, HOLD fallback, llm_exchange audit log)
+│   ├── costs.py              # CostModel — per-venue commission/FX schedule (paper fills, sizing, replay) (§7.65)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
 │   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
 │   │                         # models/engine/snapshots/decisions/orders/control/pruning mixins,
@@ -612,12 +613,26 @@ risk:
   enforce_exit_levels: true
 
 # Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
-# fees/slippage. 0.26%/side matches a typical crypto taker fee; 0.1%/side slippage.
+# fees/slippage (§7.65). The flat fields are the default schedule — set to OKX EU
+# spot base tier (taker 0.10%/side from 2026-09-25; verify your account's rate); a
+# percentage-only venue has no minimum. paper_costs overrides per runner component,
+# so each paper book simulates the venue it stands in for.
 execution:
-  paper_fee_pct: 0.0026
+  paper_fee_pct: 0.001
   paper_slippage_pct: 0.001
+  paper_min_commission: 0.0   # absolute per-side floor, book currency (0 = none)
+  paper_fx_fee_pct: 0.0       # charged when trades settle in a foreign currency
   initial_cash: 1000.0     # seeds a fresh paper portfolio (sized to the real plan); after the first cycle
                            # the persisted snapshot (and restart rehydration) wins
+  # Per-venue profiles (§7.65). Stocks mirrors Saxo US-equities pricing: 0.08%/side
+  # with a min ~1 unit/side (~1% on a €100 position — invisible to a percentage-only
+  # model) plus 0.25% FX per EUR↔USD conversion (avoidable later by holding USD).
+  paper_costs:
+    crypto: {}
+    stocks:
+      paper_fee_pct: 0.0008
+      paper_min_commission: 1.0
+      paper_fx_fee_pct: 0.0025
 
 storage:
   database_path: "data/trading_agent.db"

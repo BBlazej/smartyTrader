@@ -14,6 +14,7 @@ from ..analysis.candles import bar_close_time, split_forming
 from ..analysis.indicators import compute_indicators
 from ..analysis.prompt_builder import DEFAULT_SYSTEM_PROMPT, build_user_prompt
 from .config import RiskSettings
+from .costs import CostModel
 from .llm_client import LLMClient
 from .models import (
     OHLCV,
@@ -662,6 +663,7 @@ class DecisionPipeline:
             self.risk_engine.settings,
             current_price,
             cost_factor=buy_cost_factor(self.executor),
+            cost_model=CostModel.from_attrs(self.executor),
         )
 
 
@@ -696,15 +698,13 @@ def closing_side(position: Position) -> OrderSide:
 def buy_cost_factor(executor: object) -> float:
     """Per-unit cash cost of a BUY relative to its quoted price (§7.59 L1).
 
-    ``(1 + slippage) × (1 + fee)`` for executors that model them (paper); 1.0 for
-    venues that report neither. Non-numeric attributes (mocks) count as zero.
+    ``(1 + slippage) × (1 + fee + fx)`` for executors that model them (paper);
+    1.0 for venues that report neither. Non-numeric attributes (mocks) count as
+    zero. A venue *minimum commission* (§7.65) is not linear in quantity, so it
+    cannot fold into a factor — sizing uses
+    :meth:`CostModel.max_affordable_fill_notional` when one is configured.
     """
-    factor = 1.0
-    for name in ("slippage_pct", "fee_pct"):
-        value = getattr(executor, name, 0.0)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-            factor *= 1.0 + float(value)
-    return factor
+    return CostModel.from_attrs(executor).buy_cost_factor
 
 
 def calculate_quantity(
@@ -713,6 +713,7 @@ def calculate_quantity(
     settings: RiskSettings,
     current_price: float | None = None,
     cost_factor: float = 1.0,
+    cost_model: CostModel | None = None,
 ) -> float:
     """Position size: ``max_position_pct`` of total value, cash- and holdings-clamped.
 
@@ -723,8 +724,11 @@ def calculate_quantity(
 
     ``cost_factor`` (:func:`buy_cost_factor`) makes the cash clamp include slippage
     and fees, so a cash-bound BUY the gate approved is never rejected by the
-    executor for "insufficient cash" (§7.59 L1). Quantities round *down* to 1e-8 —
-    rounding up could exceed cash (§7.59 L2); a SELL returns the held size exactly.
+    executor for "insufficient cash" (§7.59 L1). Pass the executor's full
+    :class:`CostModel` as ``cost_model`` to additionally honour a venue *minimum
+    commission* (§7.65) — it dominates ``cost_factor`` when given. Quantities
+    round *down* to 1e-8 — rounding up could exceed cash (§7.59 L2); a SELL
+    returns the held size exactly.
     """
     max_position_value = portfolio.total_value * settings.max_position_pct
     if signal.action == Action.BUY:
@@ -749,9 +753,16 @@ def calculate_quantity(
         quantity = min(quantity, risk_budget / (price - signal.stop_loss))
 
     # Ensure we don't spend more cash than available for buys — at the executor's
-    # all-in unit cost, not the quoted price (§7.59 L1).
+    # all-in unit cost, not the quoted price (§7.59 L1), honouring a venue minimum
+    # commission when the profile has one (§7.65).
     if signal.action == Action.BUY:
-        max_qty_by_cash = portfolio.cash / (price * max(cost_factor, 1.0))
+        if cost_model is not None:
+            fill_price = price * (1.0 + cost_model.slippage_pct)
+            affordable = cost_model.max_affordable_fill_notional(portfolio.cash)
+        else:
+            fill_price = price * max(cost_factor, 1.0)
+            affordable = portfolio.cash
+        max_qty_by_cash = affordable / fill_price if fill_price > 0 else 0.0
         quantity = min(quantity, max_qty_by_cash)
 
     # A SELL closes the held long in full (§7.47) — never more than is held

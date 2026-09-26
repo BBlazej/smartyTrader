@@ -68,14 +68,60 @@ class TestExecutionSettings:
     def test_execution_settings_loaded_from_yaml(self, config_path: str) -> None:
         s = Settings(config_path=config_path)
 
-        assert s.execution.paper_fee_pct == 0.0026
+        # §7.65: the shipped default mirrors OKX EU spot base tier (taker 0.10%).
+        assert s.execution.paper_fee_pct == 0.001
         assert s.execution.paper_slippage_pct == 0.001
+        assert s.execution.paper_min_commission == 0.0
+        assert s.execution.paper_fx_fee_pct == 0.0
 
     def test_execution_defaults_when_key_absent(self, app_settings: Settings) -> None:
         # The app_settings fixture builds a config with no `execution` block,
         # so the defaults must kick in (fee-free by default).
         assert app_settings.execution.paper_fee_pct == 0.0
         assert app_settings.execution.paper_slippage_pct == 0.001
+
+
+class TestPaperCostProfiles:
+    """§7.65: per-venue cost profiles under ``execution.paper_costs``."""
+
+    def test_shipped_stocks_profile_matches_saxo_us_pricing(self, config_path: str) -> None:
+        s = Settings(config_path=config_path)
+
+        crypto = s.execution.paper_cost_params("crypto")
+        assert crypto["paper_fee_pct"] == 0.001  # OKX EU taker, no minimum
+        assert crypto["paper_min_commission"] == 0.0
+
+        stocks = s.execution.paper_cost_params("stocks")
+        assert stocks["paper_fee_pct"] == 0.0008
+        assert stocks["paper_min_commission"] == 1.0
+        assert stocks["paper_fx_fee_pct"] == 0.0025
+
+    def test_profile_merges_over_flat_defaults(self) -> None:
+        from src.core.config import ExecutionSettings
+
+        e = ExecutionSettings(
+            paper_fee_pct=0.01,
+            paper_slippage_pct=0.002,
+            paper_costs={"stocks": {"paper_fee_pct": 0.0008}},
+        )
+        params = e.paper_cost_params("stocks")
+        assert params["paper_fee_pct"] == 0.0008  # overridden
+        assert params["paper_slippage_pct"] == 0.002  # inherited
+        # Unknown agents (and unbound lookups) get the flat defaults unchanged.
+        assert e.paper_cost_params("unknown")["paper_fee_pct"] == 0.01
+        assert e.paper_cost_params()["paper_fee_pct"] == 0.01
+
+    def test_unknown_field_rejected(self) -> None:
+        from src.core.config import ExecutionSettings
+
+        with pytest.raises(ValueError, match="unknown field"):
+            ExecutionSettings(paper_costs={"crypto": {"initial_cash": 5}})
+
+    def test_negative_cost_rejected(self) -> None:
+        from src.core.config import ExecutionSettings
+
+        with pytest.raises(ValueError, match="non-negative"):
+            ExecutionSettings(paper_costs={"crypto": {"paper_fee_pct": -0.1}})
 
 
 class TestRiskSettingsDefaults:

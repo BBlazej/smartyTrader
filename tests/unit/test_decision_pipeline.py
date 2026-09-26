@@ -1598,3 +1598,75 @@ class TestFeeAwareSizing:
         qty = calculate_quantity(signal, book, rs, 3.0)  # 33.333… units
         assert qty <= 100.0 / 3.0
         assert qty == pytest.approx(33.33333333)
+
+
+class TestMinimumCommissionSizing:
+    """§7.65: sizing must honour a venue minimum commission, not just percentages."""
+
+    _RS = RiskSettings(max_position_pct=1.0)  # cash binds, not the position cap
+
+    def _book(self, cash: float) -> PortfolioState:
+        return PortfolioState(cash=cash)
+
+    def _signal(self) -> TradeSignal:
+        return TradeSignal(
+            symbol="AAPL", action=Action.BUY, confidence=0.9, reasoning="x", stop_loss=90.0
+        )
+
+    async def test_cash_bound_buy_with_minimum_commission_fills(self) -> None:
+        from src.core.costs import CostModel
+        from src.core.decision_pipeline import calculate_quantity
+
+        executor = PaperExecutor(
+            initial_cash=101.25,
+            slippage_pct=0.0,
+            fee_pct=0.0008,
+            min_commission=1.0,
+            fx_fee_pct=0.0025,
+        )
+        model = CostModel.from_attrs(executor)
+        qty = calculate_quantity(
+            self._signal(),
+            self._book(101.25),
+            self._RS,
+            1.0,
+            cost_factor=model.buy_cost_factor,
+            cost_model=model,
+        )
+        order = await executor.place_order("AAPL", OrderSide.BUY, qty, price=1.0)
+        assert order.status == "filled", order.reason
+        assert executor.cash >= 0.0
+
+    async def test_naive_factor_sizing_would_bust_the_cash(self) -> None:
+        # Same book as above but sizing without the cost model: the percentage-only
+        # clamp plans a trade whose minimum fee pushes it over cash → rejected.
+        from src.core.decision_pipeline import buy_cost_factor, calculate_quantity
+
+        executor = PaperExecutor(
+            initial_cash=101.25,
+            slippage_pct=0.0,
+            fee_pct=0.0008,
+            min_commission=1.0,
+            fx_fee_pct=0.0025,
+        )
+        qty = calculate_quantity(
+            self._signal(),
+            self._book(101.25),
+            self._RS,
+            1.0,
+            cost_factor=buy_cost_factor(executor),
+        )
+        order = await executor.place_order("AAPL", OrderSide.BUY, qty, price=1.0)
+        assert order.status == "rejected"
+
+    def test_buy_cost_factor_includes_fx_attribute(self) -> None:
+        from unittest.mock import MagicMock
+
+        from src.core.decision_pipeline import buy_cost_factor
+
+        executor = MagicMock(spec=object)
+        executor.slippage_pct = 0.001
+        executor.fee_pct = 0.0008
+        executor.fx_fee_pct = 0.0025
+        executor.min_commission = 1.0
+        assert buy_cost_factor(executor) == pytest.approx(1.001 * (1 + 0.0008 + 0.0025))

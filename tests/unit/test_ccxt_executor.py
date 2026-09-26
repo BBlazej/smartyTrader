@@ -644,3 +644,83 @@ class TestPartialFills:
     def test_venue_label(self, mock_client: AsyncMock) -> None:
         executor = CcxtExecutor(mock_client, quote_currency="EUR", venue="myokx-sandbox")
         assert executor.venue == "myokx-sandbox"
+
+
+class TestBaseCurrencyFees:
+    """§7.65: OKX spot charges buy fees in the base currency — the FIFO ledger
+    must book the *net* quantity it actually received, while the reported
+    OrderResult keeps the venue's gross fill."""
+
+    async def test_buy_ledger_books_net_of_base_fee(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "id": "F-1",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+            "fees": [{"currency": "BTC", "cost": 0.001}],
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+
+        assert result.status == "filled"
+        assert result.quantity == 1.0  # venue record stays gross
+        assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.999)
+
+    async def test_quote_currency_fee_does_not_shrink_the_ledger(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "id": "F-2",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+            "fees": [{"currency": "USDT", "cost": 0.1}],
+        }
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        assert executor._tracker.quantity("BTC/USDT") == pytest.approx(1.0)
+
+    async def test_sell_is_booked_gross(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
+    ) -> None:
+        # Sell fees arrive in the quote currency; the base ledger is unaffected.
+        mock_client.create_order.return_value = {
+            "id": "F-3",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+        }
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        mock_client.create_order.return_value = {
+            "id": "F-4",
+            "status": "closed",
+            "average": 110.0,
+            "filled": 1.0,
+            "fees": [{"currency": "BTC", "cost": 0.001}],
+        }
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, 1.0, price=110.0)
+        assert result.realized_pnl == pytest.approx(10.0)  # gross of commission as before
+
+    async def test_reconciled_buy_books_net_of_base_fee(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {"id": "P-9", "status": "open", "amount": 1.0}
+        await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
+        mock_client.fetch_order.return_value = {
+            "id": "P-9",
+            "status": "closed",
+            "average": 100.0,
+            "filled": 1.0,
+            "fees": [{"currency": "BTC", "cost": 0.002}],
+        }
+        (update,) = await executor.reconcile_open_orders()
+        assert update.status == "filled"
+        assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.998)
+
+    def test_malformed_fees_payload_reports_no_fee(self) -> None:
+        from src.execution.ccxt_executor import _base_currency_fee
+
+        assert _base_currency_fee({"fees": "nonsense"}, "BTC/USDT") == 0.0
+        assert _base_currency_fee({"fee": {"currency": "BTC", "cost": None}}, "BTC/USDT") == 0.0
+        # Singular fee dict works too.
+        assert _base_currency_fee({"fee": {"currency": "btc", "cost": 0.5}}, "BTC/USDT") == 0.5

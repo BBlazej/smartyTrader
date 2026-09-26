@@ -365,3 +365,72 @@ class TestUpdatePrice:
         executor.update_price("BTC/USDT", 120.0)
 
         assert await executor.get_positions() == []
+
+
+class TestVenueCostModel:
+    """§7.65: minimum commission and FX fee in the paper executor's fills."""
+
+    def saxo(self, cash: float = 10_000.0) -> PaperExecutor:
+        # Saxo US-equities schedule (§7.65): 0.08%/side min 1 unit, plus 0.25% FX.
+        return PaperExecutor(
+            initial_cash=cash,
+            slippage_pct=0.0,
+            fee_pct=0.0008,
+            min_commission=1.0,
+            fx_fee_pct=0.0025,
+        )
+
+    async def test_small_buy_pays_the_minimum_not_the_percentage(self) -> None:
+        ex = self.saxo()
+        result = await ex.place_order("AAPL", OrderSide.BUY, quantity=1.0, price=100.0)
+        assert result.status == "filled"
+        # commission max(0.08, 1.0)=1.0 + FX 0.25 → cash drops by 101.25, not 100.08.
+        assert ex.cash == pytest.approx(10_000.0 - 101.25)
+
+    async def test_buy_without_room_for_minimum_fee_is_rejected(self) -> None:
+        ex = self.saxo(cash=100.0)
+        result = await ex.place_order("AAPL", OrderSide.BUY, quantity=1.0, price=100.0)
+        assert result.status == "rejected"
+        assert "Insufficient cash" in (result.reason or "")
+        assert ex.cash == pytest.approx(100.0)
+
+    async def test_sell_side_also_charges_the_floor(self) -> None:
+        ex = self.saxo()
+        await ex.place_order("AAPL", OrderSide.BUY, quantity=1.0, price=100.0)
+        result = await ex.place_order("AAPL", OrderSide.SELL, quantity=1.0, price=110.0)
+        assert result.status == "filled"
+        # Sell fee = max(0.088, 1.0) + FX 0.275 → credit 110 − 1.275.
+        assert ex.cash == pytest.approx(10_000.0 - 101.25 + 108.725)
+        # Net PnL carries both sides' full fees: gross 10 − 1.25 − 1.275.
+        assert result.realized_pnl == pytest.approx(10.0 - 1.25 - 1.275)
+
+    async def test_zero_minimum_keeps_legacy_percentage_behavior(self) -> None:
+        ex = PaperExecutor(initial_cash=1_000.0, slippage_pct=0.0, fee_pct=0.0026)
+        assert ex.min_commission == 0.0
+        await ex.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+        assert ex.cash == pytest.approx(1_000.0 - 100.26)
+
+
+def test_create_paper_executor_uses_agent_profile() -> None:
+    """§7.65: the shared factory resolves the agent's paper_costs profile."""
+    from types import SimpleNamespace
+
+    from src.core.config import ExecutionSettings
+    from src.execution.paper_executor import create_paper_executor
+
+    settings = SimpleNamespace(
+        execution=ExecutionSettings(
+            initial_cash=1_000.0,
+            paper_fee_pct=0.01,
+            paper_slippage_pct=0.002,
+            paper_costs={"stocks": {"paper_fee_pct": 0.0008, "paper_min_commission": 1.0}},
+        )
+    )
+    stocks = create_paper_executor(settings, "stocks")
+    assert stocks.fee_pct == 0.0008
+    assert stocks.min_commission == 1.0
+    assert stocks.slippage_pct == 0.002  # inherited from the flat default
+
+    crypto = create_paper_executor(settings, "crypto")
+    assert crypto.fee_pct == 0.01
+    assert crypto.min_commission == 0.0

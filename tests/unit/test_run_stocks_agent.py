@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from scripts.run_stocks_agent import run
+from src.core.config import ExecutionSettings
 
 
 def _storage_mock() -> AsyncMock:
@@ -39,7 +40,8 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             decide_on_new_bar_only=True,
         ),
         risk=SimpleNamespace(),
-        execution=SimpleNamespace(
+        # Real ExecutionSettings so §7.65 cost-profile resolution is exercised.
+        execution=ExecutionSettings(
             paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
         ),
         # Retention fields (§7.12): windows off here so lifecycle tests stay
@@ -103,7 +105,7 @@ class TestEnabledSemantics:
             patch("src.core.runner.Storage") as mock_storage,
             patch("src.core.runner.LLMClient") as mock_llm,
             patch("scripts.run_stocks_agent.create_xtb_provider") as mock_provider_cls,
-            patch("scripts.run_stocks_agent.PaperExecutor") as mock_executor_cls,
+            patch("scripts.run_stocks_agent.create_paper_executor") as mock_executor_cls,
             patch("src.core.runner.DecisionPipeline") as mock_pipeline,
             patch("scripts.run_stocks_agent.StocksAgent") as mock_agent_cls,
         ):
@@ -131,7 +133,7 @@ class TestEnabledSemantics:
             patch("src.core.runner.LLMClient", return_value=MagicMock()),
             patch("src.core.runner.RiskEngine"),
             patch("scripts.run_stocks_agent.create_xtb_provider", return_value=provider),
-            patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor),
+            patch("scripts.run_stocks_agent.create_paper_executor", return_value=executor),
             patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_stocks_agent.StocksAgent", return_value=fake_agent),
             patch("src.core.scheduler.AsyncSchedulerManager") as mock_manager_cls,
@@ -161,7 +163,7 @@ class TestEnabledSemantics:
             patch("src.core.runner.LLMClient", return_value=MagicMock()),
             patch("src.core.runner.RiskEngine"),
             patch("scripts.run_stocks_agent.create_xtb_provider", return_value=provider),
-            patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor),
+            patch("scripts.run_stocks_agent.create_paper_executor", return_value=executor),
             patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_stocks_agent.StocksAgent", return_value=fake_agent),
             pytest.raises(RuntimeError, match="cycle boom"),
@@ -220,7 +222,7 @@ class TestExecutorSelection:
         executor_patch = patch(
             "scripts.run_stocks_agent.XTBExecutor", return_value=xtb_executor_inst
         )
-        paper_patch = patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor)
+        paper_patch = patch("scripts.run_stocks_agent.create_paper_executor", return_value=executor)
 
         with patch.dict(os.environ, env, clear=True):
             started = [p.start() for p in patches + [client_patch, executor_patch, paper_patch]]
@@ -301,7 +303,7 @@ class TestStartupPruning:
             patch("src.core.runner.LLMClient", return_value=MagicMock()),
             patch("src.core.runner.RiskEngine"),
             patch("scripts.run_stocks_agent.create_xtb_provider", return_value=provider),
-            patch("scripts.run_stocks_agent.PaperExecutor", return_value=executor),
+            patch("scripts.run_stocks_agent.create_paper_executor", return_value=executor),
             patch("src.core.runner.DecisionPipeline"),
             patch("scripts.run_stocks_agent.StocksAgent", return_value=fake_agent),
         ):

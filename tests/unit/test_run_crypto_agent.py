@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from scripts.run_crypto_agent import _build_data_and_execution, run
+from src.core.config import ExecutionSettings
 from src.core.runner import load_dotenv
 
 
@@ -79,7 +80,8 @@ def _settings(
     """A minimal settings stub with just the attributes the helper reads."""
     return SimpleNamespace(
         crypto_agent=SimpleNamespace(exchange=exchange, testnet=testnet, quote_currency="EUR"),
-        execution=SimpleNamespace(
+        # Real ExecutionSettings so the §7.65 cost-profile resolution is exercised.
+        execution=ExecutionSettings(
             paper_fee_pct=fee_pct,
             paper_slippage_pct=slippage_pct,
             initial_cash=initial_cash,
@@ -263,7 +265,8 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
             decide_on_new_bar_only=True,
         ),
         risk=SimpleNamespace(),
-        execution=SimpleNamespace(
+        # Real ExecutionSettings so §7.65 cost-profile resolution is exercised.
+        execution=ExecutionSettings(
             paper_fee_pct=0.0, paper_slippage_pct=0.0, initial_cash=100_000.0
         ),
         # Retention fields (§7.12): windows off here so lifecycle tests stay

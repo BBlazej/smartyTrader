@@ -43,6 +43,7 @@ import structlog
 from ..analysis.candles import timeframe_delta
 from ..execution.paper_executor import PaperExecutor
 from .config import RiskSettings
+from .costs import CostModel
 from .decision_pipeline import buy_cost_factor, calculate_quantity, exit_level_breach
 from .models import OHLCV, Action, OrderSide, PortfolioState, TradeSignal
 from .risk_engine import RiskEngine
@@ -139,6 +140,8 @@ class DecisionReplayBacktester:
         initial_cash: float,
         fee_pct: float = 0.0,
         slippage_pct: float = 0.0,
+        min_commission: float = 0.0,
+        fx_fee_pct: float = 0.0,
     ) -> None:
         # Fresh engine/executor per run: the replay must never observe live state, and
         # two runs must not share trackers. The engine's clock follows the replay
@@ -146,10 +149,14 @@ class DecisionReplayBacktester:
         self._clock = TimelineClock()
         self._risk_engine = RiskEngine(risk_settings, clock=self._clock)
         self._settings = risk_settings
+        # Same per-venue cost schedule as live (§7.65): percentage, minimum
+        # commission and FX fee replay through the identical model.
         self._executor = PaperExecutor(
             initial_cash=initial_cash,
             slippage_pct=slippage_pct,
             fee_pct=fee_pct,
+            min_commission=min_commission,
+            fx_fee_pct=fx_fee_pct,
         )
         self._initial_cash = initial_cash
         self._wins = 0
@@ -259,7 +266,12 @@ class DecisionReplayBacktester:
         )
         portfolio = await self._portfolio_state()
         quantity = calculate_quantity(
-            signal, portfolio, self._settings, price, cost_factor=buy_cost_factor(self._executor)
+            signal,
+            portfolio,
+            self._settings,
+            price,
+            cost_factor=buy_cost_factor(self._executor),
+            cost_model=CostModel.from_attrs(self._executor),
         )
         planned_notional = quantity * price
 

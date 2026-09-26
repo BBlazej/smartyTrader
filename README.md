@@ -25,9 +25,11 @@ rejected with a reason and nothing is sent to the exchange.
   N prior decisions — action, confidence, reasoning, risk verdict — *and the
   realized PnL once each position closed* (net of fees). The model sees what it
   decided **and how it turned out**, so it can avoid repeating losing patterns.
-- **Realistic paper PnL.** The paper executor models per-side fees and slippage,
-  so realized PnL (and the win/loss the risk engine tracks) is net-of-fee —
-  comparable to the "win rate > 50% after fees" live-readiness gate.
+- **Realistic paper PnL.** The paper executor models per-side fees, slippage and
+  per-venue cost schedules — OKX EU taker rates for crypto, Saxo's 0.08 % with a
+  minimum commission plus FX fee for stocks (§7.65) — so realized PnL (and the
+  win/loss the risk engine tracks) is net-of-fee and comparable to the "win rate >
+  50% after fees" live-readiness gate.
 - **Two markets, one core.** The crypto and stocks agents differ only in data
   source and execution adapter; the pipeline, risk engine, storage, and alerts
   are shared.
