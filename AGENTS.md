@@ -21,11 +21,13 @@ This is an autonomous paper-trading agent system powered by a local LLM (LM Stud
 
 ```bash
 pytest              # Run all tests (unit + integration), with coverage on src/
+                    # (default addopts deselect `-m network` live smokes, §7.63)
+pytest -m network   # opt-in live provider smokes — needs internet (§7.63)
 ruff check .        # Lint
 ruff format .       # Format (100 char line limit)
 ```
 
-Tests use `pytest-asyncio` in auto mode. Mock external APIs — no real network calls in unit tests.
+Tests use `pytest-asyncio` in auto mode. Mock external APIs — no real network calls except the opt-in `network`-marked live smokes (§7.63, `tests/integration/test_yfinance_live.py`).
 
 CI (`.github/workflows/ci.yml`, §7.60) runs exactly these three checks on **Python 3.11** (the Docker image's version; local venvs may be newer) with `pip install -e ".[dev,stocks]"` — keep all three green before committing. `sqlalchemy[asyncio]` is required (greenlet): SQLAlchemy 2.1 no longer installs it implicitly.
 

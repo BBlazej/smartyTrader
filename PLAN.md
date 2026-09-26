@@ -70,7 +70,7 @@ This document tracks **what remains to be done**: open gaps, todos and next step
 
 Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-09-17** (`review2.md`), **2026-09-21** (`external_review3.md`), and **2026-09-24** (`external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged directly here with a severity and a place in the order of work (`nightly_finds.md` was retired 2026-09-25; its "find #N" labels survive in HISTORY/git history). Overlaps have been consolidated and all open items are grouped by severity below.
 
-> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35, §7.37–§7.62, §7.64, §7.65, §7.67, §7.68 and §7.69 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
+> **This section lists only open work.** Items §7.1–§7.27, §7.29–§7.33, §7.35, §7.37–§7.65, §7.67–§7.69 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
 
 ### Critical / high severity (open)
 
@@ -98,7 +98,5 @@ Updated after the full-codebase reviews of **2026-09-15** (`review.MD`), **2026-
 34. **Venue-side stop orders (OCO)** ⏳ [§7.9 follow-up]
     - SL/TP enforcement is local to the agent; venue-side OCO stop orders (OKX demo algo orders, later Saxo) remain future work — worth revisiting together with the §7.28 keyed run.
 
-63. **Live yfinance validation** ⏳ [find #2]
-    - The stocks provider's real network path (incl. the §7.11 `"6mo"` depth + NaN-row dropping) has only been exercised through the injected-source seam; yfinance isn't in the dev venv, and CI (§7.60) runs offline tests only.
-    - Fix: one manual `--once` stocks run (or a small opt-in, network-marked smoke test excluded from default `pytest`) on a machine with network access, before relying on the stocks agent.
+
 

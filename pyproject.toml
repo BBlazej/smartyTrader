@@ -38,7 +38,12 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=src --cov-report=term-missing -v"
+# Network-marked smoke tests (§7.63) are opt-in: default runs exclude them so CI
+# stays offline; run them with `pytest -m network` on a connected machine.
+addopts = "--cov=src --cov-report=term-missing -v -m \"not network\""
+markers = [
+    "network: requires real internet access (live provider smoke tests, §7.63)",
+]
 
 [tool.ruff]
 target-version = "py311"

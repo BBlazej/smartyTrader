@@ -630,3 +630,10 @@ Findings from `external_4.md` (2026-09-24), tagged `[R4-xx]`.
    - **Done ✅:** the hourly request is now `(period="1mo", interval="1h")` — yfinance serves hourly data up to ~730 days back; a month gives ≈ 21 sessions × ~7 US bars ≈ 145 candles, plenty for every indicator. Belt: `XTBProvider.fetch_snapshot` warns (`candle depth below MACD minimum`, with symbol/timeframe/counts) whenever a non-empty book comes back shallower than MACD's 26-close minimum — once per (symbol, timeframe) so a shallow venue never spams the log. That turns *any* future period-map regression from silent prompt degradation into a named warning.
    - **Tests:** `TestPeriodMap.test_hourly_period_deep_enough_for_macd` (map value pinned); `TestShallowDepthWarning` in `test_xtb_provider.py` (shallow book → exactly one structured warning naming symbol/timeframe/counts; deep book stays silent).
 
+### §7.63 — Live yfinance validation — ✅ complete [find #2, 2026-09-26]
+
+   - **Problem:** the stocks provider's real network path (the §7.11 "6mo" depth, NaN-row dropping, range fetch) had only ever been exercised through the injected-source seam; yfinance wasn't installed in the dev venv and CI (§7.60) runs offline.
+   - **Done ✅:** new opt-in network suite `tests/integration/test_yfinance_live.py` (module-level `pytestmark = pytest.mark.network`), the marker registered in `pyproject.toml` and excluded from default runs via `addopts = ... -m "not network"` — CI stays offline; on a connected machine `pytest tests/integration/test_yfinance_live.py -m network --no-cov` runs it. It checks: AAPL daily book ≥ 60 clean candles (positive OHLC, low ≤ high, no NaN), the full indicator set computes on that live book, the §7.67 hourly book feeds MACD (≥ 26 closes), and `fetch_history` honors a 14-day window.
+   - **Executed against Yahoo (2026-09-26):** all 4 tests pass — daily snapshot capped at the 100-candle limit from the "6mo" request, hourly also ≥ 100 (the old "1d" period could not produce that), indicators present.
+   - **Also:** `yfinance` installed in the local venv via the `[stocks]` extra (`pip install -e ".[stocks]"`).
+
