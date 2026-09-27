@@ -136,7 +136,33 @@ class TestGetCash:
         mock_client.fetch_free_balance.return_value = 50000.0
         cash = await executor.get_cash()
         assert cash == 50000.0
-        mock_client.fetch_free_balance.assert_awaited_once_with("USDT")
+        mock_client.fetch_free_balance.assert_awaited_once_with()
+
+
+class TestRealCcxtSignature:
+    """§7.28 smoke-run find: the stub accepted ``fetch_free_balance("EUR")`` but real
+    ccxt's signature is ``(params={})`` — the currency landed in ``params`` and every
+    keyed cycle died on "'str' object is not a mapping". Exercise the real method."""
+
+    @pytest.mark.asyncio
+    async def test_get_cash_through_real_ccxt_fetch_free_balance(self) -> None:
+        import ccxt.async_support as ccxt_async
+
+        exchange = ccxt_async.myokx()
+        try:
+
+            async def fake_fetch_balance(params=None):  # type: ignore[no-untyped-def]
+                return {
+                    "free": {"EUR": 4600.0, "BTC": 1.0},
+                    "used": {"EUR": 0.0, "BTC": 0.0},
+                    "total": {"EUR": 4600.0, "BTC": 1.0},
+                }
+
+            exchange.fetch_balance = fake_fetch_balance  # type: ignore[method-assign]
+            executor = CcxtExecutor(exchange, quote_currency="EUR", venue="myokx-sandbox")
+            assert await executor.get_cash() == pytest.approx(4600.0)
+        finally:
+            await exchange.close()
 
 
 class TestRealCcxtShapes:

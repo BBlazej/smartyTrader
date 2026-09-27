@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .config import pairs_not_quoted_in
+
 if TYPE_CHECKING:  # avoid an import cycle; only needed for type hints
     from ..agents.base_agent import BaseTradingAgent
     from .config import Settings
@@ -216,6 +218,19 @@ def parse_and_apply(
             _set(agent_settings, field, _effective(field))
         for field in ("pairs", "symbols"):
             value = _effective(field)
+            if field == "pairs" and overrides.pairs is not None:
+                quote = getattr(agent_settings, "quote_currency", None)
+                bad = pairs_not_quoted_in(list(overrides.pairs), quote)
+                if bad:
+                    # Same rule as startup validation: never trade pairs the cash
+                    # currency can't pay for. Skip just this field, like a loosening
+                    # risk override (§7.43); the rest of the blob still applies.
+                    logger.warning(
+                        "stored pairs override not quoted in quote_currency; skipped",
+                        pairs=bad,
+                        quote_currency=quote,
+                    )
+                    value = getattr(baseline_agent, "pairs", None)
             if value is not None and list(getattr(agent_settings, field, []) or []) != list(value):
                 setattr(agent_settings, field, list(value))
                 changed.append(field)
@@ -333,18 +348,26 @@ def _same(value: Any, base: Any) -> bool:
 def validate_overrides_payload(
     payload: dict[str, Any],
     baseline: Any = None,
+    quote_currency: str | None = None,
 ) -> tuple[SafeConfigOverrides, None] | tuple[None, str]:
     """Validate a raw dashboard/API body; returns ``(model, None)`` or ``(None, error)``.
 
     A single, obvious message for the form layer: any unknown key (including every
     credential-shaped one) is rejected wholesale. With ``baseline`` (the YAML risk
-    limits — :func:`risk_baseline`), any risk value looser than it is rejected too.
+    limits — :func:`risk_baseline`), any risk value looser than it is rejected too;
+    with ``quote_currency``, so is a ``pairs`` list quoted in anything else.
     """
     try:
         model = SafeConfigOverrides.model_validate(payload)
         problems = loosened_risk_fields(model.risk, baseline)
         if problems:
             return None, "risk overrides may only tighten limits: " + "; ".join(problems.values())
+        unquoted = pairs_not_quoted_in(list(model.pairs or []), quote_currency)
+        if unquoted:
+            return None, (
+                f"pairs {unquoted} are not quoted in quote_currency '{quote_currency}' — "
+                "the agent could not pay for them"
+            )
         return model, None
     except ValidationError as exc:  # pragma: no cover - message shape is what matters
         first = exc.errors()[0] if exc.errors() else {}

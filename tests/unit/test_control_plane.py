@@ -556,3 +556,39 @@ def test_allowed_hosts_helper() -> None:
 
     assert allowed_hosts("0.0.0.0") == ["127.0.0.1", "localhost", "::1", "[::1]"]
     assert allowed_hosts("192.168.1.5", ["dash.lan"])[-2:] == ["192.168.1.5", "dash.lan"]
+
+
+class TestPairsOverrideQuoteCurrency:
+    """§7.28 smoke-run find: a stale Kraken-era ``BTC/USDT`` override silently replaced
+    the EUR pairs on OKX Europe — overrides now obey the startup quote-currency rule."""
+
+    def _eur_settings(self, tmp_path) -> Settings:
+        settings = _settings(tmp_path)
+        for cfg in (settings.crypto_agent, settings.agent_baselines["crypto"]):
+            cfg.pairs = ["BTC/EUR"]
+            cfg.quote_currency = "EUR"
+        return settings
+
+    def test_apply_skips_mis_quoted_pairs_but_applies_the_rest(self, tmp_path) -> None:
+        settings = self._eur_settings(tmp_path)
+        changed = parse_and_apply(
+            settings, "crypto", '{"interval_minutes": 7, "pairs": ["BTC/USDT", "ETH/USDT"]}'
+        )
+        assert settings.crypto_agent.pairs == ["BTC/EUR"]  # YAML pairs kept
+        assert settings.crypto_agent.interval_minutes == 7
+        assert "pairs" not in changed
+
+    def test_apply_accepts_correctly_quoted_pairs(self, tmp_path) -> None:
+        settings = self._eur_settings(tmp_path)
+        parse_and_apply(settings, "crypto", '{"pairs": ["ETH/EUR"]}')
+        assert settings.crypto_agent.pairs == ["ETH/EUR"]
+
+    def test_write_time_validation_rejects_mis_quoted_pairs(self) -> None:
+        from src.core.control_config import validate_overrides_payload
+
+        model, error = validate_overrides_payload({"pairs": ["BTC/USDT"]}, quote_currency="EUR")
+        assert model is None and "not quoted in quote_currency 'EUR'" in error
+        ok, err = validate_overrides_payload({"pairs": ["BTC/EUR"]}, quote_currency="EUR")
+        assert ok is not None and err is None
+        # Without a quote currency (e.g. stocks symbols) nothing extra is checked.
+        assert validate_overrides_payload({"pairs": ["BTC/USDT"]})[0] is not None

@@ -236,7 +236,13 @@ def create_control_app(
     async def put_config(payload: dict[str, Any]) -> dict[str, Any]:
         # Reject anything outside the safe whitelist wholesale (unknown keys and
         # every credential-shaped key land here — extra="forbid").
-        model, error = validate_overrides_payload(payload, baseline=risk_baseline(settings))
+        model, error = validate_overrides_payload(
+            payload,
+            baseline=risk_baseline(settings),
+            quote_currency=getattr(
+                getattr(settings, f"{agent_name}_agent", None), "quote_currency", None
+            ),
+        )
         if model is None:
             raise HTTPException(status_code=400, detail=error)
         # §7.50: persist only fields that genuinely differ from YAML — saving a form

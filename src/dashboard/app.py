@@ -464,7 +464,13 @@ def create_dashboard_app(
         form = {k: v[0] for k, v in parse_qs(raw_body, keep_blank_values=True).items()}
         _require_csrf(request, form.pop(CSRF_FIELD, None))
         payload = _form_to_payload(form)
-        model, error = validate_overrides_payload(payload, baseline=risk_baseline(settings))
+        model, error = validate_overrides_payload(
+            payload,
+            baseline=risk_baseline(settings),
+            quote_currency=getattr(
+                getattr(settings, f"{agent}_agent", None), "quote_currency", None
+            ),
+        )
         if model is None:
             # Re-render the form with the attempted values echoed back + the rejection.
             control = await storage.get_agent_control(agent)

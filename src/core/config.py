@@ -24,6 +24,18 @@ LEGACY_LLM_ENDPOINT_ENV = "LM_STUDIO_ENDPOINT"
 LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 
 
+def pairs_not_quoted_in(pairs: list[str], quote_currency: str | None) -> list[str]:
+    """Pairs whose quote side is not ``quote_currency`` (none when no quote is set).
+
+    Shared by startup validation and the control plane: a ``pairs`` override must
+    obey the same rule as the YAML list (§7.28 smoke-run find — a stale USDT
+    override silently replaced the EUR pairs on OKX Europe).
+    """
+    if not quote_currency:
+        return []
+    return [p for p in pairs if p.split("/")[-1].upper() != quote_currency.upper()]
+
+
 def live_trading_acknowledged() -> bool:
     """True only when ``LIVE_TRADING_ACK`` holds the exact acknowledgement phrase."""
     return os.getenv(LIVE_TRADING_ACK_ENV, "").strip() == LIVE_TRADING_ACK_PHRASE
@@ -182,9 +194,7 @@ class AgentConfig:
         self.watchlist = WatchlistSettings(**(watchlist or {}))
         self.sleeves = SleevesSettings(**(sleeves or {}))
         if self.quote_currency:
-            mismatched = [
-                pair for pair in self.pairs if pair.split("/")[-1].upper() != self.quote_currency
-            ]
+            mismatched = pairs_not_quoted_in(self.pairs, self.quote_currency)
             if mismatched:
                 raise ValueError(
                     f"pairs {mismatched} are not quoted in quote_currency "

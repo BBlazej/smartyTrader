@@ -150,11 +150,13 @@ class ExchangeClient(Protocol):
 
     async def cancel_order(self, id: str, symbol: str) -> dict[str, Any]: ...
 
-    async def fetch_free_balance(
-        self, code: str | None = None, params: dict[str, Any] | None = None
-    ) -> (
-        Any
-    ): ...  # real ccxt returns a currency→{free,total} dict; simplified stubs may return a float
+    async def fetch_free_balance(self, params: dict[str, Any] | None = None) -> Any:
+        """Real ccxt: ``fetch_free_balance(params={})`` → ``{currency: free amount}``.
+
+        It takes **no currency code** — passing one lands in ``params`` and crashes
+        inside ccxt (found by the first OKX demo run, §7.28).
+        """
+        ...
 
     async def fetch_balance(self, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
@@ -532,7 +534,8 @@ class CcxtExecutor:
             return False
 
     async def get_cash(self) -> float:
-        balance = await self._client.fetch_free_balance(self._quote)
+        # No currency argument: ccxt's signature is (params={}) — §7.28 smoke-run find.
+        balance = await self._client.fetch_free_balance()
         return _extract_quote_balance(balance, self._quote)
 
 
