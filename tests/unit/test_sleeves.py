@@ -577,3 +577,31 @@ class TestRunnerSleeves:
     async def test_disabled_sleeves_touch_nothing(self, tmp_path: Path) -> None:
         agent = await self._run(tmp_path, enabled=False)
         assert agent.sleeves is None and agent.cycles == 1
+
+
+class TestPendingBuyLock:
+    """§7.72: a working venue BUY claims its symbol before it fills."""
+
+    async def test_pending_buy_locks_the_symbol_for_other_sleeves(self, storage: Storage) -> None:
+        book = SleeveBook(_sleeves(swing=SWING, position=POSITION), storage)
+        decision_id = await _decision(storage, strategy="position")
+        executor = MagicMock()
+        executor.pending_entry_decision_ids = MagicMock(return_value=[decision_id])
+        ownership = await book.ownership(executor, [], "BTC/EUR")
+        assert ownership is not None and ownership.strategy == "position"
+        assert ownership.opened_at is None  # no fill yet → no time-stop clock
+        executor.pending_entry_decision_ids.return_value = []
+        assert await book.ownership(executor, [], "BTC/EUR") is None
+
+    async def test_ccxt_executor_reports_working_buys(self) -> None:
+        from src.execution.ccxt_executor import CcxtExecutor, PendingOrderRecord
+
+        ex = CcxtExecutor(MagicMock(), quote_currency="EUR", venue="myokx-sandbox")
+        ex.load_pending_orders(
+            [
+                PendingOrderRecord("1", "BTC/EUR", OrderSide.BUY, 1.0, decision_id=5),
+                PendingOrderRecord("2", "BTC/EUR", OrderSide.SELL, 1.0, decision_id=6),
+                PendingOrderRecord("3", "ETH/EUR", OrderSide.BUY, 1.0, decision_id=7),
+            ]
+        )
+        assert ex.pending_entry_decision_ids("BTC/EUR") == [5]

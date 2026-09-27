@@ -173,9 +173,21 @@ class SleeveBook:
     async def ownership(
         self, executor: Any, positions: Iterable[Position], symbol: str
     ) -> Ownership | None:
-        """Owner of the open position in ``symbol`` (``None`` when flat)."""
+        """Owner of the open position in ``symbol`` (``None`` when flat).
+
+        A flat symbol with a *working* venue BUY (not filled yet, so not in the
+        ledger) is claimed by the sleeve that placed it (§7.72) — otherwise another
+        sleeve could enter the same symbol before the fill lands.
+        """
         if not any(p.symbol == symbol and p.quantity > 0 for p in positions):
-            return None
+            pending_hook = getattr(executor, "pending_entry_decision_ids", None)
+            pending = [i for i in (pending_hook(symbol) if callable(pending_hook) else [])]
+            if not pending:
+                return None
+            await self._load_meta([i for i in pending if i is not None])
+            names = [self._decision_meta.get(i, (None, None))[0] for i in pending if i is not None]
+            known = next((n for n in names if self._settings.get(n) is not None), None)
+            return Ownership(strategy=known or self.default, opened_at=None)
         hook = getattr(executor, "entry_decision_ids", None)
         ids = [i for i in (hook(symbol) if callable(hook) else []) if i is not None]
         await self._load_meta(ids)

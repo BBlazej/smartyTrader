@@ -457,6 +457,14 @@ class CcxtExecutor:
         pending = self._open_orders.get(order_id)
         return pending.decision_id if pending is not None else None
 
+    def pending_entry_decision_ids(self, symbol: str) -> list[int | None]:
+        """Decisions of BUY orders still working at the venue in ``symbol`` (§7.72 lock)."""
+        return [
+            p.decision_id
+            for p in self._open_orders.values()
+            if p.symbol == symbol and p.side == OrderSide.BUY and p.resolved is None
+        ]
+
     def entry_decision_ids(self, symbol: str) -> list[int | None]:
         """Entry decisions of the open FIFO lots in ``symbol``, oldest first (§7.71)."""
         return self._tracker.entry_decision_ids(symbol)
