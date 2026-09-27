@@ -199,13 +199,15 @@ def sleeve_rows(
     snapshots: list[Any],
     allocation: Any | None = None,
     peaks: dict[str, float | None] | None = None,
+    performance: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-sleeve table rows (§7.71) from each sleeve's latest ``sleeve_snapshots`` row.
 
     ``allocation`` (the latest ``strategy_allocations`` row) supplies each sleeve's
     weight and allocated capital; ``peaks`` its drawdown high-water seed, so the table
     shows the same drawdown the sleeve's risk engine gates on. Missing pieces render
-    as ``None`` — the page never fails on a half-populated history.
+    as ``None`` — the page never fails on a half-populated history. ``performance``
+    (``strategy → SleevePerformance``, §7.73) adds the ledger columns.
     """
     import json
 
@@ -238,6 +240,7 @@ def sleeve_rows(
                 "open_positions": snap.open_positions,
                 "cash": snap.cash,
                 "as_of": snap.timestamp,
+                "perf": (performance or {}).get(snap.strategy),
             }
         )
     return rows

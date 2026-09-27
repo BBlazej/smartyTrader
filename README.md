@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 987 tests, no network needed (live smokes are opt-in:
+pytest                      # 997 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -97,6 +97,7 @@ src/
 │   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
 │   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
 │   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
+│   ├── performance.py        # Per-sleeve performance ledger: trades, win rate, profit factor, holding time, max DD (§7.73)
 │   ├── control_api.py        # Agent-side FastAPI control API (pause/resume/close-all/config) (§7.15)
 │   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
 │   ├── watchlist.py          # Capped TTL watchlist manager over the screener (§7.70)
@@ -120,6 +121,7 @@ src/
 ├── analysis/                 # Feature engineering + prompt building (§7.17)
 │   ├── indicators.py         # compute_indicators: RSI/MACD/Bollinger/ATR (pure, moved from core)
 │   ├── screener.py           # Deterministic universe screening: liquidity/vol/momentum (§7.70)
+│   ├── baselines.py          # Dumb baselines a strategy must beat: buy & hold, 20/50 MA crossover, cash (§7.73)
 │   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT (moved from core)
 ├── monitoring/
 │   ├── logger.py             # structlog setup
@@ -135,7 +137,7 @@ scripts/
 ├── run_dashboard.py          # Web dashboard server (monitor + control + safe config) (§7.15)
 ├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
 ├── rebaseline_drawdown.py    # Audited CLI drawdown peak re-baseline — the latch's only exit (§7.53)
-├── backtest.py               # Decision replay vs fresh historical candles (CLI + JSON report)
+├── backtest.py               # Decision replay vs fresh historical candles + net baselines; --strategy replays one sleeve (§7.73)
 └── benchmark_llm.py          # LLM decision-latency benchmark on real prompts — p50/p95 + watchlist sizing (§7.69)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
@@ -251,7 +253,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and an XTB de
 execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
 its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
 (PLAN §7.66). Paper stays the default everywhere.
-**987 tests passing at ~94% coverage.**
+**997 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

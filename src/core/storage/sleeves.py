@@ -86,6 +86,36 @@ class SleeveMixin:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, self._venue))
             return float((await session.execute(stmt)).scalar() or 0.0)
 
+    async def get_strategy_orders(
+        self, strategy: str, since: datetime | None = None, agent: str | None = None
+    ) -> list[OrderRow]:
+        """The sleeve's *filled* orders, oldest first (§7.73 performance ledger)."""
+        async with await self._session() as session:
+            stmt = select(OrderRow).where(
+                OrderRow.status == "filled", OrderRow.strategy == strategy
+            )
+            if since is not None:
+                stmt = stmt.where(OrderRow.filled_at >= _as_naive_utc(since))
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
+            if self._venue is not None:
+                stmt = stmt.where(self._venue_match(OrderRow.venue, self._venue))
+            return list((await session.execute(stmt.order_by(OrderRow.id.asc()))).scalars())
+
+    async def get_sleeve_equity_series(
+        self, strategy: str, since: datetime | None = None, agent: str | None = None
+    ) -> list[float]:
+        """The sleeve's snapshot equity values, oldest first (§7.73 drawdown)."""
+        async with await self._session() as session:
+            stmt = self._scoped(select(SleeveSnapshotRow.equity), SleeveSnapshotRow, agent).where(
+                SleeveSnapshotRow.strategy == strategy
+            )
+            if since is not None:
+                stmt = stmt.where(SleeveSnapshotRow.timestamp >= _as_naive_utc(since))
+            stmt = stmt.order_by(SleeveSnapshotRow.timestamp.asc(), SleeveSnapshotRow.id.asc())
+            return [float(v) for v in (await session.execute(stmt)).scalars()]
+
     # ── Sleeve snapshots ──────────────────────────────────
 
     async def save_sleeve_snapshot(

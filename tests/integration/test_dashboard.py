@@ -546,6 +546,7 @@ class TestSleevePages:
         assert "crypto_swing" in body and "crypto_position" in body
         assert "5,300.00" in body and "5,000.00" in body  # equity, capital (0.5 × 10k)
         assert "<th>Sleeve</th>" in body  # owner column on the positions table
+        assert "Profit factor" in body and "Avg hold" in body  # §7.73 ledger columns
         _assert_no_secrets(body)
 
     async def test_no_sleeve_table_without_sleeves(self, env) -> None:

@@ -114,6 +114,7 @@ src/
 │   ├── retention.py          # fail-soft storage pruning wrapper (startup + scheduled) (§7.12)
 │   ├── runner.py             # shared runner lifecycle: enabled-gate, single-instance flock (§7.52), wiring, control API startup, --once/scheduled loops (§7.13)
 │   ├── backtester.py         # DecisionReplayBacktester — same risk/fee model over stored decisions, zero LLM calls (§7.14)
+│   ├── performance.py        # sleeve_performance(): per-sleeve ledger from tagged fills + sleeve snapshots (§7.73)
 │   ├── control_api.py        # agent-side FastAPI control API (pause/resume/close-all/config/status) (§7.15 P2)
 │   ├── control_config.py     # SafeConfigOverrides whitelist; parse_and_apply onto live objects (§7.15 P2)
 │   └── scheduler.py          # APScheduler wrapper
@@ -137,6 +138,7 @@ src/
 ├── analysis/                 # feature engineering + prompt building (§7.17, extracted from core)
 │   ├── indicators.py         # compute_indicators + RSI/MACD/Bollinger/ATR helpers (pure)
 │   ├── screener.py           # deterministic universe screening: liquidity floor → daily metrics → volatility band → momentum rank (§7.70)
+│   ├── baselines.py          # buy & hold / 20-50 MA crossover / cash baselines, net of cost, no look-ahead (§7.73)
 │   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT
 └── monitoring/
     ├── logger.py             # structlog setup
@@ -471,6 +473,7 @@ The agent process serves a small internal API (in-process with the loop, or a th
 Standalone app (`src/dashboard/app.py::create_dashboard_app`, launched by `scripts/run_dashboard.py` on `dashboard.host:port`, default loopback `127.0.0.1:8080`). Reads the shared SQLite DB (WAL) through `Storage` as a **reader** — no HTTP coupling to the agent process, so it works whether or not `control_api.enabled`.
 
 - **Monitor:** overview page (portfolio cards + uPlot portfolio-value chart refreshed from `/api/portfolio.json`, recent decisions), positions page — all per agent via `?agent=` (default: first configured agent; books are never blended, §7.39) — decisions page (all agents with an Agent column, or `?agent=`-filtered) with win-rate / avg-confidence / confidence-histogram stats (`views.py::decision_stats`), health cards refreshed via HTMX polling of `/partials/health` every `dashboard.refresh_seconds`. The health badge shows an **effective status** (`views.py::agent_status`), not the raw latch: `disabled` → `paused` (latch) → `offline` when the heartbeat (`last_cycle_at`) is missing or older than 2× the agent's `interval_minutes` (floored at 10 min, +5 min grace) → else `running`. Agents stamp that heartbeat after every cycle *and* on market-hours skips (pause returns before it — its latch renders instead), so liveness never false-alarms in quiet windows.
+- **Sleeve ledger (§7.73):** the sleeve table also shows each sleeve's live record since its allocation — max drawdown over its snapshots, closed trades, win rate, profit factor, average holding time (`core/performance.py::sleeve_performance` over its tagged filled orders, FIFO-replayed for holding time).
 - **Strategy sleeves (§7.71):** when sleeve snapshots exist, the positions page adds a per-sleeve table (weight, allocated capital, equity, return, realized/unrealized, drawdown vs the sleeve's effective peak, open positions — `views.py::sleeve_rows`) and a Sleeve column (latest tagged BUY per symbol, `Storage.get_position_strategies`); the decisions table has a Sleeve column. Read-only — a sleeve re-baseline is CLI-only (`rebaseline_drawdown.py --strategy`).
 - **Control:** Pause / Resume, Close all — HTMX `POST /control/{agent}/{action}` writes the `agent_control` latches **directly** (same repository methods as the agent-side control API); running agents honor them on their next cycle via `_handle_control`.
 - **Log viewer:** `/logs/{agent}` tails `data/agent_<name>.out.log` (the captured output of dashboard-launched runners) — last ~64 KiB / 400 lines (`views.py::tail_lines`), HTMX-polled partial refresh, linked from health cards when a log exists. Read-only; path built only from the config agent whitelist next to the live DB (`storage.database_path`).
@@ -507,6 +510,8 @@ Design (Week 6):
 2. **Load** the recorded `llm_decisions` (+ `orders`, realized PnL) in time order.
 3. **Re-simulate** each decision against the price path that followed, through the **same** risk engine + fee/slippage model as live, so the verdicts and PnL are comparable to paper results.
 4. **Report:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
+5. **Baselines (§7.73):** every report also carries `baselines_pct` — buy & hold, a 20/50 SMA crossover (decides on bar *i*'s close, earns *i → i+1*, pays the per-side cost on every switch and the final exit) and cash, equal-weighted over the symbols and net of the same fee + slippage + FX — plus `best_baseline` / `beats_best_baseline`, the eligibility test CHANGE.md §4.2 sets for more than a sleeve's floor weight.
+6. **Per sleeve (§7.73):** `--strategy NAME` replays only that sleeve's decisions on its timeframe, with its effective risk limits (`sleeve_risk_settings`) and `weight × initial_cash`.
 
 > **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate, later experiment — non-deterministic and costly on the local 27B model.
 

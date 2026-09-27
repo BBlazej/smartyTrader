@@ -23,7 +23,8 @@
     <table>
       <thead><tr>
         <th>Sleeve</th><th>Weight</th><th>Capital</th><th>Equity</th><th>Return</th>
-        <th>Realized</th><th>Unrealized</th><th>Drawdown</th><th>Open</th><th>As of</th>
+        <th>Realized</th><th>Unrealized</th><th>Drawdown</th><th>Max DD</th><th>Open</th>
+        <th>Trades</th><th>Win rate</th><th>Profit factor</th><th>Avg hold</th><th>As of</th>
       </tr></thead>
       <tbody>
         {% for r in sleeves %}
@@ -36,7 +37,12 @@
             <td class="{% if r.realized_pnl > 0 %}pos{% elif r.realized_pnl < 0 %}neg{% endif %}">{{ r.realized_pnl | money }}</td>
             <td class="{% if r.unrealized_pnl > 0 %}pos{% elif r.unrealized_pnl < 0 %}neg{% endif %}">{{ r.unrealized_pnl | money }}</td>
             <td class="{% if (r.drawdown_pct or 0) > 0 %}neg{% endif %}">{{ r.drawdown_pct | pct }}</td>
+            <td>{{ (r.perf.max_drawdown_pct if r.perf else None) | pct }}</td>
             <td>{{ r.open_positions }}</td>
+            <td>{{ r.perf.closed_trades if r.perf else '—' }}</td>
+            <td>{{ (r.perf.win_rate if r.perf else None) | pct }}</td>
+            <td>{{ '%.2f' | format(r.perf.profit_factor) if r.perf and r.perf.profit_factor is not none else '—' }}</td>
+            <td>{{ '%.1fh' | format(r.perf.avg_holding_hours) if r.perf and r.perf.avg_holding_hours is not none else '—' }}</td>
             <td class="muted">{{ r.as_of | short }}</td>
           </tr>
         {% endfor %}

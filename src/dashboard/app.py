@@ -44,6 +44,7 @@ from ..core.control_config import (
     strip_noop_overrides,
     validate_overrides_payload,
 )
+from ..core.performance import sleeve_performance
 from ..core.storage import Storage
 from ..core.web_security import (
     CSRF_FIELD,
@@ -333,17 +334,25 @@ def create_dashboard_app(
             if not snapshots:
                 return [], {}
             allocation = await storage.get_latest_allocation(agent=agent)
+            since = allocation.created_at if allocation is not None else None
             peaks: dict[str, float | None] = {}
-            if allocation is not None:
-                for snap in snapshots:
+            performance: dict[str, Any] = {}
+            for snap in snapshots:
+                if since is not None:
                     peaks[snap.strategy] = await storage.get_effective_sleeve_peak(
-                        snap.strategy, allocation.created_at, agent=agent
+                        snap.strategy, since, agent=agent
                     )
+                # §7.73: the sleeve's ledger since its allocation.
+                performance[snap.strategy] = sleeve_performance(
+                    snap.strategy,
+                    await storage.get_strategy_orders(snap.strategy, since, agent=agent),
+                    await storage.get_sleeve_equity_series(snap.strategy, since, agent=agent),
+                )
             owners = await storage.get_position_strategies(symbols, agent=agent)
-        except Exception:
+        except Exception:  # the sleeve table must never fail the page
             logger.warning("sleeve view unavailable", agent=agent, exc_info=True)
             return [], {}
-        return sleeve_rows(snapshots, allocation, peaks), owners
+        return sleeve_rows(snapshots, allocation, peaks, performance), owners
 
     @app.get("/positions", response_class=HTMLResponse)
     async def positions_page(request: Request, agent: str | None = None) -> HTMLResponse:

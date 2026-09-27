@@ -8,6 +8,12 @@ Examples:
     python -m scripts.backtest --start 2026-08-01 --end 2026-09-15
     python -m scripts.backtest --days 30 --symbols BTC/USDT ETH/USDT --timeframe 1h
     python -m scripts.backtest --provider yfinance --symbols AAPL --days 90 --report out.json
+    python -m scripts.backtest --strategy crypto_position --days 60   # one sleeve (§7.73)
+
+``--strategy NAME`` replays one strategy sleeve (§7.71) on its own terms: only its
+decisions, its timeframe, its effective risk limits and ``weight × initial_cash``.
+Every report compares the replay with dumb baselines on the same symbols, period and
+cost model — buy & hold, a 20/50 MA crossover, cash (§7.73).
 
 The candle source is fresh from the venue (the configured exchange's public data via CCXT, or yfinance):
 the agent does not run 24/7, so stored ``market_snapshots`` alone are too sparse.
@@ -24,8 +30,9 @@ from typing import Any
 import structlog
 
 from src.core.backtester import DecisionReplayBacktester, ReplayDecision
-from src.core.config import Settings
+from src.core.config import Settings, SleeveSpec
 from src.core.models import OHLCV
+from src.core.sleeves import sleeve_risk_settings
 from src.core.storage import Storage
 
 
@@ -54,9 +61,22 @@ def _build_history_provider(provider_kind: str, settings: Settings) -> tuple[Any
     return create_ccxt_provider(exchange_id=exchange, testnet=False), "1h"
 
 
+def _sleeve_spec(settings: Settings, agent: str, name: str | None) -> SleeveSpec | None:
+    """The configured sleeve ``name`` of ``agent`` (``SystemExit`` when unknown)."""
+    if name is None:
+        return None
+    spec = getattr(getattr(settings, f"{agent}_agent", None), "sleeves", None)
+    found = spec.get(name) if spec is not None else None
+    if found is None:
+        raise SystemExit(f"'{name}' is not a configured sleeve of the {agent} agent")
+    return found
+
+
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     settings = Settings()
     setup = structlog.get_logger().bind(component="backtest")
+    agent = "stocks" if args.provider == "yfinance" else "crypto"
+    sleeve = _sleeve_spec(settings, agent, getattr(args, "strategy", None))
 
     end = _parse_dt(args.end, end_of_day=True) if args.end else datetime.now(UTC)
     start = _parse_dt(args.start) if args.start else end - timedelta(days=args.days)
@@ -73,7 +93,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             start=start,
             end=end,
             symbols=(args.symbols or None),
-            agent="stocks" if args.provider == "yfinance" else "crypto",
+            agent=agent,
+            **({"strategy": sleeve.name} if sleeve is not None else {}),
         )
         decisions = [
             ReplayDecision(
@@ -101,7 +122,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             return {"error": "no symbols to backtest (no decisions and none specified)"}
 
         provider, default_timeframe = _build_history_provider(args.provider, settings)
-        timeframe = args.timeframe or default_timeframe
+        timeframe = args.timeframe or (sleeve.timeframe if sleeve else None) or default_timeframe
 
         candles_by_symbol: dict[str, list[OHLCV]] = {}
         for symbol in symbols:
@@ -115,9 +136,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         # stocks agent's.
         cost_agent = "stocks" if args.provider == "yfinance" else "crypto"
         costs = settings.execution.paper_cost_params(cost_agent)
+        risk_settings = settings.risk
+        initial_cash = settings.execution.initial_cash
+        if sleeve is not None:
+            # The sleeve's own limits and capital share, as live (§7.71).
+            risk_settings = sleeve_risk_settings(
+                settings.risk_baseline, settings.risk, sleeve.risk_overrides
+            )
+            initial_cash *= sleeve.weight or 1.0
         backtester = DecisionReplayBacktester(
-            risk_settings=settings.risk,
-            initial_cash=settings.execution.initial_cash,
+            risk_settings=risk_settings,
+            initial_cash=initial_cash,
             fee_pct=costs["paper_fee_pct"],
             slippage_pct=costs["paper_slippage_pct"],
             min_commission=costs["paper_min_commission"],
@@ -149,6 +178,16 @@ def _print_summary(report: dict[str, Any]) -> None:
         print(f"buy & hold      : {blended:+.2f}% (equal-weighted) {report['buy_and_hold_pct']}")
     print(f"max drawdown    : {report['max_drawdown_pct']:.2f}%")
     print(f"sharpe          : {report['sharpe']:.2f} (annualized, coarse — see module docstring)")
+    baselines = report.get("baselines_pct") or {}
+    if baselines:
+        shown = ", ".join(
+            f"{name} {value:+.2f}%" for name, value in baselines.items() if value is not None
+        )
+        verdict = {True: "BEATS", False: "does NOT beat", None: "n/a"}[
+            report.get("beats_best_baseline")
+        ]
+        print(f"baselines (net) : {shown}")
+        print(f"vs best baseline: {verdict} ({report.get('best_baseline')})")
     wr = report["win_rate"]
     if wr is not None:
         print(f"closed trades   : {report['closed_trades']} (win rate {wr:.0%})")
@@ -200,6 +239,11 @@ def main() -> None:
         help="Candle timeframe (default: 1h for ccxt, 1d for yfinance)",
     )
     parser.add_argument("--report", default=None, help="Write the full JSON report to this path")
+    parser.add_argument(
+        "--strategy",
+        default=None,
+        help="Replay one strategy sleeve: its decisions, timeframe, risk limits, capital (§7.73)",
+    )
     args = parser.parse_args()
     asyncio.run(run(args))
 

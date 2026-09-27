@@ -40,6 +40,7 @@ from itertools import pairwise
 
 import structlog
 
+from ..analysis.baselines import baseline_returns, best_baseline
 from ..analysis.candles import timeframe_delta
 from ..execution.paper_executor import PaperExecutor
 from .config import RiskSettings
@@ -125,6 +126,12 @@ class BacktestReport:
     blended_buy_and_hold_pct: float | None
     per_symbol: dict[str, dict[str, float | int]]
     equity_curve: list[tuple[str, float]] = field(default_factory=list)
+    # §7.73 dumb baselines on the same symbols/period, net of the same per-side cost
+    # (percent): buy & hold, 20/50 MA crossover, cash — and whether the replay beat
+    # the best of them (the eligibility test for more than a sleeve's floor weight).
+    baselines_pct: dict[str, float | None] = field(default_factory=dict)
+    best_baseline: str | None = None
+    beats_best_baseline: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -159,6 +166,9 @@ class DecisionReplayBacktester:
             fx_fee_pct=fx_fee_pct,
         )
         self._initial_cash = initial_cash
+        # Per-side percentage cost for the baselines (§7.73); a venue minimum
+        # commission is not linear in size, so it is left out of the dumb baselines.
+        self._baseline_cost_pct = fee_pct + slippage_pct + fx_fee_pct
         self._wins = 0
         self._losses = 0
         self._win_amounts: list[float] = []
@@ -403,6 +413,8 @@ class DecisionReplayBacktester:
             if len(usable) >= 2 and usable[0].close > 0:
                 buy_hold[symbol] = (usable[-1].close / usable[0].close - 1.0) * 100.0
         blended = sum(buy_hold.values()) / len(buy_hold) if buy_hold else None
+        baselines = baseline_returns(candles_by_symbol, self._baseline_cost_pct)
+        best = best_baseline(baselines)
 
         return BacktestReport(
             start=curve[0][0].isoformat() if curve else "",
@@ -437,6 +449,12 @@ class DecisionReplayBacktester:
                 for s, st in sorted(self._per_symbol.items())
             },
             equity_curve=[(ts.isoformat(), round(value, 8)) for ts, value in curve],
+            baselines_pct={
+                name: round(value * 100.0, 6) if value is not None else None
+                for name, value in baselines.items()
+            },
+            best_baseline=best[0] if best else None,
+            beats_best_baseline=(total_return_pct > best[1] * 100.0) if best else None,
         )
 
 

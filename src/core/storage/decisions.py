@@ -199,8 +199,11 @@ class DecisionMixin:
         symbols: list[str] | None = None,
         include_fallback: bool = False,
         agent: str | None = None,
+        strategy: str | None = None,
     ) -> list[LLMDecisionRow]:
         """Decisions within ``[start, end]`` (UTC), oldest first (§7.14 replay input).
+
+        ``strategy`` narrows the replay to one sleeve's decisions (§7.73).
 
         LLM-fallback rows are excluded by default — they never produced a real
         trade decision (§7.8) and would only add noise to the replay.
@@ -217,6 +220,8 @@ class DecisionMixin:
                 stmt = stmt.where(LLMDecisionRow.symbol.in_(symbols))
             if not include_fallback:
                 stmt = stmt.where(LLMDecisionRow.is_fallback == False)
+            if strategy is not None:
+                stmt = stmt.where(LLMDecisionRow.strategy == strategy)
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(LLMDecisionRow.agent == scope)
