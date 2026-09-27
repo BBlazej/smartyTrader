@@ -298,6 +298,10 @@ class PaperExecutor:
         self._tracker = tracker
         return {"replayed_fills": replayed, "synthetic_lots": synthetic}
 
+    def entry_decision_ids(self, symbol: str) -> list[int | None]:
+        """Entry decisions of the open FIFO lots in ``symbol``, oldest first (§7.71)."""
+        return self._tracker.entry_decision_ids(symbol)
+
     def update_price(self, symbol: str, new_price: float) -> None:
         """Re-mark an open position at the latest market price.
 

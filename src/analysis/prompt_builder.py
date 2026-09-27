@@ -118,6 +118,18 @@ def _render_book(symbol: str, book: BookContext) -> list[str]:
             f"mark {_price(pos.current_price)}, unrealized {pos.pnl:+.2f} ({pos.pnl_pct:+.2%})"
             f"{share}" + (f"; active {', '.join(levels)}" if levels else "")
         )
+    if book.strategy is not None:
+        stop = (
+            f" — time stop: a position auto-closes after {_hours(book.max_holding_hours)}"
+            if book.max_holding_hours is not None
+            else ""
+        )
+        held = (
+            f" (this one held {_hours(book.held_hours)})"
+            if book.held_hours is not None and held_value > 0
+            else ""
+        )
+        lines.append(f"  Strategy sleeve: {book.strategy}{stop}{held}")
     lines.append(f"  Cash: {book.cash:.2f} of total equity {equity:.2f}")
     if book.max_position_pct is not None and equity > 0:
         cap = book.max_position_pct * equity
@@ -128,6 +140,13 @@ def _render_book(symbol: str, book: BookContext) -> list[str]:
             + (" — at the limit, a BUY will be rejected." if headroom <= 0 else "")
         )
     return lines
+
+
+def _hours(value: float | None) -> str:
+    """Holding time as hours, or days once it is at least two days."""
+    if value is None:
+        return "n/a"
+    return f"{value / 24:.1f}d" if value >= 48 else f"{value:.1f}h"
 
 
 def _price(value: float) -> str:
@@ -171,3 +190,30 @@ indicators that drove your call in the reasoning.\n\
 Respond with ONLY a JSON object (no prose, no code fences) of the form:\n\
 {"symbol": str, "action": "buy" | "sell" | "hold", "confidence": float in [0, 1], \
 "reasoning": str, "stop_loss": float | null, "take_profit": float | null}"""
+
+
+#: Per-sleeve playbooks (§7.71, CHANGE.md §4.5) appended to the system prompt so the
+#: model stops mixing styles. Keys must equal ``config.SLEEVE_PLAYBOOKS``.
+PLAYBOOKS: dict[str, str] = {
+    "swing": (
+        "STRATEGY PLAYBOOK — SWING (holds of hours to about three days). Trade short-term "
+        "momentum and mean-reversion setups on these bars. Keep stops tight (roughly 1-2 ATR "
+        "below entry) and take-profits near. A position still open when this sleeve's time "
+        "stop elapses is closed automatically, so only enter setups expected to play out "
+        "within that window. Prefer HOLD when the move is already extended."
+    ),
+    "position": (
+        "STRATEGY PLAYBOOK — POSITION (holds of days to weeks). Follow the established trend "
+        "on these higher-timeframe bars and ignore intraday noise. Enter only when trend and "
+        "momentum agree; place wider stops (beyond the recent swing low, roughly 2-4 ATR) and "
+        "distant take-profits. Expect few trades — most decisions should be HOLD. SELL when "
+        "the trend clearly breaks, not on a single red bar."
+    ),
+}
+
+
+def system_prompt_for(playbook: str | None) -> str:
+    """The system prompt for a sleeve: the default persona plus its playbook."""
+    if playbook is None:
+        return DEFAULT_SYSTEM_PROMPT
+    return f"{DEFAULT_SYSTEM_PROMPT}\n\n{PLAYBOOKS[playbook]}"

@@ -34,6 +34,7 @@ class DecisionMixin:
         llm_latency_ms: float | None = None,
         llm_prompt_tokens: int | None = None,
         llm_completion_tokens: int | None = None,
+        strategy: str | None = None,
     ) -> int:
         async with await self._session() as session:
             row = LLMDecisionRow(
@@ -51,6 +52,7 @@ class DecisionMixin:
                 llm_prompt_tokens=llm_prompt_tokens,
                 llm_completion_tokens=llm_completion_tokens,
                 agent=self._agent_scope(agent),
+                strategy=strategy,
             )
             session.add(row)
             await session.commit()
@@ -144,6 +146,7 @@ class DecisionMixin:
         limit: int = 10,
         include_fallback: bool = False,
         agent: str | None = None,
+        strategy: str | None = None,
     ) -> list[LLMDecisionRow]:
         """Return the most recent decisions, most-recent first.
 
@@ -151,6 +154,8 @@ class DecisionMixin:
         position is still open), which is surfaced to the LLM as context.
         ``include_fallback=True`` widens the view for audit surfaces (control API /
         dashboard); prompt context keeps using the default that excludes them (§7.8).
+        ``strategy`` narrows to one sleeve's decisions (§7.71) — each sleeve learns
+        from, and times its bars on, only its own track record.
         """
         async with await self._session() as session:
             # LLM-unavailable fallback rows are audit-only context — never re-fed
@@ -161,11 +166,31 @@ class DecisionMixin:
             stmt = stmt.order_by(LLMDecisionRow.timestamp.desc()).limit(limit)
             if symbol:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
+            if strategy is not None:
+                stmt = stmt.where(LLMDecisionRow.strategy == strategy)
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(LLMDecisionRow.agent == scope)
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def get_decision_strategies(
+        self, decision_ids: list[int]
+    ) -> dict[int, tuple[str | None, datetime | None]]:
+        """``decision_id → (strategy, timestamp)`` for the given decisions (§7.71).
+
+        Position ownership derives from the entry decisions of a position's open FIFO
+        lots: their sleeve owns it, and the earliest one's time starts its time stop.
+        Decision ids are globally unique, so no agent scope is needed here.
+        """
+        if not decision_ids:
+            return {}
+        async with await self._session() as session:
+            stmt = select(
+                LLMDecisionRow.id, LLMDecisionRow.strategy, LLMDecisionRow.timestamp
+            ).where(LLMDecisionRow.id.in_(set(decision_ids)))
+            result = await session.execute(stmt)
+            return {row.id: (row.strategy, row.timestamp) for row in result.all()}
 
     async def get_decisions_in_range(
         self,

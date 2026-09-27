@@ -33,6 +33,7 @@ from .models import (
     TradeSignal,
 )
 from .risk_engine import RiskEngine, long_exposure
+from .sleeves import TIME_STOP, Ownership, SleeveBook
 from .storage import Storage
 
 logger = structlog.get_logger()
@@ -77,6 +78,7 @@ class PipelineResult:
         auto_exit: bool = False,
         exit_reason: str | None = None,
         skip_reason: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         self.symbol = symbol
         self.signal = signal
@@ -95,6 +97,9 @@ class PipelineResult:
         # Set when the cycle deliberately asked no LLM question (§7.56: the latest
         # closed bar was already decided on). Marking and exit checks still ran.
         self.skip_reason = skip_reason
+        # Strategy sleeve the result belongs to (§7.71): the deciding sleeve for an
+        # entry/HOLD, the *owning* sleeve for a close. ``None`` without sleeves.
+        self.strategy = strategy
 
     @property
     def executed(self) -> bool:
@@ -126,6 +131,8 @@ class DecisionPipeline:
         storage: Storage | None = None,
         decision_history_limit: int = 10,
         decide_on_new_bar_only: bool = False,
+        strategy: str | None = None,
+        sleeve_book: SleeveBook | None = None,
     ) -> None:
         self.provider = provider
         self.llm_client = llm_client
@@ -139,6 +146,11 @@ class DecisionPipeline:
         # every cycle still marks positions and enforces exit levels.
         self.decide_on_new_bar_only = decide_on_new_bar_only
         self._last_decision_at: dict[str, datetime] = {}
+        # §7.71: this pipeline is one strategy sleeve. Decisions are tagged with it,
+        # prompt history and bar timing read only its own rows, and the shared
+        # SleeveBook enforces the symbol lock + the owning sleeve's time stop.
+        self.strategy = strategy
+        self._sleeve_book = sleeve_book
 
     @property
     def decision_history_limit(self) -> int:
@@ -198,7 +210,9 @@ class DecisionPipeline:
             return []
 
         try:
-            rows = await self._storage.get_recent_decisions(symbol, limit=count)
+            rows = await self._storage.get_recent_decisions(
+                symbol, limit=count, **self._strategy_filter()
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to fetch decision history", symbol=symbol, error=str(exc))
             return []
@@ -263,9 +277,36 @@ class DecisionPipeline:
         # bypassing the risk gate: exits only reduce exposure, and a gate (cooldown,
         # daily-loss block) must never strand us in a losing position. The cycle
         # ends with this close — no new entry on the same symbol.
+        ownership, ownership_error = await self._sleeve_ownership(symbol)
         auto_exit = await self._check_exit_levels(symbol, snapshot)
         if auto_exit is not None:
+            auto_exit.strategy = ownership.strategy if ownership is not None else None
             return auto_exit
+
+        # Step 1c' — Strategy sleeves (§7.71): the owning sleeve's time stop fires
+        # like an exit level (no LLM, no gate); a symbol another sleeve holds is
+        # locked for this one — no LLM question it could not act on.
+        if ownership_error is not None:
+            return PipelineResult(
+                symbol=symbol, snapshot=snapshot, error=ownership_error, strategy=self.strategy
+            )
+        if ownership is not None:
+            time_exit = await self._check_time_stop(symbol, snapshot, ownership)
+            if time_exit is not None:
+                return time_exit
+            if ownership.strategy != self.strategy:
+                logger.info(
+                    "symbol held by another sleeve; LLM not asked",
+                    symbol=symbol,
+                    strategy=self.strategy,
+                    owner=ownership.strategy,
+                )
+                return PipelineResult(
+                    symbol=symbol,
+                    snapshot=snapshot,
+                    skip_reason=f"held by sleeve {ownership.strategy} (symbol lock)",
+                    strategy=self.strategy,
+                )
 
         # Step 1d — Bar timing (§7.56). The venue's last bar is usually still forming:
         # indicators use closed bars only; the forming bar keeps supplying the live
@@ -275,7 +316,9 @@ class DecisionPipeline:
             waiting = await self._awaiting_new_bar(symbol, timeframe, closed)
             if waiting is not None:
                 logger.info("no new closed bar since last decision; LLM not asked", symbol=symbol)
-                return PipelineResult(symbol=symbol, snapshot=snapshot, skip_reason=waiting)
+                return PipelineResult(
+                    symbol=symbol, snapshot=snapshot, skip_reason=waiting, strategy=self.strategy
+                )
 
         # Step 2 — Compute indicators (closed bars only)
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.COMPUTE_INDICATORS)
@@ -284,7 +327,10 @@ class DecisionPipeline:
         except Exception as exc:  # noqa: BLE001
             step_logger.error("indicator computation failed", error=str(exc))
             return PipelineResult(
-                symbol=symbol, snapshot=snapshot, error=f"Indicator computation failed: {exc}"
+                symbol=symbol,
+                snapshot=snapshot,
+                error=f"Indicator computation failed: {exc}",
+                strategy=self.strategy,
             )
 
         # Step 3 — Build prompt: the agent's own book for this symbol (§7.45) and its
@@ -296,11 +342,16 @@ class DecisionPipeline:
         except Exception as exc:  # noqa: BLE001
             step_logger.error("portfolio read failed", error=str(exc))
             return PipelineResult(
-                symbol=symbol, snapshot=snapshot, error=f"Portfolio read failed: {exc}"
+                symbol=symbol,
+                snapshot=snapshot,
+                error=f"Portfolio read failed: {exc}",
+                strategy=self.strategy,
             )
         prior_decisions = await self.get_recent_decisions(symbol)
         user_prompt = build_user_prompt(
-            snapshot, prior_decisions, book=self._book_context(symbol, portfolio)
+            snapshot,
+            prior_decisions,
+            book=self._book_context(symbol, portfolio, ownership, snapshot.fetched_at),
         )
 
         # Step 4 — Call LLM
@@ -354,6 +405,7 @@ class DecisionPipeline:
                 risk_result=risk_result,
                 snapshot=snapshot,
                 decision_id=decision_id,
+                strategy=self.strategy,
             )
 
         # Step 6 — Execute (only for BUY/SELL)
@@ -365,6 +417,7 @@ class DecisionPipeline:
                 risk_result=risk_result,
                 snapshot=snapshot,
                 decision_id=decision_id,
+                strategy=self.strategy,
             )
 
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.EXECUTE)
@@ -383,6 +436,7 @@ class DecisionPipeline:
                     snapshot=snapshot,
                     decision_id=decision_id,
                     error="Refused order without price (no usable market data)",
+                    strategy=self.strategy,
                 )
             order_result = await self.executor.place_order(
                 symbol=symbol,
@@ -417,6 +471,7 @@ class DecisionPipeline:
                 order_result=order_result,
                 snapshot=snapshot,
                 decision_id=decision_id,
+                strategy=self.strategy,
             )
         except Exception as exc:  # noqa: BLE001
             step_logger.error("execution failed", error=str(exc))
@@ -427,6 +482,7 @@ class DecisionPipeline:
                 snapshot=snapshot,
                 error=f"Execution failed: {exc}",
                 decision_id=decision_id,
+                strategy=self.strategy,
             )
 
     async def _check_exit_levels(
@@ -479,7 +535,52 @@ class DecisionPipeline:
             take_profit=position.take_profit,
             quantity=position.quantity,
         )
+        return await self._close_for_exit(symbol, snapshot, position, mark, reason)
 
+    async def _check_time_stop(
+        self, symbol: str, snapshot: MarketSnapshot, ownership: Ownership
+    ) -> PipelineResult | None:
+        """Close a position its owning sleeve has held past its limit (§7.71).
+
+        The time stop is what makes a short-term sleeve actually short-term. Same
+        rules as §7.9 exit levels: deterministic, no LLM, no risk gate (a close only
+        reduces exposure). Fail-soft: an unreadable book skips the check this cycle.
+        """
+        book = self._sleeve_book
+        if book is None or not book.time_stop_due(ownership, snapshot.fetched_at):
+            return None
+        mark = snapshot.candles[-1].close if snapshot.candles else 0.0
+        if mark <= 0:
+            return None
+        try:
+            positions = await self.executor.get_positions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("time-stop check skipped (positions unreadable)", error=str(exc))
+            return None
+        position = next((p for p in positions if p.symbol == symbol and p.quantity > 0), None)
+        if position is None:
+            return None
+        logger.warning(
+            "time stop reached",
+            symbol=symbol,
+            strategy=ownership.strategy,
+            opened_at=ownership.opened_at.isoformat() if ownership.opened_at else None,
+            max_holding_hours=book.spec(ownership.strategy).max_holding_hours,
+            quantity=position.quantity,
+        )
+        result = await self._close_for_exit(symbol, snapshot, position, mark, TIME_STOP)
+        result.strategy = ownership.strategy
+        return result
+
+    async def _close_for_exit(
+        self,
+        symbol: str,
+        snapshot: MarketSnapshot,
+        position: Position,
+        mark: float,
+        reason: str,
+    ) -> PipelineResult:
+        """Deterministically close ``position`` at ``mark`` — no LLM, no gate."""
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.ENFORCE_EXIT_LEVELS)
         try:
             order_result = await self.executor.place_order(
@@ -504,7 +605,7 @@ class DecisionPipeline:
             self.risk_engine.record_outcome(was_profitable=order_result.realized_pnl >= 0)
 
         step_logger.info(
-            "position closed on exit level",
+            "position closed on exit rule",
             exit_reason=reason,
             status=order_result.status,
             quantity=order_result.quantity,
@@ -517,6 +618,26 @@ class DecisionPipeline:
             auto_exit=True,
             exit_reason=reason,
         )
+
+    async def _sleeve_ownership(self, symbol: str) -> tuple[Ownership | None, str | None]:
+        """``(ownership, error)`` of ``symbol``'s open position in sleeve mode (§7.71).
+
+        Without sleeves both are ``None``. An unreadable book is an *error* for the
+        rest of the cycle: entries must not be decided when the symbol lock cannot
+        be verified (exit levels still run — they read the book on their own).
+        """
+        if self._sleeve_book is None:
+            return None, None
+        try:
+            positions = await self.executor.get_positions()
+            return await self._sleeve_book.ownership(self.executor, positions, symbol), None
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sleeve ownership read failed", symbol=symbol, error=str(exc))
+            return None, f"Sleeve ownership read failed: {exc}"
+
+    def _strategy_filter(self) -> dict[str, str]:
+        """Storage kwargs narrowing reads to this sleeve's rows (empty without sleeves)."""
+        return {"strategy": self.strategy} if self.strategy is not None else {}
 
     async def _persist_decision(
         self,
@@ -549,6 +670,7 @@ class DecisionPipeline:
                 llm_latency_ms=llm_metrics.latency_ms if llm_metrics else None,
                 llm_prompt_tokens=llm_metrics.prompt_tokens if llm_metrics else None,
                 llm_completion_tokens=llm_metrics.completion_tokens if llm_metrics else None,
+                **self._strategy_filter(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to persist decision", symbol=signal.symbol, error=str(exc))
@@ -606,7 +728,9 @@ class DecisionPipeline:
         last = self._last_decision_at.get(symbol)
         if last is None and self._storage is not None:
             try:
-                rows = await self._storage.get_recent_decisions(symbol, limit=1)
+                rows = await self._storage.get_recent_decisions(
+                    symbol, limit=1, **self._strategy_filter()
+                )
             except Exception as exc:  # noqa: BLE001 - unknown history → just ask
                 logger.warning("last-decision lookup failed", symbol=symbol, error=str(exc))
                 rows = []
@@ -618,8 +742,14 @@ class DecisionPipeline:
             return f"awaiting new {timeframe} bar (last decision {last:%Y-%m-%d %H:%M} UTC)"
         return None
 
-    def _book_context(self, symbol: str, portfolio: PortfolioState) -> BookContext:
-        """This symbol's slice of the book for the prompt (§7.45)."""
+    def _book_context(
+        self,
+        symbol: str,
+        portfolio: PortfolioState,
+        ownership: Ownership | None = None,
+        now: datetime | None = None,
+    ) -> BookContext:
+        """This symbol's slice of the book for the prompt (§7.45; sleeve line §7.71)."""
         position = next(
             (
                 p
@@ -633,6 +763,17 @@ class DecisionPipeline:
             cash=portfolio.cash,
             total_value=portfolio.total_value,
             max_position_pct=self.risk_engine.settings.max_position_pct,
+            strategy=self.strategy,
+            max_holding_hours=(
+                self._sleeve_book.spec(self.strategy).max_holding_hours
+                if self._sleeve_book is not None
+                else None
+            ),
+            held_hours=(
+                self._sleeve_book.held_hours(ownership, now)
+                if self._sleeve_book is not None and ownership is not None and now is not None
+                else None
+            ),
         )
 
     def _mark_positions(self, symbol: str, snapshot: MarketSnapshot) -> None:

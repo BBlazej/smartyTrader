@@ -167,6 +167,11 @@ class BookContext(BaseModel):
     cash: float
     total_value: float
     max_position_pct: float | None = None
+    # Strategy sleeve deciding (§7.71) and its holding limit; ``held_hours`` is how
+    # long this symbol's position has been open (``None`` when flat/unknown).
+    strategy: str | None = None
+    max_holding_hours: float | None = None
+    held_hours: float | None = None
 
 
 # ── Order Result ──────────────────────────────────────────────

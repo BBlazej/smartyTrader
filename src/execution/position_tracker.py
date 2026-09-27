@@ -81,6 +81,15 @@ class PositionTracker:
         """Symbols with an open long ledger (§7.41 spot position view)."""
         return [s for s, lots in self._lots.items() if lots]
 
+    def entry_decision_ids(self, symbol: str) -> list[int | None]:
+        """Entry decision of each open long lot in ``symbol``, oldest first (§7.71).
+
+        Position ownership for strategy sleeves derives from these: the sleeve that
+        made the entry decisions owns the position. ``None`` marks a lot with no
+        known decision (synthetic restart lots, manual fills).
+        """
+        return [lot.decision_id for lot in self._lots.get(symbol, [])]
+
     def average_price(self, symbol: str) -> float | None:
         """Quantity-weighted cost of the open long lots (``None`` when flat)."""
         lots = self._lots.get(symbol, [])

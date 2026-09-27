@@ -103,6 +103,7 @@ src/
 │   ├── costs.py              # CostModel — per-venue commission/FX schedule (paper fills, sizing, replay) (§7.65)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
 │   ├── watchlist.py          # WatchlistManager: capped/TTL dynamic symbols over the screener; held/core never dropped (§7.70)
+│   ├── sleeves.py            # Strategy sleeves: SleeveBook (ownership from FIFO lots' entry decisions), symbol lock, time stops, SleeveRun (§7.71)
 │   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
 │   │                         # models/engine/snapshots/decisions/orders/control/pruning/watchlist mixins,
 │   │                         # Storage facade composed in storage.py, re-exported from __init__
@@ -206,6 +207,7 @@ Notes:
 - **Persistence after a fill is fail-soft and lossless** (§7.44): the agent contains post-processing per symbol, retries order-row writes (audit log line + alert as last resort), and confirms reconciled venue transitions to the executor only after they are stored — so a locked/full DB never aborts a cycle, skips the heartbeat or loses a fill.
 - **Closes are side-aware** (§7.48): close-all and exit enforcement send `closing_side(position)` — SELL for a long, a covering BUY for a short — and `exit_level_breach` mirrors the levels for shorts; every position in the symbol is checked (venues can hold a hedged pair).
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
+- **Strategy sleeves** (§7.71, opt-in): the agent runs one `DecisionPipeline` per sleeve (own timeframe, playbook system prompt, `strategy` tag) per symbol, in config order. Right after marking, the pipeline resolves the symbol's owner via `SleeveBook` (open FIFO lots → entry decisions → `llm_decisions.strategy`; unknown → first sleeve). Exit levels still run first and tag the close with the owner; then the owner's **time stop** (`holding.max_hours/max_days`, clock = the oldest lot's decision time) closes like an exit level; a symbol owned by another sleeve ends the run with `skip_reason` (symbol lock — no LLM call). Bar timing and prompt history filter on the sleeve's own rows; the YOUR BOOK section adds the sleeve and its time stop.
 - Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
 
 ## Key models (`src/core/models.py`)
@@ -319,6 +321,7 @@ stateDiagram-v2
 
 - **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
 - Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53) and `watchlist_entries` (agent-scoped dynamic symbols added by the screener: symbol, source, added_at, expires_at TTL, ranking meta_json; self-expiring, §7.70).
+- **Strategy tag (§7.71):** `llm_decisions.strategy` and `orders.strategy` (nullable, migrated at startup; NULL = no sleeves / legacy) name the sleeve that decided / placed the order (a close is tagged with the *owning* sleeve). Ownership itself is not stored — it is derived from the executor ledger's open lots and these decision rows, so it is exactly as restart-safe as the ledger.
 - **Agent scoping (§7.39):** both agents share the file, so `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
 
@@ -590,6 +593,11 @@ crypto_agent:
     max_daily_volatility: 0.25
     max_candidates: 20         # candle fetches per refresh (best liquidity first)
     exclude_symbols: []
+  sleeves:                     # §7.71 — opt-in strategy sleeves (CHANGE.md P1)
+    enabled: false             # off ⇒ one implicit style on `timeframe`
+    strategies:                # config order = priority on a same-cycle tie
+      crypto_swing:   {timeframe: "1h", playbook: swing,    holding: {max_hours: 72}}
+      crypto_position: {timeframe: "4h", playbook: position, holding: {max_days: 28}}
 
 stocks_agent:
   enabled: false

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from ..analysis.candles import timeframe_delta
 
 #: Environment acknowledgement required, together with an explicit config flag,
 #: before any executor may touch a REAL-money account (§7.41): a keyed exchange run
@@ -129,6 +132,9 @@ class AgentConfig:
         # §7.70: screener-driven dynamic watchlist (CHANGE.md §4.4, crypto first).
         # Off by default — with no block the traded set stays exactly the YAML list.
         watchlist: dict[str, Any] | None = None,
+        # §7.71: strategy sleeves (CHANGE.md P1) — several trading styles side by side
+        # in this agent's process. Off by default: one implicit style, as before.
+        sleeves: dict[str, Any] | None = None,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -153,6 +159,7 @@ class AgentConfig:
         self.live_trading = bool(live_trading)
         self.quote_currency = quote_currency.upper() if quote_currency else None
         self.watchlist = WatchlistSettings(**(watchlist or {}))
+        self.sleeves = SleevesSettings(**(sleeves or {}))
         if self.quote_currency:
             mismatched = [
                 pair for pair in self.pairs if pair.split("/")[-1].upper() != self.quote_currency
@@ -232,6 +239,121 @@ class WatchlistSettings:
         )
         self.max_candidates = int(max_candidates)
         self.exclude_symbols = [s.upper() for s in (exclude_symbols or [])]
+
+
+#: Prompt playbooks a sleeve may use (§7.71) — texts live in
+#: :data:`src.analysis.prompt_builder.PLAYBOOKS` (pinned equal by a test).
+SLEEVE_PLAYBOOKS: tuple[str, ...] = ("swing", "position")
+
+#: Sleeve names become the ``strategy`` column (String(20)) on decisions/orders.
+_SLEEVE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
+
+
+class SleeveSpec:
+    """One strategy sleeve (§7.71, CHANGE.md §4.1): a named trading style.
+
+    A sleeve is a configuration of the decision pipeline — its own candle
+    ``timeframe``, prompt ``playbook``, holding limit (time stop), per-sleeve risk
+    limits and a fixed capital ``weight`` — not a new process.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        timeframe: str,
+        playbook: str = "swing",
+        # Time stop (deterministic exit next to SL/TP): close a position this sleeve
+        # opened once it has been held longer than this. Omit for no time stop.
+        holding: dict[str, float] | None = None,
+        # Fixed share of agent equity allocated to this sleeve (allocator comes later).
+        weight: float | None = None,
+        # Per-sleeve risk limits: any RiskSettings field except enforce_exit_levels,
+        # layered over the agent-level ``risk:`` block (CHANGE.md §4.8).
+        risk: dict[str, Any] | None = None,
+    ) -> None:
+        if not isinstance(name, str) or not _SLEEVE_NAME_RE.match(name):
+            raise ValueError(
+                f"sleeve name {name!r} must be lowercase letters/digits/underscores, "
+                "starting with a letter, at most 20 characters"
+            )
+        if not isinstance(timeframe, str) or timeframe_delta(timeframe) is None:
+            raise ValueError(f"sleeves.{name}.timeframe {timeframe!r} is not a candle timeframe")
+        if playbook not in SLEEVE_PLAYBOOKS:
+            raise ValueError(
+                f"sleeves.{name}.playbook must be one of {', '.join(SLEEVE_PLAYBOOKS)}"
+            )
+        holding = dict(holding or {})
+        unknown = set(holding) - {"max_hours", "max_days"}
+        if unknown:
+            raise ValueError(f"sleeves.{name}.holding: unknown keys {sorted(unknown)}")
+        if len(holding) > 1:
+            raise ValueError(f"sleeves.{name}.holding: give max_hours OR max_days, not both")
+        max_hours: float | None = None
+        if "max_hours" in holding:
+            max_hours = float(holding["max_hours"])
+        elif "max_days" in holding:
+            max_hours = float(holding["max_days"]) * 24.0
+        if max_hours is not None and max_hours <= 0:
+            raise ValueError(f"sleeves.{name}.holding must be > 0")
+        if weight is not None and not 0.0 < float(weight) <= 1.0:
+            raise ValueError(f"sleeves.{name}.weight must be in (0, 1]")
+        risk = dict(risk or {})
+        allowed = set(RiskSettings().__dict__) - {"enforce_exit_levels"}
+        bad = set(risk) - allowed
+        if bad:
+            raise ValueError(
+                f"sleeves.{name}.risk: unknown or non-overridable fields {sorted(bad)}"
+            )
+        self.name = name
+        self.timeframe = timeframe
+        self.playbook = playbook
+        self.max_holding_hours = max_hours
+        self.weight = float(weight) if weight is not None else None
+        self.risk_overrides: dict[str, Any] = risk
+
+
+class SleevesSettings:
+    """Strategy sleeves for one agent (§7.71). Opt-in: ``enabled: false`` ships.
+
+    With it off the agent runs exactly one implicit style on ``<agent>.timeframe``.
+    When on, every sleeve decides on its own timeframe with its own playbook; a
+    symbol is held by at most one sleeve at a time (symbol lock), and sleeves are
+    evaluated in config order — the first listed wins a same-cycle tie.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        # Loose agent-wide breaker (CHANGE.md §4.8): agent equity this far below its
+        # peak blocks new entries in every sleeve, whatever the sleeves' own limits.
+        backstop_max_drawdown_pct: float = 0.20,
+        strategies: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        if not 0.0 < float(backstop_max_drawdown_pct) < 1.0:
+            raise ValueError("sleeves.backstop_max_drawdown_pct must be in (0, 1)")
+        specs: list[SleeveSpec] = []
+        for name, body in (strategies or {}).items():
+            if not isinstance(body, dict):
+                raise ValueError(f"sleeves.strategies.{name} must be a mapping")  # noqa: TRY004
+            specs.append(SleeveSpec(name=name, **body))
+        if enabled and not specs:
+            raise ValueError("sleeves.enabled needs at least one entry under sleeves.strategies")
+        weights = [s.weight for s in specs]
+        if specs and any(w is not None for w in weights):
+            if any(w is None for w in weights):
+                raise ValueError("sleeves: give every sleeve a weight, or none (equal split)")
+            if sum(w for w in weights if w is not None) > 1.0 + 1e-9:
+                raise ValueError("sleeves: weights must sum to at most 1.0")
+        for spec in specs:
+            if spec.weight is None:
+                spec.weight = 1.0 / len(specs)
+        self.enabled = bool(enabled)
+        self.backstop_max_drawdown_pct = float(backstop_max_drawdown_pct)
+        self.strategies: list[SleeveSpec] = specs
+
+    def get(self, name: str | None) -> SleeveSpec | None:
+        """The sleeve called ``name`` (``None`` when unknown)."""
+        return next((s for s in self.strategies if s.name == name), None)
 
 
 class RiskSettings:

@@ -24,6 +24,7 @@ class OrderMixin:
         filled_at: datetime | None = None,
         agent: str | None = None,
         realized_pnl: float | None = None,
+        strategy: str | None = None,
     ) -> int:
         async with await self._session() as session:
             row = OrderRow(
@@ -38,6 +39,7 @@ class OrderMixin:
                 agent=self._agent_scope(agent),
                 realized_pnl=realized_pnl,
                 venue=self._venue,
+                strategy=strategy,
             )
             session.add(row)
             await session.commit()
@@ -93,18 +95,21 @@ class OrderMixin:
             return list(result.scalars().all())
 
     async def get_recent_closing_fills(
-        self, limit: int = 50, agent: str | None = None
+        self, limit: int = 50, agent: str | None = None, strategy: str | None = None
     ) -> list[OrderRow]:
         """Newest-first filled orders that realized PnL — one row per closing fill (§7.46).
 
         The live loss-streak tracker counts exactly these, so restart rehydration
         reads them instead of decision rows (an LLM round trip stamps PnL on both
         the SELL and the entry decision, which double-counted every loss).
+        ``strategy`` narrows to one sleeve's closes (§7.71 per-sleeve streaks).
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(
                 OrderRow.status == "filled", OrderRow.realized_pnl.isnot(None)
             )
+            if strategy is not None:
+                stmt = stmt.where(OrderRow.strategy == strategy)
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)

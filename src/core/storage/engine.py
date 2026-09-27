@@ -139,6 +139,13 @@ class StorageBase:
                         conn.execute(
                             text(f"ALTER TABLE llm_decisions ADD COLUMN {column} {sql_type}")
                         )
+        # strategy column (§7.71): sleeve tag on decisions/orders; legacy rows stay NULL.
+        for table in ("llm_decisions", "orders"):
+            if not inspector.has_table(table):
+                continue
+            if "strategy" not in {c["name"] for c in inspector.get_columns(table)}:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN strategy VARCHAR(20) NULL"))
         # agent column (§7.39): added to the per-agent tables and backfilled — see
         # :meth:`_backfill_agent_column` for the attribution rules.
         for table in _AGENT_SCOPED_TABLES:

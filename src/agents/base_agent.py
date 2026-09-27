@@ -22,6 +22,7 @@ import structlog
 from ..core.decision_pipeline import DecisionPipeline, PipelineResult
 from ..core.llm_client import LLMClient
 from ..core.risk_engine import RiskEngine
+from ..core.sleeves import SleeveBook, SleeveRun
 from ..core.storage import AgentControlRow, Storage
 from ..monitoring.alerts import AlertManager
 
@@ -76,6 +77,10 @@ class BaseTradingAgent:
         self._applied_overrides_raw: str | None = None
         # §7.44: back-off between order-row write attempts (tests set zeros).
         self._persist_retry_delays: tuple[float, ...] = (0.2, 1.0)
+        # §7.71: strategy sleeves — one pipeline per sleeve over the same symbols.
+        # Empty = the single implicit style (``pipeline`` on ``timeframe``).
+        self._sleeve_runs: list[SleeveRun] = []
+        self._sleeve_book: SleeveBook | None = None
 
     def set_symbols(self, symbols: list[str]) -> None:
         """Replace the traded symbol list (safe config override, §7.15)."""
@@ -84,6 +89,25 @@ class BaseTradingAgent:
                 "symbol list updated by config override", old=self._symbols, new=symbols
             )
             self._symbols = symbols
+
+    def set_sleeves(self, runs: list[SleeveRun], book: SleeveBook) -> None:
+        """Run these strategy sleeves instead of the single implicit style (§7.71).
+
+        Each cycle evaluates every symbol once per sleeve, in config order — the first
+        sleeve wins a same-cycle tie on a flat symbol (symbol lock).
+        """
+        self._sleeve_runs = list(runs)
+        self._sleeve_book = book
+        self._logger.info(
+            "strategy sleeves active",
+            sleeves=[f"{run.name}@{run.timeframe}" for run in self._sleeve_runs],
+        )
+
+    def _runs(self) -> list[tuple[str | None, DecisionPipeline, str]]:
+        """``(sleeve, pipeline, timeframe)`` for every decision loop of a cycle."""
+        if self._sleeve_runs:
+            return [(run.name, run.pipeline, run.timeframe) for run in self._sleeve_runs]
+        return [(None, self._pipeline, self._timeframe)]
 
     def set_control_overrides_applier(self, applier: Callable[[str | None], None] | None) -> None:
         """Install a hook applying stored safe-config overrides (raw JSON, ``None`` when
@@ -162,26 +186,30 @@ class BaseTradingAgent:
         results: list[PipelineResult] = []
         cycle_error: str | None = None
         for symbol in self._symbols:
-            try:
-                result = await self._pipeline.run(symbol=symbol, timeframe=self._timeframe)
-            except Exception as exc:  # noqa: BLE001
-                self._logger.error("pipeline run failed", symbol=symbol, error=str(exc))
-                cycle_error = f"{symbol}: {exc}"
-                continue
-            if result.error is not None:
-                cycle_error = f"{symbol}: {result.error}"
-            elif result.signal is not None and result.signal.is_fallback:
-                # An LLM outage is not a quiet HOLD (§7.51): surface it on the
-                # dashboard heartbeat and as an alert instead of reading "healthy".
-                cycle_error = (
-                    f"{symbol}: LLM unavailable — fallback HOLD ({result.signal.reasoning})"
-                )
-            try:
-                await self._post_process(symbol, result)
-            except Exception as exc:  # noqa: BLE001 - last line of defense (§7.44)
-                self._logger.error("post-processing failed", symbol=symbol, error=str(exc))
-                cycle_error = f"{symbol}: post-processing failed: {exc}"
-            results.append(result)
+            for sleeve, pipeline, timeframe in self._runs():
+                label = f"{symbol} [{sleeve}]" if sleeve else symbol
+                try:
+                    result = await pipeline.run(symbol=symbol, timeframe=timeframe)
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.error(
+                        "pipeline run failed", symbol=symbol, strategy=sleeve, error=str(exc)
+                    )
+                    cycle_error = f"{label}: {exc}"
+                    continue
+                if result.error is not None:
+                    cycle_error = f"{label}: {result.error}"
+                elif result.signal is not None and result.signal.is_fallback:
+                    # An LLM outage is not a quiet HOLD (§7.51): surface it on the
+                    # dashboard heartbeat and as an alert instead of reading "healthy".
+                    cycle_error = (
+                        f"{label}: LLM unavailable — fallback HOLD ({result.signal.reasoning})"
+                    )
+                try:
+                    await self._post_process(symbol, result)
+                except Exception as exc:  # noqa: BLE001 - last line of defense (§7.44)
+                    self._logger.error("post-processing failed", symbol=symbol, error=str(exc))
+                    cycle_error = f"{label}: post-processing failed: {exc}"
+                results.append(result)
         self._logger.info("cycle end", executed=sum(1 for r in results if r.executed))
         await self._record_health(cycle_error)
         return results
@@ -241,6 +269,13 @@ class BaseTradingAgent:
 
     async def _close_all_positions(self) -> None:
         """Close every open position through the pipeline — no LLM, no risk gate."""
+        owners: dict[str, str] = {}
+        if self._sleeve_book is not None:
+            # Ownership derives from the open lots, so it must be read *before* closing.
+            try:
+                owners = await self._sleeve_book.owners(self._pipeline.executor)
+            except Exception as exc:  # noqa: BLE001 - untagged closes beat no closes
+                self._logger.warning("close-all: sleeve ownership unreadable", error=str(exc))
         try:
             closed = await self._pipeline.close_all_positions()
         except Exception as exc:  # noqa: BLE001
@@ -252,6 +287,7 @@ class BaseTradingAgent:
                 symbol=symbol,
                 order_result=order,
                 exit_reason="close_all",
+                strategy=owners.get(symbol),
             )
             await self._post_process(symbol, result)
         self._logger.info("close-all executed", closed=len(closed))
@@ -458,6 +494,8 @@ class BaseTradingAgent:
             # One outcome per closing fill — the loss-streak rehydration source (§7.46).
             "realized_pnl": order.realized_pnl if order.status == "filled" else None,
         }
+        if result.strategy is not None:
+            row["strategy"] = result.strategy  # §7.71 sleeve tag
         last_error: Exception | None = None
         for attempt, delay in enumerate((0.0, *self._persist_retry_delays), start=1):
             if delay:

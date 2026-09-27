@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 896 tests, no network needed (live smokes are opt-in:
+pytest                      # 932 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -100,6 +100,7 @@ src/
 │   ├── control_api.py        # Agent-side FastAPI control API (pause/resume/close-all/config) (§7.15)
 │   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
 │   ├── watchlist.py          # Capped TTL watchlist manager over the screener (§7.70)
+│   ├── sleeves.py            # Strategy sleeves: ledger-derived ownership, symbol lock, time stops (§7.71)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
@@ -152,7 +153,7 @@ thresholds. Key sections:
 | Section | What it controls |
 |---|---|
 | `llm` | LM Studio endpoint, model, `timeout_seconds` (whole non-streamed completion; 300), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap, 8192 — *not* the context window, which is set in LM Studio), `max_response_chars` (size guard, keep ≈ 4 × `max_tokens`) |
-| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped) |
+| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped), `sleeves` (§7.71: opt-in strategy sleeves — per-sleeve `timeframe`, `playbook` (`swing`/`position`) and `holding` time stop over the same pairs; a symbol is held by one sleeve at a time) |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
@@ -246,7 +247,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and an XTB de
 execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
 its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
 (PLAN §7.66). Paper stays the default everywhere.
-**896 tests passing at ~94% coverage.**
+**932 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

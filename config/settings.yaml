@@ -56,6 +56,24 @@ crypto_agent:
     max_daily_volatility: 0.25    # above this it is a blow-up risk — skip
     max_candidates: 20            # candle fetches per refresh (best liquidity first)
     exclude_symbols: []           # never add these, e.g. ["USDC/EUR", "WBTC/EUR"]
+  # Strategy sleeves (§7.71, CHANGE.md P1). Off by default — with it off the agent
+  # runs one implicit style on `timeframe` above. When on, each sleeve decides on
+  # its own candle timeframe with its own prompt playbook over the same pairs;
+  # decisions/orders are tagged with the sleeve (`strategy` column). A symbol is
+  # held by at most one sleeve (symbol lock — the first listed wins a tie), and a
+  # position older than its sleeve's holding limit is closed deterministically
+  # (time stop — no LLM, no risk gate, like SL/TP).
+  sleeves:
+    enabled: false
+    strategies:
+      crypto_swing:               # holds of hours to ~3 days
+        timeframe: "1h"
+        playbook: swing           # momentum/mean-reversion, tight SL/TP
+        holding: {max_hours: 72}
+      crypto_position:            # holds of days to weeks (CHANGE.md Q3)
+        timeframe: "4h"
+        playbook: position        # trend-following, wider stops, few trades
+        holding: {max_days: 28}
 
 stocks_agent:
   enabled: false

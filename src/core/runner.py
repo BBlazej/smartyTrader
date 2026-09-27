@@ -34,6 +34,7 @@ import structlog
 logger = structlog.get_logger()
 
 from ..analysis.candles import timeframe_delta
+from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings
 from .control_config import parse_and_apply
@@ -42,6 +43,7 @@ from .llm_client import LLMClient
 from .rehydration import executor_venue, rehydrate_from_storage
 from .retention import prune_storage
 from .risk_engine import RiskEngine
+from .sleeves import SleeveBook, SleeveRun
 from .storage import Storage
 from .watchlist import WatchlistManager
 
@@ -242,6 +244,30 @@ async def run_agent(
     )
     agent = build_agent(pipeline, storage, risk_engine, llm_client)
 
+    # Strategy sleeves (§7.71, opt-in): one more pipeline per sleeve over the same
+    # provider/LLM/executor/storage — its own timeframe, playbook prompt and
+    # ``strategy`` tag; a shared SleeveBook enforces the symbol lock + time stops.
+    # Off → the agent runs ``pipeline`` alone, exactly as before.
+    sleeve_runs: list[SleeveRun] = []
+    sleeves_cfg = getattr(getattr(settings, f"{component}_agent", None), "sleeves", None)
+    if getattr(sleeves_cfg, "enabled", False) is True and hasattr(agent, "set_sleeves"):
+        sleeve_book = SleeveBook(sleeves_cfg, storage)
+        for spec in sleeves_cfg.strategies:
+            sleeve_pipeline = DecisionPipeline(
+                provider=provider,
+                llm_client=llm_client,
+                risk_engine=risk_engine,
+                executor=executor,
+                system_prompt=system_prompt_for(spec.playbook),
+                storage=storage,
+                decision_history_limit=decision_history_limit,
+                decide_on_new_bar_only=decide_on_new_bar_only,
+                strategy=spec.name,
+                sleeve_book=sleeve_book,
+            )
+            sleeve_runs.append(SleeveRun(spec.name, sleeve_pipeline, spec.timeframe))
+        agent.set_sleeves(sleeve_runs, sleeve_book)
+
     # Control plane (§7.15): the agent re-reads its ``agent_control`` row each cycle;
     # stored safe-config overrides land on *these* live objects via the closure below.
     # §7.50: an ``interval_minutes`` change also re-arms the live scheduler job —
@@ -259,6 +285,8 @@ async def run_agent(
 
     def _apply_overrides(raw: str | None) -> None:
         changed = parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
+        for run in sleeve_runs:  # §7.71: sleeves share the prompt-history depth
+            run.pipeline.decision_history_limit = pipeline.decision_history_limit
         if watchlist_extras and hasattr(agent, "set_symbols"):
             agent.set_symbols(list(dict.fromkeys(_core_symbols() + watchlist_extras)))
         if "interval_minutes" in changed and scheduler_manager is not None:
@@ -289,20 +317,23 @@ async def run_agent(
     if live_agent_settings is not None and getattr(live_agent_settings, "interval_minutes", None):
         effective_interval = int(live_agent_settings.interval_minutes)
 
-    bar = timeframe_delta(timeframe) if timeframe else None
-    if (
-        bar is not None
-        and not decide_on_new_bar_only
-        and effective_interval * 60 < bar.total_seconds()
-    ):
-        # §7.56: the LLM would re-judge the same closed bars many times per bar.
-        log.warning(
-            "cycle interval is shorter than the candle timeframe and "
-            "decide_on_new_bar_only is off — the LLM re-evaluates each bar repeatedly",
-            interval_minutes=effective_interval,
-            timeframe=timeframe,
-            asks_per_bar=round(bar.total_seconds() / (effective_interval * 60), 1),
-        )
+    # Each sleeve decides on its own timeframe (§7.71); without sleeves, the agent's.
+    decision_timeframes = [run.timeframe for run in sleeve_runs] or [timeframe]
+    for decision_timeframe in decision_timeframes:
+        bar = timeframe_delta(decision_timeframe) if decision_timeframe else None
+        if (
+            bar is not None
+            and not decide_on_new_bar_only
+            and effective_interval * 60 < bar.total_seconds()
+        ):
+            # §7.56: the LLM would re-judge the same closed bars many times per bar.
+            log.warning(
+                "cycle interval is shorter than the candle timeframe and "
+                "decide_on_new_bar_only is off — the LLM re-evaluates each bar repeatedly",
+                interval_minutes=effective_interval,
+                timeframe=decision_timeframe,
+                asks_per_bar=round(bar.total_seconds() / (effective_interval * 60), 1),
+            )
 
     # Screener-driven dynamic watchlist (§7.70, opt-in): with it off nothing here
     # runs and the traded set stays exactly the YAML list (+ overrides). Core

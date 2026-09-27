@@ -72,6 +72,10 @@ class LLMDecisionRow(Base):
     # read that feeds an agent's own state (prompt history, loss-streak rehydration)
     # filters on it. NULL only for rows written by an unbound Storage (tests/tools).
     agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # Strategy sleeve that made the decision (§7.71). NULL = no sleeves (the single
+    # implicit style) or pre-§7.71 history. Sleeve prompt history and bar timing
+    # filter on it; position ownership (symbol lock, time stops) derives from it.
+    strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class OrderRow(Base):
@@ -97,6 +101,9 @@ class OrderRow(Base):
     # Execution venue (§7.61): ``paper`` / ``myokx-sandbox`` / ``xtb-demo`` … — each
     # executor replays only its own fills at restart. NULL = legacy/unknown.
     venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Sleeve the order was placed for (§7.71): the entry's sleeve, or the owning
+    # sleeve of the position a close reduced. NULL without sleeves.
+    strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class PortfolioSnapshotRow(Base):
