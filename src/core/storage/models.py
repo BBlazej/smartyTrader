@@ -132,6 +132,27 @@ class DrawdownResetRow(Base):
     reset_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
+class WatchlistEntryRow(Base):
+    """A dynamic watchlist symbol added by the screener (§7.70).
+
+    Core YAML symbols are *not* stored here — they always stay in the traded set.
+    Only manager-added entries carry a TTL (``expires_at``): when it passes, the
+    entry is deleted on the next refresh and its slot frees up for a new candidate.
+    ``meta_json`` records the ranking inputs (volume/momentum/volatility) at add
+    time for audit. Agent-scoped like the trade tables (§7.39 pattern).
+    """
+
+    __tablename__ = "watchlist_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(10), default="screener")
+    added_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    expires_at: Mapped[datetime] = mapped_column()
+    meta_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class AgentControlRow(Base):
     """Control-plane row per agent (§7.15): the DB stays the single source of truth.
 

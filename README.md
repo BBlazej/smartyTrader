@@ -46,7 +46,8 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 797 tests, no network needed
+pytest                      # 896 tests, no network needed (live smokes are opt-in:
+                            # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
@@ -76,10 +77,10 @@ the OKX demo (mode `myokx-sandbox`). Real money needs `crypto_agent.testnet: fal
 `crypto_agent.live_trading: true` **and** env `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`
 (mode `<exchange>-LIVE`, §7.41); anything else stays on paper and logs why.
 The stocks runner
-executes on the `PaperExecutor` by default; real **XTB demo** execution is opt-in
-(§7.16): set `xtb_execution.enabled: true` **and** `XTB_ACCOUNT_ID` +
-`XTB_ACCOUNT_PASSWORD` (the xAPI verification code from xStation) and orders go
-over the WebSocket client to `wss://ws.xapi.pro/demo` — anything missing stays paper.
+executes on the `PaperExecutor` by default. The old **XTB demo** path (§7.16) is
+dead: XTB closed its API access on 2025-03-14, and `wss://ws.xapi.pro` (what our
+client targets) is an unofficial third-party relay — keep `xtb_execution.enabled:
+false`. A Saxo OpenAPI executor replaces it (PLAN §7.66).
 
 ## Project layout
 
@@ -98,6 +99,7 @@ src/
 │   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
 │   ├── control_api.py        # Agent-side FastAPI control API (pause/resume/close-all/config) (§7.15)
 │   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
+│   ├── watchlist.py          # Capped TTL watchlist manager over the screener (§7.70)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
@@ -106,14 +108,15 @@ src/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
 │   ├── ccxt_executor.py      # Keyed ccxt spot orders — OKX demo, live only with §7.41 ack
-│   ├── xtb_executor.py       # XTB demo orders via the injected xAPI client seam
-│   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth
+│   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
+│   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): unofficial ws.xapi.pro relay
 ├── agents/
 │   ├── base_agent.py         # Shared cycle loop, post-process, persistence, alerts (§7.13)
 │   ├── crypto_agent.py       # Thin subclass (24/7, no hours guard)
 │   └── stocks_agent.py       # Thin subclass + market-hours guard (weekend/holiday/wrap)
 ├── analysis/                 # Feature engineering + prompt building (§7.17)
 │   ├── indicators.py         # compute_indicators: RSI/MACD/Bollinger/ATR (pure, moved from core)
+│   ├── screener.py           # Deterministic universe screening: liquidity/vol/momentum (§7.70)
 │   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT (moved from core)
 ├── monitoring/
 │   ├── logger.py             # structlog setup
@@ -149,7 +152,7 @@ thresholds. Key sections:
 | Section | What it controls |
 |---|---|
 | `llm` | LM Studio endpoint, model, `timeout_seconds` (whole non-streamed completion; 300), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap, 8192 — *not* the context window, which is set in LM Studio), `max_response_chars` (size guard, keep ≈ 4 × `max_tokens`) |
-| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56) |
+| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped) |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
@@ -239,11 +242,11 @@ including re-arming the cycle interval — are stored only as diffs against
 Host-allowlist, cross-origin and CSRF-token guards (§7.43); `scripts/run_dashboard.py`,
 §7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
 and an on-demand backtester on one shared SQLite volume — rows are agent-scoped, so each agent
-keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and **real XTB demo
-execution** over the xAPI WebSocket client (`execution/xtb_client.py`: login auth with the
-xStation verification code, instant orders + fill-status polling, live position marks;
-opt-in via `xtb_execution.enabled` + env credentials — paper stays the default; §7.16).
-**797 tests passing at ~94% coverage.**
+keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and an XTB demo
+execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
+its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
+(PLAN §7.66). Paper stays the default everywhere.
+**896 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

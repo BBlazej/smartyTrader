@@ -43,6 +43,7 @@ from .rehydration import executor_venue, rehydrate_from_storage
 from .retention import prune_storage
 from .risk_engine import RiskEngine
 from .storage import Storage
+from .watchlist import WatchlistManager
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -246,9 +247,20 @@ async def run_agent(
     # §7.50: an ``interval_minutes`` change also re-arms the live scheduler job —
     # writing it into settings alone was a silent no-op before.
     scheduler_manager = None  # created below on the scheduled path; closure reads late
+    # §7.70: non-core symbols (dynamic + held) from the last watchlist refresh.
+    # ``parse_and_apply`` resets the agent to the core list on *any* override change;
+    # re-merging these keeps a held dynamic symbol under marking + exit enforcement.
+    watchlist_extras: list[str] = []
+
+    def _core_symbols() -> list[str]:
+        """The effective YAML (+ override) symbol list, read from the live settings."""
+        live = getattr(settings, f"{component}_agent", None)
+        return list(getattr(live, "pairs", None) or getattr(live, "symbols", None) or [])
 
     def _apply_overrides(raw: str | None) -> None:
         changed = parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
+        if watchlist_extras and hasattr(agent, "set_symbols"):
+            agent.set_symbols(list(dict.fromkeys(_core_symbols() + watchlist_extras)))
         if "interval_minutes" in changed and scheduler_manager is not None:
             live_settings = getattr(settings, f"{component}_agent", None)
             new_interval = getattr(live_settings, "interval_minutes", None)
@@ -292,6 +304,46 @@ async def run_agent(
             asks_per_bar=round(bar.total_seconds() / (effective_interval * 60), 1),
         )
 
+    # Screener-driven dynamic watchlist (§7.70, opt-in): with it off nothing here
+    # runs and the traded set stays exactly the YAML list (+ overrides). Core
+    # symbols are re-read from the *live* settings each pass so safe-config
+    # overrides flow through; positions are read fresh because a held symbol must
+    # never leave the traded set (its marking + exit-level enforcement lives there).
+    watchlist_refresh = None
+    watchlist_cfg = getattr(live_agent_settings, "watchlist", None)
+    if live_agent_settings is not None and getattr(watchlist_cfg, "enabled", False):
+        watchlist_manager = WatchlistManager(
+            provider=provider,
+            storage=storage,
+            config=watchlist_cfg,
+            component=component,
+            quote_currency=getattr(live_agent_settings, "quote_currency", None),
+        )
+
+        async def _refresh_watchlist() -> None:
+            try:
+                core = _core_symbols()
+                get_positions = getattr(executor, "get_positions", None)
+                if get_positions is None:
+                    raise RuntimeError(
+                        "executor has no get_positions — held symbols cannot be protected"
+                    )
+                held = [position.symbol for position in await get_positions()]
+                result = await watchlist_manager.refresh(core, held)
+                watchlist_extras[:] = [s for s in result.symbols if s not in core]
+                if result.symbols and hasattr(agent, "set_symbols"):
+                    agent.set_symbols(result.symbols)
+            except Exception as exc:  # noqa: BLE001 - never halts trading (fail-soft job)
+                log.warning(
+                    "watchlist refresh failed; keeping the current symbol list",
+                    error=str(exc),
+                )
+
+        watchlist_refresh = _refresh_watchlist
+        # Initial pass before the first cycle (--once and scheduled alike) so a
+        # fresh run already trades its capped dynamic symbols.
+        await _refresh_watchlist()
+
     if run_once:
         # Explicit single-cycle mode: one full cycle, then a clean shutdown.
         # A failing cycle propagates so the operator sees a non-zero exit code.
@@ -318,6 +370,13 @@ async def run_agent(
             lambda: prune_storage(storage, settings.storage),
             settings.storage.prune_interval_minutes,
             job_id="storage_prune",
+        )
+    if watchlist_refresh is not None:
+        # §7.70: re-run the screener on its own cadence (hours, not cycles).
+        manager.schedule_cycle(
+            watchlist_refresh,
+            watchlist_cfg.refresh_minutes,
+            job_id="watchlist_refresh",
         )
 
     # Control API (§7.15 P2): in-process FastAPI server when explicitly enabled.

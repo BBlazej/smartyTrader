@@ -1,6 +1,6 @@
 # CHANGE.md — Multi-strategy trading with a research layer (proposal)
 
-**Status:** proposal, under discussion — nothing here is implemented. Started 2026-09-26.
+**Status:** proposal, under discussion. Started 2026-09-26. **Landed so far (2026-09-26):** the §4.4 crypto screener + watchlist manager (P4's deterministic half, pulled forward per Q9) shipped as PLAN/HISTORY §7.70 — opt-in, capped, TTL'd, held symbols never dropped.
 **Decided so far (2026-09-26):** Q1 — venues: **OKX Europe** for crypto, **Saxo** for stocks
 (demo/SIM first, same APIs for real money later; §8); Q2 — **crypto first**; Q3 — "long-term"
 means **days to weeks** (position trading, not months-long investing); Q4 — risk limits move to
@@ -169,6 +169,8 @@ Runs weekly (config), only changes **budgets for new entries** — never force-c
 **Screener (deterministic, cheap — build first).** Over a venue whitelist (only symbols the
 executor can actually trade): liquidity floor (24 h volume / average daily value), volatility
 band, momentum rank, unusual-volume flags. Output: ranked candidates. No LLM involved.
+*(Crypto half implemented 2026-09-26 as PLAN §7.70 — `analysis/screener.py` +
+`core/watchlist.py`; the stocks screener waits for the Saxo venue, §7.66.)*
 
 **News & event ingest.** Stored as `news_items` (source, url, published_at, symbols, hash,
 raw text) with dedup and retention like other tables. Candidate sources (to be decided, Q6):

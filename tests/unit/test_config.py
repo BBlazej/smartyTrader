@@ -182,3 +182,40 @@ class TestXTBSymbolMap:
         from src.core.config import Settings
 
         assert Settings().xtb_execution.symbol_map == {}
+
+
+class TestWatchlistConfig:
+    """§7.70: the screener watchlist is opt-in and validated at startup."""
+
+    def test_shipped_default_is_disabled(self, config_path: str) -> None:
+        s = Settings(config_path=config_path)
+        assert s.crypto_agent.watchlist.enabled is False
+        # Stocks ships without a block at all — same safe default.
+        assert s.stocks_agent.watchlist.enabled is False
+
+    def test_block_parses_with_sane_defaults(self) -> None:
+        from src.core.config import AgentConfig
+
+        agent = AgentConfig(enabled=True, watchlist={"enabled": True})
+        assert agent.watchlist.enabled is True
+        assert agent.watchlist.max_dynamic_symbols >= 1
+        assert agent.watchlist.ttl_hours > 0
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"refresh_minutes": 0},
+            {"max_dynamic_symbols": 0},
+            {"ttl_hours": 0},
+            {"momentum_days": 0},
+            {"momentum_days": 14, "lookback_days": 15},  # cannot cover the window
+            {"min_daily_volatility": -0.1},
+            {"min_daily_volatility": 0.2, "max_daily_volatility": 0.1},
+            {"max_candidates": 0},
+        ],
+    )
+    def test_invalid_settings_fail_fast(self, bad: dict) -> None:
+        from src.core.config import AgentConfig
+
+        with pytest.raises(ValueError):
+            AgentConfig(enabled=True, watchlist=bad)

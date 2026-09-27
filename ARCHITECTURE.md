@@ -102,8 +102,9 @@ src/
 │   ├── llm_client.py         # LM Studio HTTP client (retry, think-tolerant JSON parse §7.57, HOLD fallback, llm_exchange audit log)
 │   ├── costs.py              # CostModel — per-venue commission/FX schedule (paper fills, sizing, replay) (§7.65)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
+│   ├── watchlist.py          # WatchlistManager: capped/TTL dynamic symbols over the screener; held/core never dropped (§7.70)
 │   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
-│   │                         # models/engine/snapshots/decisions/orders/control/pruning mixins,
+│   │                         # models/engine/snapshots/decisions/orders/control/pruning/watchlist mixins,
 │   │                         # Storage facade composed in storage.py, re-exported from __init__
 │   ├── decision_pipeline.py  # fetch → mark positions → exit-level check → indicators → prompt → LLM → risk gate → execute → persist
 │   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
@@ -115,7 +116,7 @@ src/
 │   ├── control_config.py     # SafeConfigOverrides whitelist; parse_and_apply onto live objects (§7.15 P2)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
-│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (fetch_snapshot + paginated fetch_history)
+│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (fetch_snapshot + paginated fetch_history + fetch_quote_volumes sweep, §7.70)
 │   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam) + fetch_history
 ├── execution/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
@@ -123,14 +124,15 @@ src/
 │   ├── ccxt_executor.py      # Keyed ccxt spot orders (OKX Europe) — demo/sandbox if the exchange has one, else ack-gated live (§7.41); spot-only ledger positions (§7.64);
 │   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28;
 │   │                         #  resolved statuses re-delivered until confirm_reconciled, §7.44)
-│   ├── xtb_executor.py       # XTB demo orders via the injected XTBClient seam
-│   └── xtb_client.py         # real xAPI WebSocket client (§7.16): ws.xapi.pro, login auth, instant orders, tick marks
+│   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
+│   └── xtb_client.py         # real xAPI WS client (§7.16) over the unofficial ws.xapi.pro relay; reference only
 ├── agents/
 │   ├── base_agent.py         # BaseTradingAgent: cycle loop, control-row handling, post-process, snapshots, alerts (§7.13)
 │   ├── crypto_agent.py       # thin subclass
 │   └── stocks_agent.py       # thin subclass + weekend/holiday/timezone-aware market-hours guard (§7.10)
 ├── analysis/                 # feature engineering + prompt building (§7.17, extracted from core)
 │   ├── indicators.py         # compute_indicators + RSI/MACD/Bollinger/ATR helpers (pure)
+│   ├── screener.py           # deterministic universe screening: liquidity floor → daily metrics → volatility band → momentum rank (§7.70)
 │   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT
 └── monitoring/
     ├── logger.py             # structlog setup
@@ -239,7 +241,7 @@ class Executor(Protocol):
 ```
 
 - `ccxt_executor.py` — `CcxtExecutor`, keyed ccxt **spot** (OKX Europe, `myokx`; mode `<exchange>-sandbox` = OKX demo trading; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); cash = free balance of `crypto_agent.quote_currency` (EUR); positions always from the FIFO fill ledger capped by `fetch_balance` totals — `fetch_positions` is never used (OKX serves it for margin/derivatives only, `[]` for spot; §7.64); real fill payload parsing; credentials `EXCHANGE_API_KEY`/`_SECRET`/`_PASSPHRASE`.
-- `xtb_executor.py` — xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor. Fills are booked at the **venue's** price (§7.62): once `tradeTransactionStatus` says ACCEPTED the client reads the trade record (`getTrades` `open_price` / `getTradesHistory` `close_price`) and returns it with `price_source: "venue"`; fail-soft fallback to the requested price (`"requested"`) on no match, an error, or a > 20 % deviation.
+- `xtb_executor.py` — **DEAD PATH (2026-09-26): XTB closed its API access on 2025-03-14; kept disabled as reference until the Saxo executor replaces it (PLAN §7.16 → §7.66).** xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor. Fills are booked at the **venue's** price (§7.62): once `tradeTransactionStatus` says ACCEPTED the client reads the trade record (`getTrades` `open_price` / `getTradesHistory` `close_price`) and returns it with `price_source: "venue"`; fail-soft fallback to the requested price (`"requested"`) on no match, an error, or a > 20 % deviation.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
 ## Risk engine (`core/risk_engine.py`)
@@ -316,7 +318,7 @@ stateDiagram-v2
 ## Storage schema & retention
 
 - **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
-- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53).
+- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53) and `watchlist_entries` (agent-scoped dynamic symbols added by the screener: symbol, source, added_at, expires_at TTL, ranking meta_json; self-expiring, §7.70).
 - **Agent scoping (§7.39):** both agents share the file, so `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
 
@@ -541,9 +543,10 @@ Metrics (CLI summary + `--report` JSON):
 - Rate limits: Check current docs — implement exponential backoff
 - Order types: market, limit, stop-loss, take-profit supported
 
-### XTB Demo
+### XTB Demo — DEAD PATH (§7.66)
+- **XTB closed its API access on 2025-03-14** — no supported successor; the path is kept disabled as reference only until the Saxo OpenAPI executor replaces it (PLAN §7.66)
 - xAPI requires registration + an xAPI verification code generated in xStation (demo is easier)
-- Protocol reality (verified §7.16): the old `ws.xtb.com`/`xapi.xtb.com` hosts were **retired 2025-03-14**; trading runs on `wss://ws.xapi.pro/{demo,real}` as ordered JSON transactions
+- Protocol reality (verified §7.16): the old `ws.xtb.com`/`xapi.xtb.com` hosts were **retired 2025-03-14**; what remains is `wss://ws.xapi.pro/{demo,real}` — an **unofficial third-party relay** (not XTB-sanctioned), ordered JSON transactions
 - Auth: classic WS `login` command (account id + verification code, valid ~30 days, revocable) — **no OAuth2 token endpoint exists**
 - Trading hours: Warsaw Stock Exchange schedule
 - Instruments: Stocks, CFDs, indices
@@ -575,6 +578,18 @@ crypto_agent:
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
   decide_on_new_bar_only: true # one LLM decision per closed bar; cycles between only mark + exit-check
+  watchlist:                   # §7.70 — opt-in screener-driven dynamic universe
+    enabled: false             # off ⇒ traded set is exactly `pairs`
+    refresh_minutes: 360
+    max_dynamic_symbols: 2     # hard cap on manager-added pairs (core + held never count)
+    ttl_hours: 96              # dynamic pair dropped (slot freed) after this
+    min_quote_volume_24h: 1000000   # liquidity floor in quote currency (EUR)
+    momentum_days: 14          # ranking window on daily bars
+    lookback_days: 30          # candle depth for the volatility estimate
+    min_daily_volatility: 0.005
+    max_daily_volatility: 0.25
+    max_candidates: 20         # candle fetches per refresh (best liquidity first)
+    exclude_symbols: []
 
 stocks_agent:
   enabled: false

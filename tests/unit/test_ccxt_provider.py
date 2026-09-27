@@ -272,3 +272,37 @@ class TestOkxEuropeClient:
             assert "x-simulated-trading" not in (provider.client.headers or {})
         finally:
             await provider.close()
+
+
+class TestFetchQuoteVolumes:
+    """§7.70: the screener's one-shot volume sweep."""
+
+    async def test_quote_currency_filter_and_volume_extraction(self) -> None:
+        client = AsyncMock()
+        client.fetch_tickers.return_value = [
+            {"symbol": "BTC/EUR", "quoteVolume": 5_000_000.0},
+            {"symbol": "ETH/USDT", "quoteVolume": 9_000_000.0},  # wrong quote — dropped
+            {"symbol": "XLM/EUR", "baseVolume": 100_000.0, "last": 0.3},  # fallback math
+            {"symbol": "BAD/EUR"},  # no volume at all — omitted
+            {"symbol": "ZERO/EUR", "quoteVolume": 0.0},  # non-positive — omitted
+        ]
+        provider = CCXTProvider(client)
+        volumes = await provider.fetch_quote_volumes("EUR")
+        assert volumes == pytest.approx({"BTC/EUR": 5_000_000.0, "XLM/EUR": 30_000.0})
+
+    async def test_no_quote_filter_keeps_everything_measurable(self) -> None:
+        client = AsyncMock()
+        client.fetch_tickers.return_value = [
+            {"symbol": "BTC/EUR", "quoteVolume": 1.0},
+            {"symbol": "ETH/USDT", "quoteVolume": 2.0},
+        ]
+        volumes = await CCXTProvider(client).fetch_quote_volumes()
+        assert set(volumes) == {"BTC/EUR", "ETH/USDT"}
+
+    async def test_client_without_fetch_tickers_raises_explicitly(self) -> None:
+        class NoTickers:
+            async def fetch_ohlcv(self, symbol, timeframe=None, since=None, limit=None):
+                return []
+
+        with pytest.raises(RuntimeError, match="fetch_tickers"):
+            await CCXTProvider(NoTickers()).fetch_quote_volumes("EUR")

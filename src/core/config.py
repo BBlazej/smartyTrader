@@ -126,6 +126,9 @@ class AgentConfig:
         # §7.64: currency the keyed executor counts as cash (e.g. "EUR" on OKX Europe,
         # where USDT is not tradable for EEA accounts). Every pair must be quoted in it.
         quote_currency: str | None = None,
+        # §7.70: screener-driven dynamic watchlist (CHANGE.md §4.4, crypto first).
+        # Off by default — with no block the traded set stays exactly the YAML list.
+        watchlist: dict[str, Any] | None = None,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -149,6 +152,7 @@ class AgentConfig:
         self.decide_on_new_bar_only = decide_on_new_bar_only
         self.live_trading = bool(live_trading)
         self.quote_currency = quote_currency.upper() if quote_currency else None
+        self.watchlist = WatchlistSettings(**(watchlist or {}))
         if self.quote_currency:
             mismatched = [
                 pair for pair in self.pairs if pair.split("/")[-1].upper() != self.quote_currency
@@ -158,6 +162,76 @@ class AgentConfig:
                     f"pairs {mismatched} are not quoted in quote_currency "
                     f"'{self.quote_currency}' — cash and position sizing would be wrong"
                 )
+
+
+class WatchlistSettings:
+    """Deterministic screener + capped watchlist manager (§7.70, CHANGE.md §4.4).
+
+    All limits are hard-coded guards applied by code, never model judgement. The
+    whole feature is opt-in (``enabled: false`` default): with it off the agent
+    trades exactly its YAML symbol list, as before.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        # How often the runner re-runs the screener while alive.
+        refresh_minutes: int = 360,
+        # Hard cap on manager-added symbols (core YAML symbols never count).
+        max_dynamic_symbols: int = 2,
+        # A dynamic symbol is dropped (and its slot freed) after this many hours
+        # unless the screener re-adds it. Symbols with an open position are always
+        # kept regardless of expiry — a position must never lose its manager.
+        ttl_hours: float = 96.0,
+        # Liquidity floor: 24 h traded volume in quote currency (e.g. EUR).
+        min_quote_volume_24h: float = 1_000_000.0,
+        # Momentum ranking window / candle lookback (daily bars).
+        momentum_days: int = 14,
+        lookback_days: int = 30,
+        # Volatility band on daily close-to-close returns: below the floor the
+        # instrument is dead-flat, above the cap it is a blow-up risk.
+        min_daily_volatility: float = 0.005,
+        max_daily_volatility: float | None = 0.25,
+        # Candle fetches per refresh are capped to this many best-liquidity
+        # candidates (after the volume floor) so a huge venue never spams the API.
+        max_candidates: int = 20,
+        # Symbols the manager must never add (stables, wrapped/leveraged tokens…).
+        exclude_symbols: list[str] | None = None,
+    ) -> None:
+        if refresh_minutes < 1:
+            raise ValueError("watchlist.refresh_minutes must be >= 1")
+        if max_dynamic_symbols < 1:
+            raise ValueError("watchlist.max_dynamic_symbols must be >= 1")
+        if ttl_hours <= 0:
+            raise ValueError("watchlist.ttl_hours must be > 0")
+        if momentum_days < 1:
+            raise ValueError("watchlist.momentum_days must be >= 1")
+        if lookback_days < momentum_days + 2:
+            raise ValueError(
+                "watchlist.lookback_days must cover the momentum window plus two extra "
+                "closes (lookback_days >= momentum_days + 2), otherwise metrics never compute"
+            )
+        if min_daily_volatility < 0:
+            raise ValueError("watchlist.min_daily_volatility must be >= 0")
+        if max_daily_volatility is not None and max_daily_volatility < min_daily_volatility:
+            raise ValueError(
+                "watchlist.max_daily_volatility must be >= watchlist.min_daily_volatility"
+            )
+        if max_candidates < 1:
+            raise ValueError("watchlist.max_candidates must be >= 1")
+        self.enabled = bool(enabled)
+        self.refresh_minutes = int(refresh_minutes)
+        self.max_dynamic_symbols = int(max_dynamic_symbols)
+        self.ttl_hours = float(ttl_hours)
+        self.min_quote_volume_24h = float(min_quote_volume_24h)
+        self.momentum_days = int(momentum_days)
+        self.lookback_days = int(lookback_days)
+        self.min_daily_volatility = float(min_daily_volatility)
+        self.max_daily_volatility = (
+            float(max_daily_volatility) if max_daily_volatility is not None else None
+        )
+        self.max_candidates = int(max_candidates)
+        self.exclude_symbols = [s.upper() for s in (exclude_symbols or [])]
 
 
 class RiskSettings:

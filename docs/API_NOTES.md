@@ -31,7 +31,14 @@ Quirks and gotchas for the venues, gathered as we integrate.
 - **Balances:** read the quote-currency free balance (`fetch_free_balance`, keyed by
   `crypto_agent.quote_currency` — `EUR`) for the cash figure the risk engine needs.
 
-## XTB Demo (stocks) — as implemented in §7.16
+## XTB Demo (stocks) — DEAD PATH (2026-09-26, §7.66)
+
+> **XTB closed its API access on 2025-03-14** ("XTB no longer offers API access").
+> Everything below describes what our client implements; `wss://ws.xapi.pro` is an
+> **unofficial third-party relay**, not XTB-sanctioned infrastructure, and can die at
+> any time. The code stays in the tree disabled as reference only — PLAN §7.66 replaces
+> this path with a Saxo OpenAPI executor (free developer SIM). Do not enable
+> `xtb_execution`.
 
 - **Access:** xAPI requires an approved demo account + a one-time **verification
   code** generated in xStation (Settings → xAPI). Set it as `XTB_ACCOUNT_PASSWORD`

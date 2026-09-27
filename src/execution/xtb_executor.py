@@ -5,11 +5,14 @@ Implements the shared ``Executor`` protocol (``place_order``, ``get_positions``,
 is injected so this module is testable without a network connection or an approved
 XTB demo account.
 
-Wiring status (§7.16)
----------------------
-The real client has landed: :class:`src.execution.xtb_client.XApiClient` speaks the
-xAPI WebSocket protocol (``wss://ws.xapi.pro/{demo,real}``, classic ``login`` auth
-with the account id + xAPI verification code — there is **no OAuth2 endpoint**).
+Wiring status — DEAD path, kept disabled (§7.16 → §7.66)
+--------------------------------------------------------
+**XTB closed its API access on 2025-03-14; this executor will be replaced by a
+Saxo OpenAPI executor (PLAN §7.66) and must stay disabled.** The real client
+:class:`src.execution.xtb_client.XApiClient` speaks the xAPI WebSocket protocol
+over ``wss://ws.xapi.pro`` — an *unofficial third-party relay* (classic ``login``
+auth with the account id + xAPI verification code — there is **no OAuth2
+endpoint**) — and is kept only as reference until Saxo lands.
 The stocks runner wires this executor only when ``xtb_execution.enabled`` AND both
 ``XTB_ACCOUNT_ID``/``XTB_ACCOUNT_PASSWORD`` are set; anything missing keeps the
 paper executor (still the safe default), and the block is deliberately outside the

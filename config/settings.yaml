@@ -39,6 +39,23 @@ crypto_agent:
   # §7.56: ask the LLM once per newly CLOSED bar; the 5-min cycles in between only
   # mark positions and enforce stop-loss/take-profit. false = ask every cycle.
   decide_on_new_bar_only: true
+  # Screener-driven dynamic watchlist (§7.70, CHANGE.md §4.4). Off by default —
+  # with it off the traded set is exactly `pairs` above. When on, a deterministic
+  # screener (liquidity floor → volatility band → momentum rank over OKX EUR-quoted
+  # spot) adds up to max_dynamic_symbols extra pairs with a TTL; core pairs and any
+  # symbol with an open position are NEVER dropped. Audited in `watchlist_entries`.
+  watchlist:
+    enabled: false
+    refresh_minutes: 360          # screener cadence while the runner is alive
+    max_dynamic_symbols: 2        # hard cap on manager-added pairs
+    ttl_hours: 96                 # a dynamic pair is dropped (slot freed) after this
+    min_quote_volume_24h: 1000000 # liquidity floor, in quote currency (EUR)
+    momentum_days: 14             # ranking window on daily bars
+    lookback_days: 30             # candle depth for volatility estimate
+    min_daily_volatility: 0.005   # below this the pair is dead-flat (daily returns σ)
+    max_daily_volatility: 0.25    # above this it is a blow-up risk — skip
+    max_candidates: 20            # candle fetches per refresh (best liquidity first)
+    exclude_symbols: []           # never add these, e.g. ["USDC/EUR", "WBTC/EUR"]
 
 stocks_agent:
   enabled: false
@@ -165,12 +182,15 @@ dashboard:
   # services there are managed by compose, not by the dashboard container.
   allow_launch: false
 
-# XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
-# When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password
-# is the xAPI verification code from xStation settings, NOT your login password),
-# the stocks runner executes against the XTB *demo* account over
-# wss://ws.xapi.pro/demo. Deliberately outside the dashboard's safe-config
-# whitelist: turning on real execution must never be a web-form click.
+# XTB demo execution via xAPI (§7.16). DEAD PATH (2026-09-26, §7.66): XTB closed
+# its API access on 2025-03-14; wss://ws.xapi.pro is an unofficial third-party
+# relay kept only as reference until the Saxo OpenAPI executor replaces it.
+# Keep this block disabled. (Historic behavior: when enabled AND XTB_ACCOUNT_ID +
+# XTB_ACCOUNT_PASSWORD are set (.env; the password is the xAPI verification code
+# from xStation settings, NOT your login password), the stocks runner executed
+# against the XTB *demo* account over wss://ws.xapi.pro/demo. Deliberately outside
+# the dashboard's safe-config whitelist: turning on real execution must never be a
+# web-form click.)
 xtb_execution:
   enabled: false
   host: "wss://ws.xapi.pro"

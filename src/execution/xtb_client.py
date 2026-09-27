@@ -1,11 +1,16 @@
 """A real XTB xAPI client (§7.16) — the WebSocket implementation of the
 :class:`src.execution.xtb_executor.XTBClient` seam.
 
-Protocol reality (verified against maintained wrappers, Sept 2026)
-------------------------------------------------------------------
-XTB's xAPI discontinued the ``ws.xtb.com`` / ``xapi.xtb.com`` hosts on
-2025-03-14; trading now lives on ``wss://ws.xapi.pro/{demo,real}`` (plus a
-``.../demoStream`` variant we deliberately do **not** use — the agent polls).
+Protocol reality — and why this path is DEAD (2026-09-26, §7.66)
+----------------------------------------------------------------
+**XTB closed its API access on 2025-03-14 ("XTB no longer offers API
+access").** The official hosts ``ws.xtb.com`` / ``xapi.xtb.com`` were retired,
+and XTB does not offer a supported successor. ``wss://ws.xapi.pro/{demo,real}``
+— which this client targets — is an **unofficial third-party relay**, known
+only from community wrappers; it is not sanctioned by XTB and can stop working
+at any moment. This module is kept ONLY as a disabled reference implementation
+until the stocks executor moves to Saxo OpenAPI (PLAN §7.66), which will
+replace it. Do not enable ``xtb_execution`` for new work.
 Contrary to the original PLAN wording ("OAuth2 flow"), there is no OAuth2
 token endpoint: authentication is xAPI's classic ``login`` command sent over
 the socket with the account id and the **xAPI verification code** generated in

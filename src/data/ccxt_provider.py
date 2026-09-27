@@ -73,6 +73,43 @@ class CCXTProvider:
         candles = [self._to_candle(row) for row in raw]
         return MarketSnapshot(symbol=symbol, timeframe=timeframe, candles=candles)
 
+    async def fetch_quote_volumes(self, quote_currency: str | None = None) -> dict[str, float]:
+        """One shot over the venue's tickers: symbol → 24 h traded volume in *quote*.
+
+        Feeds the screener's liquidity floor (§7.70). ``quote_currency`` restricts
+        the sweep to pairs quoted in it (e.g. ``EUR`` on OKX Europe — only those
+        are tradable, and volume must be comparable in one currency). Missing,
+        zero or non-numeric volumes are omitted rather than guessed; ``quoteVolume``
+        is preferred, falling back to ``baseVolume × last`` when a venue omits it.
+        """
+        fetch_tickers = getattr(self._client, "fetch_tickers", None)
+        if fetch_tickers is None:
+            raise RuntimeError(
+                "exchange client has no fetch_tickers — the screener cannot sweep volumes on it"
+            )
+        rows = await fetch_tickers()
+        volumes: dict[str, float] = {}
+        suffix = f"/{quote_currency.upper()}" if quote_currency else None
+        for row in rows or []:
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            if suffix is not None and not symbol.upper().endswith(suffix):
+                continue
+            volume = row.get("quoteVolume")
+            if volume is None:
+                base_volume, last = row.get("baseVolume"), row.get("last")
+                if base_volume is None or last is None:
+                    continue
+                volume = float(base_volume) * float(last)
+            try:
+                volume = float(volume)
+            except (TypeError, ValueError):
+                continue
+            if volume > 0:
+                volumes[symbol] = volume
+        return volumes
+
     async def fetch_history(
         self,
         symbol: str,
