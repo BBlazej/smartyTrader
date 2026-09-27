@@ -206,6 +206,22 @@ class SleeveSnapshotRow(Base):
     timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
+class SleeveDrawdownResetRow(Base):
+    """Audited drawdown peak re-baseline for one strategy sleeve (§7.71, as §7.53).
+
+    Keyed per (agent, sleeve). Startup seeding of the sleeve's high-water mark then
+    ignores sleeve snapshots older than ``reset_at`` — the operator's CLI-only exit
+    from a latched sleeve drawdown guard (``rebaseline_drawdown.py --strategy``).
+    """
+
+    __tablename__ = "sleeve_drawdown_resets"
+
+    agent: Mapped[str] = mapped_column(String(20), primary_key=True)
+    strategy: Mapped[str] = mapped_column(String(20), primary_key=True)
+    baseline_value: Mapped[float] = mapped_column(Float)
+    reset_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
 class AgentControlRow(Base):
     """Control-plane row per agent (§7.15): the DB stays the single source of truth.
 

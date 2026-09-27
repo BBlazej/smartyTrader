@@ -510,3 +510,50 @@ class TestLLMFallbackVisibility:
         assert "LLM fallbacks 1/" in health
         decisions = (await env.client.get("/decisions?agent=crypto")).text
         assert "1 LLM fallback" in decisions
+
+
+class TestSleevePages:
+    """§7.71 step 3: the per-sleeve table and sleeve columns."""
+
+    async def _seed_sleeves(self, storage: Storage) -> None:
+        from datetime import UTC, datetime
+
+        bound = _bound(storage, "crypto")
+        bound.bind_venue("paper")
+        try:
+            await bound.record_allocation(10_000.0, {"crypto_swing": 0.5, "crypto_position": 0.5})
+            await bound.save_sleeve_snapshot(
+                "crypto_swing", equity=5_300.0, cash=4_800.0, realized_pnl=-200.0,
+                unrealized_pnl=500.0, open_positions=1,
+            )  # fmt: skip
+            await bound.save_sleeve_snapshot("crypto_position", equity=4_800.0, cash=4_800.0)
+            await bound.save_order(
+                "o-sleeve", "BTC/USDT", "buy", 0.5, 50_000.0, "filled",
+                filled_at=datetime.now(UTC), strategy="crypto_swing",
+            )  # fmt: skip
+            await bound.save_llm_decision(
+                symbol="BTC/USDT", action="hold", confidence=0.5, reasoning="sleeve hold",
+                stop_loss=None, take_profit=None, risk_verdict="approved", risk_reason=None,
+                strategy="crypto_position",
+            )  # fmt: skip
+        finally:
+            await bound.close()
+
+    async def test_positions_page_shows_sleeve_table_and_owner(self, env) -> None:
+        await self._seed_sleeves(env.storage)
+        body = (await env.client.get("/positions?agent=crypto")).text
+        assert "Strategy sleeves" in body
+        assert "crypto_swing" in body and "crypto_position" in body
+        assert "5,300.00" in body and "5,000.00" in body  # equity, capital (0.5 × 10k)
+        assert "<th>Sleeve</th>" in body  # owner column on the positions table
+        _assert_no_secrets(body)
+
+    async def test_no_sleeve_table_without_sleeves(self, env) -> None:
+        body = (await env.client.get("/positions")).text
+        assert "Strategy sleeves" not in body
+        assert "<th>Sleeve</th>" not in body
+
+    async def test_decisions_page_shows_sleeve_column(self, env) -> None:
+        await self._seed_sleeves(env.storage)
+        body = (await env.client.get("/decisions")).text
+        assert "<th>Sleeve</th>" in body and "crypto_position" in body

@@ -332,14 +332,17 @@ class SleeveBook:
         """Rehydrate every sleeve engine at startup (§7.7 semantics, per sleeve).
 
         Drawdown peak ← MAX(sleeve equity) since the latest allocation (a new
-        allocation re-bases every sleeve); daily baseline ← today's first sleeve
-        snapshot; loss streak ← the sleeve's tagged closing fills. Fail-soft per piece.
+        allocation re-bases every sleeve) or since an operator's audited per-sleeve
+        re-baseline (``rebaseline_drawdown.py --strategy``); daily baseline ← today's
+        first sleeve snapshot; loss streak ← the sleeve's tagged closing fills. Fail-soft per piece.
         """
         since = self.allocation.created_at if self.allocation is not None else None
         for name, engine in self._engines.items():
             if since is not None:
                 try:
-                    engine.seed_peak_equity(await self._storage.get_sleeve_peak_equity(name, since))
+                    engine.seed_peak_equity(
+                        await self._storage.get_effective_sleeve_peak(name, since)
+                    )
                     first = await self._storage.get_first_sleeve_snapshot_of_day(name, since)
                     if first is not None:
                         engine.restore_daily_baseline(float(first.equity))

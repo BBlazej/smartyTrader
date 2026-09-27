@@ -193,3 +193,51 @@ def decision_stats(rows: list[Any]) -> dict[str, Any]:
         "avg_confidence": avg_confidence,
         "confidence_buckets": buckets,
     }
+
+
+def sleeve_rows(
+    snapshots: list[Any],
+    allocation: Any | None = None,
+    peaks: dict[str, float | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Per-sleeve table rows (§7.71) from each sleeve's latest ``sleeve_snapshots`` row.
+
+    ``allocation`` (the latest ``strategy_allocations`` row) supplies each sleeve's
+    weight and allocated capital; ``peaks`` its drawdown high-water seed, so the table
+    shows the same drawdown the sleeve's risk engine gates on. Missing pieces render
+    as ``None`` — the page never fails on a half-populated history.
+    """
+    import json
+
+    weights: dict[str, float] = {}
+    base: float | None = None
+    if allocation is not None:
+        try:
+            weights = {str(k): float(v) for k, v in json.loads(allocation.weights_json).items()}
+            base = float(allocation.base_equity)
+        except (TypeError, ValueError, AttributeError):
+            logger.warning("unreadable sleeve allocation row")
+    peaks = peaks or {}
+    rows: list[dict[str, Any]] = []
+    for snap in snapshots:
+        weight = weights.get(snap.strategy)
+        capital = weight * base if weight is not None and base is not None else None
+        peak = peaks.get(snap.strategy)
+        rows.append(
+            {
+                "strategy": snap.strategy,
+                "weight": weight,
+                "capital": capital,
+                "equity": snap.equity,
+                "return_pct": (snap.equity - capital) / capital if capital else None,
+                "realized_pnl": snap.realized_pnl,
+                "unrealized_pnl": snap.unrealized_pnl,
+                "drawdown_pct": (
+                    max(0.0, (peak - snap.equity) / peak) if peak and peak > 0 else None
+                ),
+                "open_positions": snap.open_positions,
+                "cash": snap.cash,
+                "as_of": snap.timestamp,
+            }
+        )
+    return rows

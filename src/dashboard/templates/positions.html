@@ -14,19 +14,51 @@
       <div class="stat {{ 'pos' if (up or 0) > 0 else ('neg' if (up or 0) < 0) }}">{{ up | money }}</div></div>
   </div>
 
+  {% if sleeves %}
+  <h2>Strategy sleeves</h2>
+  <p class="muted">Each sleeve trades its own share of the capital with its own risk limits
+    (§7.71). Drawdown is measured against the sleeve's own peak — the value its risk
+    engine gates on.</p>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Sleeve</th><th>Weight</th><th>Capital</th><th>Equity</th><th>Return</th>
+        <th>Realized</th><th>Unrealized</th><th>Drawdown</th><th>Open</th><th>As of</th>
+      </tr></thead>
+      <tbody>
+        {% for r in sleeves %}
+          <tr>
+            <td>{{ r.strategy }}</td>
+            <td>{{ r.weight | pct }}</td>
+            <td>{{ r.capital | money }}</td>
+            <td>{{ r.equity | money }}</td>
+            <td class="{% if (r.return_pct or 0) > 0 %}pos{% elif (r.return_pct or 0) < 0 %}neg{% endif %}">{{ r.return_pct | pct }}</td>
+            <td class="{% if r.realized_pnl > 0 %}pos{% elif r.realized_pnl < 0 %}neg{% endif %}">{{ r.realized_pnl | money }}</td>
+            <td class="{% if r.unrealized_pnl > 0 %}pos{% elif r.unrealized_pnl < 0 %}neg{% endif %}">{{ r.unrealized_pnl | money }}</td>
+            <td class="{% if (r.drawdown_pct or 0) > 0 %}neg{% endif %}">{{ r.drawdown_pct | pct }}</td>
+            <td>{{ r.open_positions }}</td>
+            <td class="muted">{{ r.as_of | short }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   <p class="muted">Positions are read from the latest portfolio snapshot
     {% if latest %}(as of {{ latest.timestamp | short }}){% endif %}.</p>
 
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>Symbol</th><th>Qty</th><th>Avg entry</th><th>Mark</th>
+        <th>Symbol</th>{% if owners %}<th>Sleeve</th>{% endif %}<th>Qty</th><th>Avg entry</th><th>Mark</th>
         <th>PnL</th><th>PnL %</th><th>Stop</th><th>Take-profit</th>
       </tr></thead>
       <tbody>
         {% for p in positions %}
           <tr>
             <td>{{ p.symbol }}</td>
+            {% if owners %}<td class="muted">{{ owners.get(p.symbol, '—') }}</td>{% endif %}
             <td>{{ '%.8g' | format(p.quantity) }}</td>
             <td>{{ p.avg_entry_price | money }}</td>
             <td>{{ p.current_price | money }}</td>
@@ -36,7 +68,7 @@
             <td>{{ p.take_profit | money if p.take_profit is not none else '—' }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="8" class="muted">No open positions.</td></tr>
+          <tr><td colspan="{{ 9 if owners else 8 }}" class="muted">No open positions.</td></tr>
         {% endfor %}
       </tbody>
     </table>

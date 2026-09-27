@@ -43,7 +43,7 @@
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>Time</th><th>Agent</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th>
+        <th>Time</th><th>Agent</th><th>Sleeve</th><th>Symbol</th><th>Action</th><th>Conf</th><th>Risk</th>
         <th>Realized PnL</th><th>Reasoning</th>
       </tr></thead>
       <tbody>
@@ -51,6 +51,7 @@
           <tr>
             <td class="muted" style="white-space:nowrap;">{{ d.timestamp | short }}</td>
             <td class="muted">{{ d.agent or '—' }}</td>
+            <td class="muted">{{ d.strategy or '—' }}</td>
             <td>{{ d.symbol }}{% if d.is_fallback %} <span class="badge b-off">fallback</span>{% endif %}</td>
             <td>{{ d.action }}</td>
             <td>{{ '%.2f' | format(d.confidence) }}</td>
@@ -61,7 +62,7 @@
               {% if d.risk_reason %}<div class="muted">↳ risk: {{ d.risk_reason }}</div>{% endif %}</td>
           </tr>
         {% else %}
-          <tr><td colspan="8" class="muted">No decisions recorded yet.</td></tr>
+          <tr><td colspan="9" class="muted">No decisions recorded yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

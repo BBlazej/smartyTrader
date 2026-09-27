@@ -373,3 +373,108 @@ class TestReconciledFills:
         (row,) = await storage.get_recent_orders()
         assert row.order_id == "venue-1" and row.strategy == "position"
         assert rig.executor.confirmed == ["venue-1"]
+
+
+# ── Step 3: re-baseline, ownership view, table rows ───────────
+
+
+class TestSleeveRebaseline:
+    async def test_effective_peak_follows_allocation_then_reset(self, storage: Storage) -> None:
+        from sqlalchemy import update
+
+        from src.core.storage.models import SleeveSnapshotRow
+
+        rig = await Rig(storage).start()
+        since = rig.book.allocation.created_at
+        await storage.save_sleeve_snapshot("swing", equity=60_000, cash=60_000)
+        await storage.save_sleeve_snapshot("swing", equity=45_000, cash=45_000)
+        assert await storage.get_effective_sleeve_peak("swing", since) == 60_000
+
+        # A re-baseline cuts the old peak off; later snapshots still raise it.
+        async with await storage._session() as session:
+            await session.execute(
+                update(SleeveSnapshotRow).values(timestamp=datetime(2020, 1, 1, tzinfo=UTC))
+            )
+            await session.commit()
+        await storage.record_sleeve_drawdown_reset("swing", 45_000)
+        assert (
+            await storage.get_effective_sleeve_peak("swing", datetime(2019, 1, 1, tzinfo=UTC))
+            == 45_000
+        )
+        await storage.save_sleeve_snapshot("swing", equity=47_000, cash=47_000)
+        assert (
+            await storage.get_effective_sleeve_peak("swing", datetime(2019, 1, 1, tzinfo=UTC))
+            == 47_000
+        )
+        # Scoped per sleeve: the other sleeve is untouched.
+        assert await storage.get_sleeve_drawdown_reset("position") is None
+
+    async def test_reset_older_than_the_allocation_is_ignored(self, storage: Storage) -> None:
+        await storage.record_sleeve_drawdown_reset("swing", 1.0)
+        await storage.save_sleeve_snapshot("swing", equity=50_000, cash=50_000)
+        later = datetime.now(UTC).replace(year=2099)
+        assert await storage.get_effective_sleeve_peak("swing", later) is None
+
+    async def test_restore_uses_the_rebaselined_peak(self, storage: Storage) -> None:
+        rig = await Rig(storage).start()
+        await storage.save_sleeve_snapshot("swing", equity=60_000, cash=60_000)
+        await storage.record_sleeve_drawdown_reset("swing", 50_000)
+        restarted = await Rig(storage).start()
+        await restarted.book.restore()
+        # The old 60k peak predates the reset; the seed is the operator's baseline.
+        assert restarted.engines["swing"].peak_equity == pytest.approx(50_000)
+        assert rig.engines["swing"].peak_equity is None
+
+    async def test_cli_plan(self, storage: Storage) -> None:
+        from scripts.rebaseline_drawdown import plan_sleeve_rebaseline
+
+        with pytest.raises(SystemExit, match="no sleeve snapshots"):
+            await plan_sleeve_rebaseline(storage, "crypto", "swing")
+        await Rig(storage).start()
+        await storage.save_sleeve_snapshot("swing", equity=48_000, cash=48_000)
+        old, new = await plan_sleeve_rebaseline(storage, "crypto", "swing")
+        assert (old, new) == (48_000, 48_000)
+        assert (await plan_sleeve_rebaseline(storage, "crypto", "swing", 40_000.0))[1] == 40_000
+        with pytest.raises(SystemExit, match="positive"):
+            await plan_sleeve_rebaseline(storage, "crypto", "swing", 0.0)
+
+
+class TestSleeveViews:
+    async def test_position_strategies_from_latest_tagged_buy(self, storage: Storage) -> None:
+        now = datetime.now(UTC)
+        await storage.save_order("b1", "BTC/EUR", "buy", 1, 100, "filled", filled_at=now,
+                                 strategy="position")  # fmt: skip
+        await storage.save_order("b2", "BTC/EUR", "buy", 1, 100, "filled", filled_at=now,
+                                 strategy="swing")  # fmt: skip
+        await storage.save_order("b3", "ETH/EUR", "buy", 1, 100, "pending", strategy="swing")
+        owners = await storage.get_position_strategies(["BTC/EUR", "ETH/EUR"])
+        assert owners == {"BTC/EUR": "swing"}
+        assert await storage.get_position_strategies([]) == {}
+
+    async def test_unbound_storage_reads_every_venue(self, storage: Storage) -> None:
+        await storage.save_sleeve_snapshot("swing", equity=1.0, cash=1.0)  # venue "paper"
+        unbound = Storage(storage.database_path)
+        try:
+            rows = await unbound.get_latest_sleeve_snapshots(agent="crypto")
+        finally:
+            await unbound.close()
+        assert [r.strategy for r in rows] == ["swing"]
+
+    def test_sleeve_rows(self) -> None:
+        from types import SimpleNamespace
+
+        from src.dashboard.views import sleeve_rows
+
+        snap = SimpleNamespace(
+            strategy="swing", equity=45_000.0, cash=40_000.0, realized_pnl=-3_000.0,
+            unrealized_pnl=-2_000.0, open_positions=1, timestamp=datetime(2026, 9, 27, tzinfo=UTC),
+        )  # fmt: skip
+        allocation = SimpleNamespace(base_equity=100_000.0, weights_json='{"swing": 0.5}')
+        (row,) = sleeve_rows([snap], allocation, {"swing": 50_000.0})
+        assert row["capital"] == 50_000 and row["weight"] == 0.5
+        assert row["return_pct"] == pytest.approx(-0.10)
+        assert row["drawdown_pct"] == pytest.approx(0.10)
+        (bare,) = sleeve_rows([snap])
+        assert bare["capital"] is None and bare["drawdown_pct"] is None
+        broken = SimpleNamespace(base_equity=1.0, weights_json="not json")
+        assert sleeve_rows([snap], broken)[0]["weight"] is None

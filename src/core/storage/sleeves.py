@@ -11,23 +11,33 @@ import json
 from datetime import UTC, datetime
 from datetime import time as dtime
 
-from sqlalchemy import ColumnElement, Select, func, select
+import structlog
+from sqlalchemy import Select, func, select
 
-from .models import OrderRow, SleeveSnapshotRow, StrategyAllocationRow, _as_naive_utc
+from .models import (
+    OrderRow,
+    SleeveDrawdownResetRow,
+    SleeveSnapshotRow,
+    StrategyAllocationRow,
+    _as_naive_utc,
+)
+
+logger = structlog.get_logger()
 
 
 class SleeveMixin:
     """``strategy_allocations`` / ``sleeve_snapshots`` writes + reads."""
 
-    def _venue_eq(self, column: ColumnElement) -> ColumnElement:
-        """Exactly the bound venue (``NULL`` when unbound) — these tables are new, no legacy."""
-        return column == self._venue if self._venue is not None else column.is_(None)
-
     def _scoped(self, stmt: Select, table: type, agent: str | None) -> Select:
+        """Agent scope (§7.39) + exactly the bound venue (§7.61) — these tables are new,
+        so there are no legacy NULL rows to admit. An unbound Storage (dashboard, CLIs)
+        reads every venue."""
         scope = self._agent_scope(agent)
         if scope is not None:
             stmt = stmt.where(table.agent == scope)
-        return stmt.where(self._venue_eq(table.venue))
+        if self._venue is not None:
+            stmt = stmt.where(table.venue == self._venue)
+        return stmt
 
     # ── Allocations ───────────────────────────────────────
 
@@ -118,6 +128,98 @@ class SleeveMixin:
             )
             value = (await session.execute(stmt)).scalar()
             return float(value) if value is not None else None
+
+    async def get_latest_sleeve_snapshot(
+        self, strategy: str, agent: str | None = None
+    ) -> SleeveSnapshotRow | None:
+        async with await self._session() as session:
+            stmt = self._scoped(select(SleeveSnapshotRow), SleeveSnapshotRow, agent).where(
+                SleeveSnapshotRow.strategy == strategy
+            )
+            stmt = stmt.order_by(SleeveSnapshotRow.id.desc()).limit(1)
+            return (await session.execute(stmt)).scalars().first()
+
+    # ── Sleeve drawdown re-baseline (§7.71, as §7.53) ─────
+
+    async def record_sleeve_drawdown_reset(
+        self, strategy: str, baseline_value: float, agent: str | None = None
+    ) -> SleeveDrawdownResetRow:
+        """Persist an operator's explicit sleeve re-baseline (audited, CLI-only)."""
+        scope = self._agent_scope(agent)
+        if scope is None:
+            raise ValueError("sleeve drawdown resets require an explicit agent")
+        async with await self._session() as session:
+            row = await session.get(SleeveDrawdownResetRow, (scope, strategy))
+            if row is None:
+                row = SleeveDrawdownResetRow(
+                    agent=scope, strategy=strategy, baseline_value=baseline_value
+                )
+                session.add(row)
+            else:
+                row.baseline_value = baseline_value
+                row.reset_at = datetime.now(UTC)
+            await session.commit()
+            logger.info(
+                "sleeve drawdown peak rebaselined",
+                agent=scope,
+                strategy=strategy,
+                baseline_value=baseline_value,
+                reset_at=str(row.reset_at),
+            )
+            return row
+
+    async def get_sleeve_drawdown_reset(
+        self, strategy: str, agent: str | None = None
+    ) -> SleeveDrawdownResetRow | None:
+        scope = self._agent_scope(agent)
+        if scope is None:
+            return None
+        async with await self._session() as session:
+            return await session.get(SleeveDrawdownResetRow, (scope, strategy))
+
+    async def get_effective_sleeve_peak(
+        self, strategy: str, since: datetime, agent: str | None = None
+    ) -> float | None:
+        """The sleeve's drawdown high-water seed: MAX(equity) since the allocation, or —
+        after an operator re-baseline newer than it — ``max(baseline, MAX since reset)``."""
+        reset = await self.get_sleeve_drawdown_reset(strategy, agent)
+        if reset is None or _as_naive_utc(reset.reset_at) < _as_naive_utc(since):
+            return await self.get_sleeve_peak_equity(strategy, since, agent)
+        peak = await self.get_sleeve_peak_equity(strategy, reset.reset_at, agent)
+        return (
+            max(float(reset.baseline_value), peak)
+            if peak is not None
+            else float(reset.baseline_value)
+        )
+
+    async def get_position_strategies(
+        self, symbols: list[str], agent: str | None = None
+    ) -> dict[str, str]:
+        """``symbol → sleeve`` of each symbol's latest filled BUY (dashboard ownership).
+
+        Under the symbol lock only the owning sleeve buys a held symbol, so its latest
+        entry names the owner; the runner itself derives ownership from the ledger.
+        """
+        if not symbols:
+            return {}
+        async with await self._session() as session:
+            stmt = (
+                select(OrderRow.symbol, OrderRow.strategy)
+                .where(
+                    OrderRow.status == "filled",
+                    OrderRow.side == "buy",
+                    OrderRow.strategy.isnot(None),
+                    OrderRow.symbol.in_(symbols),
+                )
+                .order_by(OrderRow.id.desc())
+            )
+            scope = self._agent_scope(agent)
+            if scope is not None:
+                stmt = stmt.where(OrderRow.agent == scope)
+            owners: dict[str, str] = {}
+            for symbol, strategy in (await session.execute(stmt)).all():
+                owners.setdefault(symbol, strategy)
+            return owners
 
     async def get_first_sleeve_snapshot_of_day(
         self, strategy: str, since: datetime | None = None, agent: str | None = None

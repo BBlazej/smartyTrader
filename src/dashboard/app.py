@@ -59,6 +59,7 @@ from .views import (
     decision_stats,
     parse_positions,
     portfolio_chart,
+    sleeve_rows,
     tail_lines,
 )
 
@@ -323,10 +324,33 @@ def create_dashboard_app(
             ),
         )
 
+    async def _sleeve_view(
+        agent: str, symbols: list[str]
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Per-sleeve table + ``symbol → sleeve`` (§7.71); empty without sleeves."""
+        try:
+            snapshots = await storage.get_latest_sleeve_snapshots(agent=agent)
+            if not snapshots:
+                return [], {}
+            allocation = await storage.get_latest_allocation(agent=agent)
+            peaks: dict[str, float | None] = {}
+            if allocation is not None:
+                for snap in snapshots:
+                    peaks[snap.strategy] = await storage.get_effective_sleeve_peak(
+                        snap.strategy, allocation.created_at, agent=agent
+                    )
+            owners = await storage.get_position_strategies(symbols, agent=agent)
+        except Exception:
+            logger.warning("sleeve view unavailable", agent=agent, exc_info=True)
+            return [], {}
+        return sleeve_rows(snapshots, allocation, peaks), owners
+
     @app.get("/positions", response_class=HTMLResponse)
     async def positions_page(request: Request, agent: str | None = None) -> HTMLResponse:
         selected = _book_agent(agent)
         latest = await storage.get_latest_portfolio_snapshot(agent=selected)
+        positions = parse_positions(latest)
+        sleeves, owners = await _sleeve_view(selected, [p.symbol for p in positions])
         return templates.TemplateResponse(
             request,
             "positions.html",
@@ -335,7 +359,9 @@ def create_dashboard_app(
                 active="positions",
                 selected_agent=selected,
                 latest=latest,
-                positions=parse_positions(latest),
+                positions=positions,
+                sleeves=sleeves,
+                owners=owners,
             ),
         )
 
