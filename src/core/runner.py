@@ -24,6 +24,7 @@ Safety invariants preserved (see §7.2 / AGENTS.md):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -369,6 +370,12 @@ async def run_agent(
             config=watchlist_cfg,
             component=component,
             quote_currency=getattr(live_agent_settings, "quote_currency", None),
+            # Venue executors report what they can trade; paper has no such limit.
+            tradable_symbols=(
+                executor.tradable_symbols
+                if inspect.iscoroutinefunction(getattr(executor, "tradable_symbols", None))
+                else None
+            ),
         )
 
         async def _refresh_watchlist() -> None:

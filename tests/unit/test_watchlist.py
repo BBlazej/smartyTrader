@@ -392,3 +392,49 @@ class TestRunnerWatchlist:
             tmp_path, enabled=True, positions=[held], agent=_OverrideSavingAgent()
         )
         assert agent._symbols == ["BTC/EUR", "ETH/EUR", "XLM/EUR", "DOGE/EUR"]
+
+
+class TestVenueWhitelist:
+    """Only symbols the executor can trade (CHANGE.md P4) — demo lists fewer pairs."""
+
+    async def test_untradable_candidates_are_never_added(self, storage: Storage) -> None:
+        provider = FakeProvider(
+            volumes={"NEAR/EUR": 9e6, "SOL/EUR": 8e6}, drifts={"NEAR/EUR": 0.05, "SOL/EUR": 0.03}
+        )
+
+        async def tradable() -> set[str]:
+            return {"BTC/EUR", "SOL/EUR"}
+
+        manager = WatchlistManager(
+            provider=provider, storage=storage, config=_config(), component="crypto",
+            quote_currency="EUR", tradable_symbols=tradable,
+        )  # fmt: skip
+        result = await manager.refresh(["BTC/EUR"], now=NOW)
+        assert result.added == ["SOL/EUR"]
+        assert "NEAR/EUR" not in provider.snapshot_calls
+
+    async def test_whitelist_failure_fails_the_refresh(self, storage: Storage) -> None:
+        async def broken() -> set[str]:
+            raise RuntimeError("markets unavailable")
+
+        manager = WatchlistManager(
+            provider=FakeProvider(volumes={"SOL/EUR": 9e6}), storage=storage, config=_config(),
+            component="crypto", quote_currency="EUR", tradable_symbols=broken,
+        )  # fmt: skip
+        with pytest.raises(WatchlistRefreshFailed):
+            await manager.refresh(["BTC/EUR"], now=NOW)
+
+    async def test_ccxt_executor_reports_active_quote_spot_pairs(self) -> None:
+        from src.execution.ccxt_executor import CcxtExecutor
+
+        client = MagicMock()
+        client.load_markets = AsyncMock(
+            return_value={
+                "BTC/EUR": {"spot": True, "active": True, "quote": "EUR"},
+                "OLD/EUR": {"spot": True, "active": False, "quote": "EUR"},
+                "BTC/USDC": {"spot": True, "active": True, "quote": "USDC"},
+                "BTC/EUR:EUR": {"spot": False, "swap": True, "quote": "EUR"},
+            }
+        )
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="myokx-sandbox")
+        assert await executor.tradable_symbols() == {"BTC/EUR"}

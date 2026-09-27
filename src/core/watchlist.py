@@ -22,7 +22,7 @@ code, never model judgement):
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -74,12 +74,18 @@ class WatchlistManager:
         config: WatchlistSettings,
         component: str,
         quote_currency: str | None = None,
+        tradable_symbols: Callable[[], Awaitable[set[str]]] | None = None,
     ) -> None:
         self._provider = provider
         self._storage = storage
         self._config = config
         self._component = component
         self._quote_currency = quote_currency
+        # Venue whitelist (CHANGE.md P4: only symbols the executor can actually trade).
+        # Market data comes from the live venue while a demo account may list far
+        # fewer pairs (OKX EEA demo: 29 EUR spot vs 243 live). ``None`` = no limit
+        # (paper can trade anything with data). A failing lookup fails the refresh.
+        self._tradable_symbols = tradable_symbols
 
     async def refresh(
         self,
@@ -183,10 +189,13 @@ class WatchlistManager:
 
         cfg = self._config
         excluded = {s.upper() for s in (*cfg.exclude_symbols, *core, *held)}
+        tradable: set[str] | None = None
+        if self._tradable_symbols is not None:
+            tradable = {s.upper() for s in await self._tradable_symbols()}
         liquid = [
             (symbol, volume)
             for symbol, volume in filter_by_liquidity(volumes, cfg.min_quote_volume_24h)
-            if symbol.upper() not in excluded
+            if symbol.upper() not in excluded and (tradable is None or symbol.upper() in tradable)
         ][: cfg.max_candidates]
 
         fetch_snapshot = getattr(self._provider, "fetch_snapshot", None)

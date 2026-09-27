@@ -14,6 +14,13 @@ Quirks and gotchas for the venues, gathered as we integrate.
 - **Demo trading:** same host; ccxt `set_sandbox_mode(True)` adds the
   `x-simulated-trading: 1` header. Demo needs its **own** API key (OKX → Trade → Demo
   Trading → Demo Trading API). `testnet: true` selects this.
+- **Demo listings ≠ live listings:** the EEA demo account lists only ~29 EUR spot pairs
+  while public data shows ~243 active EUR pairs — never add a symbol to a keyed run's
+  traded set without checking it against `load_markets()` at *that* venue
+  (`CcxtExecutor.tradable_symbols()`, used by the §7.70 watchlist).
+- **`fetch_tickers()` returns a `{symbol: ticker}` dict** (not a list) — iterating it
+  yields bare symbol strings (found on the first live screener dry-run;
+  `CCXTProvider.fetch_quote_volumes` handles both shapes).
 - **`fetch_positions` is a trap for spot:** OKX serves it, but only for
   margin/derivatives — a spot account gets `[]`. `CcxtExecutor` therefore never calls it:
   positions come from its own fill ledger, capped by `fetch_balance()` totals and marked

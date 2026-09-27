@@ -87,10 +87,15 @@ class CCXTProvider:
             raise RuntimeError(
                 "exchange client has no fetch_tickers — the screener cannot sweep volumes on it"
             )
-        rows = await fetch_tickers()
+        raw = await fetch_tickers()
+        # Real ccxt returns ``{symbol: ticker}`` (found on the first live dry run —
+        # iterating it yielded bare symbol strings); a plain list is accepted too.
+        rows = list(raw.values()) if isinstance(raw, dict) else list(raw or [])
         volumes: dict[str, float] = {}
         suffix = f"/{quote_currency.upper()}" if quote_currency else None
-        for row in rows or []:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
             symbol = row.get("symbol")
             if not symbol:
                 continue

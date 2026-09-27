@@ -471,6 +471,21 @@ class CcxtExecutor:
         """Entry decisions of the open FIFO lots in ``symbol``, oldest first (§7.71)."""
         return self._tracker.entry_decision_ids(symbol)
 
+    async def tradable_symbols(self) -> set[str]:
+        """Active spot pairs quoted in the cash currency at *this* venue (§7.70 whitelist).
+
+        A demo account lists far fewer pairs than the live venue whose public data
+        the screener ranks (OKX EEA demo: 29 EUR spot pairs vs 243 live).
+        """
+        markets = await self._client.load_markets()  # type: ignore[attr-defined]
+        return {
+            symbol
+            for symbol, market in (markets or {}).items()
+            if market.get("spot")
+            and market.get("active") is not False
+            and str(market.get("quote", "")).upper() == self._quote.upper()
+        }
+
     def update_price(self, symbol: str, new_price: float) -> None:
         """Mark hook the pipeline calls each cycle (§7.41) — spot positions are valued here."""
         if new_price > 0:

@@ -290,6 +290,16 @@ class TestFetchQuoteVolumes:
         volumes = await provider.fetch_quote_volumes("EUR")
         assert volumes == pytest.approx({"BTC/EUR": 5_000_000.0, "XLM/EUR": 30_000.0})
 
+    async def test_real_ccxt_dict_shape(self) -> None:
+        # Real ccxt fetch_tickers(): {symbol: ticker}, not a list (live dry-run find).
+        client = AsyncMock()
+        client.fetch_tickers.return_value = {
+            "BTC/EUR": {"symbol": "BTC/EUR", "quoteVolume": 5_000_000.0},
+            "BTC/EUR:EUR": {"symbol": "BTC/EUR:EUR", "quoteVolume": 9e9},  # a swap — dropped
+        }
+        volumes = await CCXTProvider(client).fetch_quote_volumes("EUR")
+        assert volumes == {"BTC/EUR": 5_000_000.0}
+
     async def test_no_quote_filter_keeps_everything_measurable(self) -> None:
         client = AsyncMock()
         client.fetch_tickers.return_value = [
