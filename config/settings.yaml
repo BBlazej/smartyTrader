@@ -229,3 +229,22 @@ xtb_execution:
   # Check exact names in xStation (getAllSymbols) before enabling execution.
   symbol_map: {}
   #   AAPL: "AAPL.US"
+
+# Stocks execution on Saxo OpenAPI (§7.66) — replaces the dead XTB path. Off by
+# default: the paper executor stays. When enabled AND SAXO_ACCESS_TOKEN is set
+# (.env; for SIM the 24 h developer token from developer.saxo), the stocks runner
+# trades Saxo's free simulation account. environment: live is real money and also
+# needs LIVE_TRADING_ACK (§7.41). Enable at most one of xtb_execution/saxo_execution.
+# Outside the dashboard's safe-config whitelist — a venue switch is never a click.
+saxo_execution:
+  enabled: false
+  environment: "sim"            # sim | live
+  account_key: null             # explicit AccountKey, or pick by currency below
+  account_currency: "USD"       # US stocks trade from a USD account (one currency)
+  request_timeout_seconds: 10
+  fill_poll_delays: [0.5, 1.0, 2.0, 4.0]   # s; still working after → reconciled per cycle
+  amount_decimals: 0            # whole shares
+  # Data (yfinance) → Saxo symbol; unmapped symbols must resolve unambiguously.
+  symbol_map:
+    AAPL: "AAPL:xnas"
+    MSFT: "MSFT:xnas"

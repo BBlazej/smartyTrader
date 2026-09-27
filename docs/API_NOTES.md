@@ -31,6 +31,39 @@ Quirks and gotchas for the venues, gathered as we integrate.
 - **Balances:** read the quote-currency free balance (`fetch_free_balance`, keyed by
   `crypto_agent.quote_currency` — `EUR`) for the cash figure the risk engine needs.
 
+## Saxo OpenAPI (stocks) — §7.66
+
+Implemented in `src/execution/saxo_client.py` + `saxo_executor.py` (mocked tests only
+until a SIM run with a real token; verified against the developer portal and the
+`saxo_openapi` wrapper's documented payloads, 2026-09-27).
+
+- **Gateways:** SIM `https://gateway.saxobank.com/sim/openapi` (free simulation account,
+  same API as live), LIVE `https://gateway.saxobank.com/openapi`.
+- **Auth:** `Authorization: Bearer <token>`. SIM developer tokens from the portal last
+  **24 h** — fine for `--once`/manual runs; unattended runs need an OAuth app
+  (authorization-code flow + refresh tokens) — PLAN §7.66 follow-up. Env: `SAXO_ACCESS_TOKEN`.
+- **Accounts/cash:** `GET /port/v1/accounts/me` → `Data[].AccountKey/ClientKey/Currency`;
+  `GET /port/v1/balances?AccountKey=&ClientKey=` → `CashBalance`. The executor trades from
+  exactly one account (explicit `account_key`, else the unique active one in
+  `account_currency`) and refuses instruments quoted in another currency.
+- **Instruments:** `GET /ref/v1/instruments?Keywords=AAPL&AssetTypes=Stock` →
+  `Data[].Identifier` (= **Uic**), `Symbol` (`AAPL:xnas`), `CurrencyCode`. Keywords match
+  several listings — map data symbols in `saxo_execution.symbol_map`; unmapped symbols are
+  accepted only when unambiguous.
+- **Orders:** `POST /trade/v2/orders` `{AccountKey, Uic, AssetType: Stock, BuySell,
+  Amount (shares), OrderType: Market, OrderDuration: {DurationType: DayOrder},
+  ManualOrder: false}` → `{OrderId}`; failures come as `ErrorInfo {ErrorCode, Message}`
+  (sometimes with HTTP 200 — treated as errors). Cancel: `DELETE /trade/v2/orders/{id}?AccountKey=`.
+- **Fills:** filled orders vanish from `/port/v1/orders/me`; the fill record is the audit log
+  `GET /cs/v1/audit/orderactivities?OrderId=&EntryType=Last` → `Status` (`Placed`, `Fill`,
+  `FinalFill`, `Cancelled`, …), `FilledAmount`, `AveragePrice`. No streaming — the executor
+  polls it a few times after placing, then per cycle (§7.28).
+- **Holdings:** `GET /port/v1/netpositions/me?FieldGroups=NetPositionBase,NetPositionView` →
+  `NetPositionBase.Amount/Uic/AssetType`, `NetPositionView.CurrentPrice` — net per instrument
+  whatever the account's position-netting mode; caps the local FIFO ledger.
+- **Market data (open question Q8):** yfinance stays the stocks data source; comparing Saxo's
+  own (SIM: delayed) prices is part of the first SIM run.
+
 ## XTB Demo (stocks) — DEAD PATH (2026-09-26, §7.66)
 
 > **XTB closed its API access on 2025-03-14** ("XTB no longer offers API access").

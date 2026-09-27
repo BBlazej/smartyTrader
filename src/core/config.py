@@ -57,6 +57,9 @@ class Settings:
         self.control_api = ControlApiSettings(**raw.get("control_api", {}))
         self.dashboard = DashboardSettings(**raw.get("dashboard", {}))
         self.xtb_execution = XTBExecutionSettings(**raw.get("xtb_execution", {}))
+        self.saxo_execution = SaxoExecutionSettings(**raw.get("saxo_execution", {}))
+        if self.xtb_execution.enabled and self.saxo_execution.enabled:
+            raise ValueError("enable at most one stocks venue: xtb_execution or saxo_execution")
 
 
 class LLMSettings:
@@ -575,6 +578,57 @@ class XTBExecutionSettings:
         if len(set(symbol_map.values())) != len(symbol_map):
             raise ValueError("xtb_execution.symbol_map must be one-to-one")
         self.symbol_map: dict[str, str] = symbol_map
+
+
+class SaxoExecutionSettings:
+    """Stocks execution on Saxo OpenAPI (§7.66): off unless explicitly enabled.
+
+    When enabled AND ``SAXO_ACCESS_TOKEN`` is set, the stocks runner trades through
+    :class:`~src.execution.saxo_executor.SaxoExecutor` — ``environment: sim`` (Saxo's
+    free simulation account) by default; ``live`` additionally needs
+    ``LIVE_TRADING_ACK`` (§7.41). Deliberately outside the dashboard's safe-config
+    whitelist, like every venue switch.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        environment: str = "sim",
+        # Which account trades: an explicit AccountKey, else the only active account
+        # in ``account_currency`` (US stocks need a USD account — one currency, §7.66).
+        account_key: str | None = None,
+        account_currency: str | None = "USD",
+        # Data → Saxo symbol (§7.59 L8 pattern), e.g. {"AAPL": "AAPL:xnas"}; unmapped
+        # symbols are accepted only when the instrument lookup is unambiguous.
+        symbol_map: dict[str, str] | None = None,
+        request_timeout_seconds: float = 10.0,
+        # Waits (s) between fill polls right after placing; still working after the
+        # last one → resolved by per-cycle reconciliation.
+        fill_poll_delays: list[float] | None = None,
+        # Share-quantity precision: 0 = whole shares.
+        amount_decimals: int = 0,
+    ) -> None:
+        if environment not in ("sim", "live"):
+            raise ValueError("saxo_execution.environment must be 'sim' or 'live'")
+        symbol_map = dict(symbol_map or {})
+        for key, value in symbol_map.items():
+            if not isinstance(key, str) or not isinstance(value, str) or not value:
+                raise ValueError("saxo_execution.symbol_map must map symbol strings to strings")
+        if len(set(symbol_map.values())) != len(symbol_map):
+            raise ValueError("saxo_execution.symbol_map must be one-to-one")
+        delays = [0.5, 1.0, 2.0, 4.0] if fill_poll_delays is None else list(fill_poll_delays)
+        if not delays or any(float(d) < 0 for d in delays):
+            raise ValueError("saxo_execution.fill_poll_delays must be non-negative seconds")
+        if not 0 <= int(amount_decimals) <= 8:
+            raise ValueError("saxo_execution.amount_decimals must be between 0 and 8")
+        self.enabled = bool(enabled)
+        self.environment = environment
+        self.account_key = account_key or None
+        self.account_currency = account_currency.upper() if account_currency else None
+        self.symbol_map: dict[str, str] = symbol_map
+        self.request_timeout_seconds = float(request_timeout_seconds)
+        self.fill_poll_delays: tuple[float, ...] = tuple(float(d) for d in delays)
+        self.amount_decimals = int(amount_decimals)
 
 
 class DashboardSettings:

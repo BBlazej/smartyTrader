@@ -1,9 +1,16 @@
-"""Entry point: run the stocks agent in paper or XTB-demo mode.
+"""Entry point: run the stocks agent in paper, Saxo (SIM) or — legacy — XTB-demo mode.
 
 Shared lifecycle (enabled gate, storage/LLM/risk wiring, drawdown seeding, rehydration,
 retention pruning, ``--once`` vs scheduled loop, guaranteed cleanup) lives in
 :func:`src.core.runner.run_agent` (§7.13). This script keeps only the stocks-specific
-wiring: yfinance data + executor selection (paper default, XTB demo opt-in).
+wiring: yfinance data + executor selection (paper default, Saxo SIM opt-in).
+
+Saxo execution (§7.66)
+----------------------
+:class:`src.execution.saxo_executor.SaxoExecutor` is wired when
+``saxo_execution.enabled`` **and** ``SAXO_ACCESS_TOKEN`` is set (for SIM, the 24 h
+developer token from the Saxo developer portal). ``environment: live`` additionally
+needs ``LIVE_TRADING_ACK`` (§7.41). Anything missing → paper, with a warning.
 
 XTB demo execution (§7.16)
 --------------------------
@@ -38,9 +45,47 @@ from src.core.config import (
 from src.core.runner import RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import create_paper_executor
+from src.execution.saxo_client import SaxoClient
+from src.execution.saxo_executor import SaxoExecutor
 from src.execution.xtb_client import XApiClient
 from src.execution.xtb_executor import XTBExecutor
 from src.monitoring import setup_logging
+
+#: Saxo OpenAPI bearer token (§7.66) — env only, never YAML, never logged.
+SAXO_TOKEN_ENV = "SAXO_ACCESS_TOKEN"
+
+
+def _saxo_executor(settings: Settings, log: object) -> SaxoExecutor | None:
+    """The Saxo executor when fully configured, else ``None`` (stay on paper, say why)."""
+    cfg = getattr(settings, "saxo_execution", None)
+    if cfg is None or not cfg.enabled:
+        return None
+    token = os.getenv(SAXO_TOKEN_ENV, "").strip()
+    if not token:
+        log.warning(  # type: ignore[attr-defined]
+            f"saxo_execution.enabled but {SAXO_TOKEN_ENV} is unset — staying on the paper executor"
+        )
+        return None
+    if cfg.environment == "live" and not live_trading_acknowledged():
+        log.warning(  # type: ignore[attr-defined]
+            "saxo_execution.environment is 'live' (REAL money) but live trading is not "
+            f"acknowledged — staying on the paper executor. Set "
+            f"{LIVE_TRADING_ACK_ENV}={LIVE_TRADING_ACK_PHRASE} to trade the live account."
+        )
+        return None
+    client = SaxoClient(
+        token, environment=cfg.environment, timeout_seconds=cfg.request_timeout_seconds
+    )
+    log.info("using Saxo executor via OpenAPI", environment=cfg.environment, url=client.base_url)  # type: ignore[attr-defined]
+    return SaxoExecutor(
+        client,
+        venue=f"saxo-{cfg.environment}",
+        account_key=cfg.account_key,
+        account_currency=cfg.account_currency,
+        symbol_map=cfg.symbol_map,
+        amount_decimals=cfg.amount_decimals,
+        fill_poll_delays=cfg.fill_poll_delays,
+    )
 
 
 def _make_components(settings: Settings) -> tuple[object, object]:
@@ -59,7 +104,11 @@ def _make_components(settings: Settings) -> tuple[object, object]:
             "Install it with: pip install yfinance   (or: pip install -e '.[stocks]')"
         ) from exc
 
-    # Execution (§7.16): paper unless xtb_execution.enabled AND both env credentials
+    saxo = _saxo_executor(settings, log)
+    if saxo is not None:
+        return provider, saxo
+
+    # Legacy XTB (§7.16 — DEAD, §7.66): paper unless xtb_execution.enabled AND both env credentials
     # are present. Anything missing keeps the safe default and says why — never a
     # silent half-wired live path.
     xtb_cfg = settings.xtb_execution

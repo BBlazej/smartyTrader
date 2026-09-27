@@ -48,7 +48,8 @@ services:
     restart: unless-stopped
     environment:
       <<: *agent-env
-      # The names the runner actually reads (§7.16); empty → paper executor.
+      # The names the runner actually reads; empty → paper executor.
+      SAXO_ACCESS_TOKEN: "${SAXO_ACCESS_TOKEN:-}"   # §7.66
       XTB_ACCOUNT_ID: "${XTB_ACCOUNT_ID:-}"
       XTB_ACCOUNT_PASSWORD: "${XTB_ACCOUNT_PASSWORD:-}"
     volumes: *agent-volumes

@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 961 tests, no network needed (live smokes are opt-in:
+pytest                      # 985 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -109,6 +109,8 @@ src/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
 │   ├── ccxt_executor.py      # Keyed ccxt spot orders — OKX demo, live only with §7.41 ack
+│   ├── saxo_executor.py      # Saxo OpenAPI stock orders — SIM first; ledger-capped long-only (§7.66)
+│   ├── saxo_client.py        # Saxo OpenAPI REST client (accounts, instruments, orders, fill audit)
 │   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
 │   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): unofficial ws.xapi.pro relay
 ├── agents/
@@ -161,6 +163,7 @@ thresholds. Key sections:
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
+| `saxo_execution` | Saxo OpenAPI stocks execution (§7.66): `enabled` (default false → paper), `environment` (`sim`, or `live` + `LIVE_TRADING_ACK`), `account_key` / `account_currency` (one currency — US stocks from a USD account), `symbol_map` (data → Saxo symbol, e.g. `AAPL: "AAPL:xnas"`), `fill_poll_delays`, `amount_decimals` (0 = whole shares). At most one of `saxo_execution` / `xtb_execution` may be enabled |
 | `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`, `symbol_map` (data → xAPI symbols, e.g. `AAPL: AAPL.US`; §7.59 L8); requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
 
 ### Environment variables
@@ -171,6 +174,7 @@ thresholds. Key sections:
 | `EXCHANGE_API_KEY` / `EXCHANGE_API_SECRET` / `EXCHANGE_API_PASSPHRASE` | Keyed crypto execution (OKX needs all three): demo keys with `testnet: true`; live only with §7.41's ack; public data needs no key |
 | `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: a keyed exchange with `testnet: false` or `xtb_execution.account_type: real` (§7.41) |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
+| `SAXO_ACCESS_TOKEN` | Saxo OpenAPI bearer token (§7.66; SIM: the 24 h developer token) — used only when `saxo_execution.enabled`; env only, never logged |
 | `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
 | `XTB_API_KEY` | *Deprecated* — the old placeholder for §7.16; no longer read by any code |
 
@@ -247,7 +251,7 @@ keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and an XTB de
 execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
 its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
 (PLAN §7.66). Paper stays the default everywhere.
-**961 tests passing at ~94% coverage.**
+**985 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

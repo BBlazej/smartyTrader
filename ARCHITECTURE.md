@@ -57,7 +57,8 @@ flowchart TB
     subgraph execution["src/execution"]
         PAPER["paper_executor.py (default)"]
         KEX["ccxt_executor.py (spot)"]
-        XEX["xtb_executor.py"]
+        SEX["saxo_executor.py (stocks, §7.66)"]
+        XEX["xtb_executor.py (dead)"]
         PT["position_tracker.py — shared FIFO realized-PnL ledger"]
     end
 
@@ -125,6 +126,8 @@ src/
 │   ├── ccxt_executor.py      # Keyed ccxt spot orders (OKX Europe) — demo/sandbox if the exchange has one, else ack-gated live (§7.41); spot-only ledger positions (§7.64);
 │   │                         # pending orders re-polled each cycle — reconcile_open_orders, §7.28;
 │   │                         #  resolved statuses re-delivered until confirm_reconciled, §7.44)
+│   ├── saxo_executor.py      # Saxo OpenAPI stocks: ledger-capped long-only, whole shares, one currency, audit-log fills (§7.66)
+│   ├── saxo_client.py        # Saxo OpenAPI REST client over httpx (SIM/LIVE gateways, bearer token)
 │   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
 │   └── xtb_client.py         # real xAPI WS client (§7.16) over the unofficial ws.xapi.pro relay; reference only
 ├── agents/
@@ -243,6 +246,7 @@ class Executor(Protocol):
 ```
 
 - `ccxt_executor.py` — `CcxtExecutor`, keyed ccxt **spot** (OKX Europe, `myokx`; mode `<exchange>-sandbox` = OKX demo trading; `<exchange>-LIVE` only with `live_trading: true` + `LIVE_TRADING_ACK`, §7.41); cash = free balance of `crypto_agent.quote_currency` (EUR); positions always from the FIFO fill ledger capped by `fetch_balance` totals — `fetch_positions` is never used (OKX serves it for margin/derivatives only, `[]` for spot; §7.64); real fill payload parsing; credentials `EXCHANGE_API_KEY`/`_SECRET`/`_PASSPHRASE`.
+- `saxo_executor.py` — `SaxoExecutor` over `saxo_client.py::SaxoClient` (§7.66): Saxo OpenAPI stocks, SIM by default (`saxo-sim`; `saxo-live` only with `LIVE_TRADING_ACK`). Long-only whole shares from one account/currency (instruments quoted elsewhere are refused); positions = FIFO ledger capped by `/port/v1/netpositions/me`; market orders whose fills come from the order-activity audit log (`FinalFill` → `AveragePrice`, §7.62 sanity check), still-working orders reconciled per cycle (two-phase, §7.44); `load_fills`/`load_pending_orders` restart hooks (§7.58); data symbols mapped only at the edge (`symbol_map`).
 - `xtb_executor.py` — **DEAD PATH (2026-09-26): XTB closed its API access on 2025-03-14; kept disabled as reference until the Saxo executor replaces it (PLAN §7.16 → §7.66).** xAPI demo trading, now over the **real client** `execution/xtb_client.py::XApiClient` (§7.16). **Reduce first, never flip (§7.40):** an order opposite to open trades closes them FIFO via `close_trade` (`type=CLOSE` + the trade's `order` number); a SELL with nothing to close is refused (long-only; `allow_short` opt-in). Transport: WebSocket transactions to `wss://ws.xapi.pro/{demo,real}`, classic `login` auth (account id + xAPI verification code — *not* OAuth2; that endpoint does not exist), instant orders + status polling, live position marks via `getTickPrices`. Opt-in only (`xtb_execution.enabled` + env credentials); paper stays default. Data ↔ xAPI symbol names go through `xtb_execution.symbol_map` (§7.59 L8), translated only at the client boundary inside the executor. Fills are booked at the **venue's** price (§7.62): once `tradeTransactionStatus` says ACCEPTED the client reads the trade record (`getTrades` `open_price` / `getTradesHistory` `close_price`) and returns it with `price_source: "venue"`; fail-soft fallback to the requested price (`"requested"`) on no match, an error, or a > 20 % deviation.
 - `paper_executor.py` — Pure simulation. No network calls. Tracks virtual portfolio state; per-side fees + slippage; net-of-fee `realized_pnl`. **Default for all testing.**
 
