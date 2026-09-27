@@ -417,3 +417,21 @@ class TestCallMetrics:
         assert metrics.attempts == 2  # settings.max_retries
         assert metrics.latency_ms > 0  # includes the failed attempts + backoff
         assert metrics.prompt_tokens is None
+
+
+class TestApiKey:
+    """Key-protected OpenAI-compatible servers (Unsloth desktop, llama-server --api-key)."""
+
+    def test_key_from_env_becomes_a_bearer_header(self) -> None:
+        with patch.dict("os.environ", {"LLM_API_KEY": " sk-local "}):
+            settings = LLMSettings(endpoint="http://localhost:8889/v1", model="m")
+        assert settings.api_key == "sk-local"
+        client = LLMClient(settings)
+        assert client._client.headers["Authorization"] == "Bearer sk-local"
+        assert client._chat_url == "http://localhost:8889/v1/chat/completions"
+
+    def test_no_key_sends_no_authorization(self) -> None:
+        with patch.dict("os.environ", {"LLM_API_KEY": ""}):
+            settings = LLMSettings(endpoint="http://localhost:1234/v1", model="m")
+        assert settings.api_key is None
+        assert "Authorization" not in LLMClient(settings)._client.headers

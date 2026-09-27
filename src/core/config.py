@@ -15,6 +15,12 @@ from ..analysis.candles import timeframe_delta
 #: before any executor may touch a REAL-money account (§7.41): a keyed exchange run
 #: with ``testnet: false`` and ``xtb_execution.account_type: real``.
 LIVE_TRADING_ACK_ENV = "LIVE_TRADING_ACK"
+
+#: Env override for the LLM endpoint — any OpenAI-compatible server (LM Studio,
+#: Unsloth desktop, llama-server, Ollama). ``LM_STUDIO_ENDPOINT`` is its deprecated
+#: former name, still honored (with a warning) so an old ``.env`` keeps working.
+LLM_ENDPOINT_ENV = "LOCAL_LLM_ENDPOINT"
+LEGACY_LLM_ENDPOINT_ENV = "LM_STUDIO_ENDPOINT"
 LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 
 
@@ -85,8 +91,20 @@ class LLMSettings:
         # fed into the signal parser.
         max_response_chars: int = 20_000,
     ) -> None:
-        env_endpoint = os.getenv("LM_STUDIO_ENDPOINT")
+        env_endpoint = os.getenv(LLM_ENDPOINT_ENV, "").strip()
+        legacy_endpoint = os.getenv(LEGACY_LLM_ENDPOINT_ENV, "").strip()
+        if not env_endpoint and legacy_endpoint:
+            import structlog
+
+            structlog.get_logger().warning(
+                f"{LEGACY_LLM_ENDPOINT_ENV} is deprecated — rename it to {LLM_ENDPOINT_ENV}"
+            )
+            env_endpoint = legacy_endpoint
         self.endpoint = env_endpoint or endpoint
+        # Bearer key for servers that require one (Unsloth desktop, llama-server
+        # --api-key, vLLM). A secret: env ``LLM_API_KEY`` only — never YAML, never
+        # logged. Unset (LM Studio's default) sends no Authorization header.
+        self.api_key = os.getenv("LLM_API_KEY", "").strip() or None
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries

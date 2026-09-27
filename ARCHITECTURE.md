@@ -497,7 +497,7 @@ docker compose up -d --build            # crypto agent + dashboard; backtester: 
 
 - **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
 - **Deviation from the locked design:** `config/` is a **read-only bind mount**, not an `agent-config` named volume — nothing ever writes config files (safe overrides live in `agent_control` DB rows), so host edits stay authoritative on container restart instead of going stale inside a pre-seeded volume.
-- Secrets enter only via compose environment substitution (`${EXCHANGE_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. LM Studio on the host is reached via `host.docker.internal:host-gateway` (override with `LM_STUDIO_ENDPOINT`).
+- Secrets enter only via compose environment substitution (`${EXCHANGE_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. The host's LLM server (LM Studio, Unsloth desktop, …) is reached via `host.docker.internal:host-gateway` (override with `LOCAL_LLM_ENDPOINT`).
 - No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
 
 ## Backtesting (§7.14 — implemented)
@@ -742,7 +742,7 @@ xtb_execution:
 
 > `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
 
-Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LM_STUDIO_ENDPOINT`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
+Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LOCAL_LLM_ENDPOINT` (formerly `LM_STUDIO_ENDPOINT`), `LLM_API_KEY`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
 
 ## Dependencies (current)
 

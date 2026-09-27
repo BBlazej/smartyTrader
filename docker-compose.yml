@@ -15,7 +15,8 @@
 
 x-agent-env: &agent-env
   # LM Studio runs on the host; host-gateway makes it reachable from containers.
-  LM_STUDIO_ENDPOINT: "${LM_STUDIO_ENDPOINT:-http://host.docker.internal:1234/v1/chat/completions}"
+  LOCAL_LLM_ENDPOINT: "${LOCAL_LLM_ENDPOINT:-http://host.docker.internal:1234/v1/chat/completions}"
+  LLM_API_KEY: "${LLM_API_KEY:-}"   # key-protected LLM servers (Unsloth desktop, llama-server)
   # Credentials pass through only if set (shell env or a sibling .env); empty →
   # paper executor. The dashboard never sees any of this.
   EXCHANGE_API_KEY: "${EXCHANGE_API_KEY:-}"

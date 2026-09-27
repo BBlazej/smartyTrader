@@ -71,9 +71,13 @@ class LLMClient:
         # endpoint per request: the old ``rsplit("/v1")`` + re-append dance worked
         # only for the shipped config shape (§7.19).
         self._chat_url = _resolve_chat_url(settings.endpoint)
+        api_key = getattr(settings, "api_key", None)
         self._client = httpx.AsyncClient(
             base_url=_derive_base_url(settings.endpoint),
             timeout=settings.timeout_seconds,
+            # Only when configured (LLM_API_KEY): key-protected OpenAI-compatible
+            # servers answer 401 otherwise; LM Studio needs none.
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
         )
 
     async def close(self) -> None:

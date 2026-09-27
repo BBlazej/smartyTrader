@@ -19,7 +19,7 @@ class TestSettingsLoad:
         s = Settings(config_path=config_path)
 
         assert s.llm.endpoint == "http://127.0.0.1:1234/v1/chat/completions"
-        assert s.llm.model == "qwen/qwen3.8-27b"
+        assert s.llm.model == "unsloth/Qwen3.8-27B-GGUF"
         assert s.risk.max_position_pct == 0.10
         assert s.risk.min_confidence == 0.6
         # §7.33 knobs ship in settings.yaml and load cleanly.
@@ -69,12 +69,21 @@ class TestSettingsLoad:
         assert date(2027, 3, 26) in holidays  # Good Friday
 
     def test_env_override_endpoint(self, config_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LM_STUDIO_ENDPOINT", "http://custom:9999/v1/chat/completions")
+        monkeypatch.setenv("LOCAL_LLM_ENDPOINT", "http://custom:9999/v1/chat/completions")
+        monkeypatch.setenv("LM_STUDIO_ENDPOINT", "http://legacy:1234/v1")  # new name wins
         s = Settings(config_path=config_path)
 
         assert s.llm.endpoint == "http://custom:9999/v1/chat/completions"
 
+    def test_legacy_endpoint_name_still_honored(
+        self, config_path: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LOCAL_LLM_ENDPOINT", raising=False)
+        monkeypatch.setenv("LM_STUDIO_ENDPOINT", "http://legacy:1234/v1")
+        assert Settings(config_path=config_path).llm.endpoint == "http://legacy:1234/v1"
+
     def test_fallback_when_no_env(self, config_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LOCAL_LLM_ENDPOINT", raising=False)
         monkeypatch.delenv("LM_STUDIO_ENDPOINT", raising=False)
         s = Settings(config_path=config_path)
 

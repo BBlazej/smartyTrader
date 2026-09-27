@@ -1,6 +1,7 @@
 llm:
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
-  model: "qwen/qwen3.8-27b"
+  # Served by Unsloth desktop (LOCAL_LLM_ENDPOINT in .env); its loaded model's id.
+  model: "unsloth/Qwen3.8-27B-GGUF"
   # Whole-response budget: requests aren't streamed, so the full completion (incl.
   # any <think> reasoning) must arrive within this. A local 27B model needs minutes
   # for thousands of tokens. The scheduler never overlaps cycles (max_instances=1).
