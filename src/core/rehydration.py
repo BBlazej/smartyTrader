@@ -220,12 +220,25 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to rehydrate daily-loss baseline", error=str(exc))
 
+    await rehydrate_loss_streak(risk_engine, storage)
+
+
+async def rehydrate_loss_streak(
+    risk_engine: RiskEngine, storage: Storage, strategy: str | None = None
+) -> None:
+    """Rebuild the losing streak / cooldown from closing fills (see above).
+
+    ``strategy`` narrows it to one sleeve's closing fills (§7.71) — each sleeve's
+    engine keeps its own streak; the pre-§7.46 decision fallback is agent-only.
+    """
     try:
         outcomes: list[tuple[float, datetime | None]] = [
             (float(o.realized_pnl), _as_utc(o.filled_at or o.created_at))
-            for o in await storage.get_recent_closing_fills(limit=50)
+            for o in await storage.get_recent_closing_fills(
+                limit=50, **({"strategy": strategy} if strategy is not None else {})
+            )
         ]
-        if not outcomes:  # pre-§7.46 history: entry decisions carry one outcome each
+        if not outcomes and strategy is None:  # pre-§7.46: entry decisions carry one outcome
             outcomes = [
                 (float(d.realized_pnl or 0.0), _as_utc(d.timestamp))
                 for d in await storage.get_closed_decisions(limit=50)
@@ -249,6 +262,7 @@ async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> No
             risk_engine.restore_loss_streak(streak, cooldown_until)
             logger.info(
                 "loss-streak state rehydrated",
+                strategy=strategy,
                 consecutive_losses=streak,
                 cooldown_until=cooldown_until.isoformat() if cooldown_until else None,
             )

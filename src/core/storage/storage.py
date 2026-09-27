@@ -12,6 +12,7 @@ from .decisions import DecisionMixin
 from .engine import StorageBase
 from .orders import OrderMixin
 from .pruning import PruneMixin
+from .sleeves import SleeveMixin
 from .snapshots import MarketSnapshotMixin, PortfolioSnapshotMixin
 from .watchlist import WatchlistMixin
 
@@ -24,6 +25,7 @@ class Storage(
     ControlMixin,
     PruneMixin,
     WatchlistMixin,
+    SleeveMixin,
     StorageBase,
 ):
     """Async repository for all trading data."""

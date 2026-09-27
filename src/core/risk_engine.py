@@ -273,6 +273,29 @@ class RiskEngine:
     def peak_equity(self) -> float | None:
         return self._peak_equity
 
+    def check_backstop(self, portfolio_value: float, limit_pct: float) -> RiskResult:
+        """Loose agent-wide breaker over strategy sleeves (§7.71, CHANGE.md §4.8).
+
+        Sleeves gate entries on their *own* books, which cannot see several sleeves
+        losing at once (correlated crypto moves) or a bug in sleeve accounting. This
+        rejects any new entry while the whole agent's equity sits more than
+        ``limit_pct`` below its high-water mark — the same seeded peak (§7.53) the
+        single-style drawdown rule uses, far outside the sleeves' own limits.
+        """
+        if portfolio_value <= 0:
+            return RiskResult(verdict=RiskVerdict.APPROVED)
+        self.note_equity(portfolio_value)
+        peak = self._peak_equity or portfolio_value
+        drawdown_pct = (peak - portfolio_value) / peak
+        if drawdown_pct > limit_pct:
+            reason = (
+                f"Agent-wide backstop: drawdown {drawdown_pct:.2%} exceeds "
+                f"{limit_pct:.2%} (peak equity {peak:.2f}) — no new entries in any sleeve"
+            )
+            logger.warning("risk_rejected", reason=reason)
+            return RiskResult(verdict=RiskVerdict.REJECTED, reason=reason)
+        return RiskResult(verdict=RiskVerdict.APPROVED)
+
     # ── Individual checks (each returns RiskResult) ───────────
 
     def _check_confidence(self, signal: TradeSignal) -> RiskResult:

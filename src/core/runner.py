@@ -37,13 +37,14 @@ from ..analysis.candles import timeframe_delta
 from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings
-from .control_config import parse_and_apply
+from .control_config import parse_and_apply, risk_baseline
 from .decision_pipeline import DecisionPipeline
 from .llm_client import LLMClient
+from .models import PortfolioState
 from .rehydration import executor_venue, rehydrate_from_storage
 from .retention import prune_storage
 from .risk_engine import RiskEngine
-from .sleeves import SleeveBook, SleeveRun
+from .sleeves import SleeveBook, SleeveRun, sleeve_risk_settings
 from .storage import Storage
 from .watchlist import WatchlistManager
 
@@ -247,16 +248,33 @@ async def run_agent(
     # Strategy sleeves (§7.71, opt-in): one more pipeline per sleeve over the same
     # provider/LLM/executor/storage — its own timeframe, playbook prompt and
     # ``strategy`` tag; a shared SleeveBook enforces the symbol lock + time stops.
-    # Off → the agent runs ``pipeline`` alone, exactly as before.
+    # Each sleeve gates on its own book (weight × allocation base + its PnL) with its
+    # own RiskEngine; the agent engine keeps the high-water mark for the loose
+    # agent-wide backstop. Off → the agent runs ``pipeline`` alone, exactly as before.
     sleeve_runs: list[SleeveRun] = []
+    sleeve_book: SleeveBook | None = None
     sleeves_cfg = getattr(getattr(settings, f"{component}_agent", None), "sleeves", None)
     if getattr(sleeves_cfg, "enabled", False) is True and hasattr(agent, "set_sleeves"):
-        sleeve_book = SleeveBook(sleeves_cfg, storage)
+        sleeve_engines = {
+            spec.name: RiskEngine(
+                sleeve_risk_settings(risk_baseline(settings), settings.risk, spec.risk_overrides)
+            )
+            for spec in sleeves_cfg.strategies
+        }
+        sleeve_book = SleeveBook(
+            sleeves_cfg, storage, engines=sleeve_engines, backstop_engine=risk_engine
+        )
+        # Not fail-soft on purpose: without an allocation every sleeve would gate on
+        # the whole agent book with its (possibly looser) own limits.
+        await sleeve_book.ensure_allocation(
+            PortfolioState(cash=await executor.get_cash(), positions=await executor.get_positions())
+        )
+        await sleeve_book.restore()
         for spec in sleeves_cfg.strategies:
             sleeve_pipeline = DecisionPipeline(
                 provider=provider,
                 llm_client=llm_client,
-                risk_engine=risk_engine,
+                risk_engine=sleeve_engines[spec.name],
                 executor=executor,
                 system_prompt=system_prompt_for(spec.playbook),
                 storage=storage,
@@ -287,6 +305,8 @@ async def run_agent(
         changed = parse_and_apply(settings, component, raw, pipeline=pipeline, agent=agent)
         for run in sleeve_runs:  # §7.71: sleeves share the prompt-history depth
             run.pipeline.decision_history_limit = pipeline.decision_history_limit
+        if sleeve_book is not None:  # agent-wide risk tightening caps every sleeve (§7.43)
+            sleeve_book.apply_risk(risk_baseline(settings), settings.risk)
         if watchlist_extras and hasattr(agent, "set_symbols"):
             agent.set_symbols(list(dict.fromkeys(_core_symbols() + watchlist_extras)))
         if "interval_minutes" in changed and scheduler_manager is not None:

@@ -475,7 +475,7 @@ crypto_agent:
   sleeves:
     enabled: {enabled}
     strategies:
-      crypto_swing: {{timeframe: "1h", playbook: swing, holding: {{max_hours: 72}}}}
+      crypto_swing: {{timeframe: "1h", playbook: swing, holding: {{max_hours: 72}}, risk: {{max_position_pct: 0.05}}}}
       crypto_position: {{timeframe: "4h", playbook: position}}
 stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
 risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
@@ -485,14 +485,24 @@ monitoring: {{log_level: INFO}}
 
 
 class _Agent:
-    def __init__(self) -> None:
+    def __init__(self, override: str | None = None) -> None:
         self.sleeves: list[SleeveRun] | None = None
         self.cycles = 0
+        self._override = override
+        self._applier = None
 
     def set_sleeves(self, runs: list[SleeveRun], book: SleeveBook) -> None:
         self.sleeves = runs
 
+    def set_control_overrides_applier(self, applier) -> None:  # type: ignore[no-untyped-def]
+        self._applier = applier
+
+    def set_symbols(self, symbols: list[str]) -> None:
+        return None
+
     async def run_cycle(self):
+        if self._override is not None and self._applier is not None:
+            self._applier(self._override)  # a dashboard save mid-run
         self.cycles += 1
         return []
 
@@ -501,17 +511,19 @@ class _Agent:
 
 
 class TestRunnerSleeves:
-    async def _run(self, tmp_path: Path, enabled: bool) -> _Agent:
+    async def _run(self, tmp_path: Path, enabled: bool, override: str | None = None) -> _Agent:
         config = tmp_path / "settings.yaml"
         config.write_text(
             _SLEEVES_YAML.format(enabled=str(enabled).lower(), db=tmp_path / "runner.db")
         )
         settings = Settings(str(config))
-        agent = _Agent()
+        agent = _Agent(override)
         provider = MagicMock()
         provider.close = AsyncMock()
         executor = MagicMock()
         executor.close = AsyncMock()
+        executor.get_cash = AsyncMock(return_value=10_000.0)
+        executor.get_positions = AsyncMock(return_value=[])
         with (
             patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
             patch("src.core.runner.prune_storage", new=AsyncMock()),
@@ -541,6 +553,26 @@ class TestRunnerSleeves:
         assert position.system_prompt == system_prompt_for("position")
         assert swing.executor is position.executor
         assert agent.cycles == 1
+
+    async def test_sleeves_get_own_engines_and_an_allocation(self, tmp_path: Path) -> None:
+        agent = await self._run(tmp_path, enabled=True)
+        swing, position = (r.pipeline.risk_engine for r in agent.sleeves)
+        assert swing is not position
+        assert swing.settings.max_position_pct == 0.05  # the sleeve's own override
+        assert position.settings.max_position_pct == 0.1  # the agent block
+        store = Storage(str(tmp_path / "runner.db"))
+        await store.initialize()
+        allocation = await store.get_latest_allocation(agent="crypto")
+        await store.close()
+        assert allocation is not None and allocation.base_equity == 10_000.0
+
+    async def test_agent_risk_tightening_caps_sleeves(self, tmp_path: Path) -> None:
+        agent = await self._run(
+            tmp_path, enabled=True, override='{"risk": {"max_position_pct": 0.03}}'
+        )
+        swing, position = (r.pipeline.risk_engine for r in agent.sleeves)
+        assert swing.settings.max_position_pct == 0.03
+        assert position.settings.max_position_pct == 0.03
 
     async def test_disabled_sleeves_touch_nothing(self, tmp_path: Path) -> None:
         agent = await self._run(tmp_path, enabled=False)

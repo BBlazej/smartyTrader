@@ -63,17 +63,28 @@ crypto_agent:
   # held by at most one sleeve (symbol lock — the first listed wins a tie), and a
   # position older than its sleeve's holding limit is closed deterministically
   # (time stop — no LLM, no risk gate, like SL/TP).
+  # Each sleeve trades its own book: weight × the allocation's cost-basis equity +
+  # its own PnL, gated by its own risk limits (the `risk:` block below + the
+  # sleeve's `risk:` overrides; a dashboard tightening caps every sleeve). A new
+  # allocation is recorded when the weights change (re-bases every sleeve's peak).
   sleeves:
     enabled: false
+    # Loose agent-wide breaker (CHANGE.md §4.8): agent equity this far below its
+    # peak blocks new entries in every sleeve, whatever their own limits say.
+    backstop_max_drawdown_pct: 0.20
     strategies:
       crypto_swing:               # holds of hours to ~3 days
         timeframe: "1h"
         playbook: swing           # momentum/mean-reversion, tight SL/TP
         holding: {max_hours: 72}
+        weight: 0.5
+        risk: {max_position_pct: 0.05, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.06, max_stop_distance_pct: 0.08}
       crypto_position:            # holds of days to weeks (CHANGE.md Q3)
         timeframe: "4h"
         playbook: position        # trend-following, wider stops, few trades
         holding: {max_days: 28}
+        weight: 0.5
+        risk: {max_position_pct: 0.10, daily_loss_limit_pct: 0.04, max_drawdown_pct: 0.15, max_stop_distance_pct: 0.20}
 
 stocks_agent:
   enabled: false

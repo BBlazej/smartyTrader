@@ -1,6 +1,6 @@
 # CHANGE.md — Multi-strategy trading with a research layer (proposal)
 
-**Status:** proposal, under discussion. Started 2026-09-26. **Landed so far (2026-09-26):** the §4.4 crypto screener + watchlist manager (P4's deterministic half, pulled forward per Q9) shipped as PLAN/HISTORY §7.70 — opt-in, capped, TTL'd, held symbols never dropped. **P1 in progress (PLAN §7.71):** step 1 landed 2026-09-27 — sleeve config, `strategy` tagging, per-sleeve pipelines + playbooks, symbol lock (ownership derived from the FIFO ledger's entry decisions), time stops; per-sleeve risk + backstop and the dashboard table are next.
+**Status:** proposal, under discussion. Started 2026-09-26. **Landed so far (2026-09-26):** the §4.4 crypto screener + watchlist manager (P4's deterministic half, pulled forward per Q9) shipped as PLAN/HISTORY §7.70 — opt-in, capped, TTL'd, held symbols never dropped. **P1 in progress (PLAN §7.71):** steps 1–2 landed 2026-09-27 — sleeve config, `strategy` tagging, per-sleeve pipelines + playbooks, symbol lock (ownership derived from the FIFO ledger's entry decisions), time stops, per-sleeve books + risk engines (§4.8, fixed-weight `strategy_allocations`, `sleeve_snapshots`) and the agent-wide backstop; the dashboard table is next.
 **Decided so far (2026-09-26):** Q1 — venues: **OKX Europe** for crypto, **Saxo** for stocks
 (demo/SIM first, same APIs for real money later; §8); Q2 — **crypto first**; Q3 — "long-term"
 means **days to weeks** (position trading, not months-long investing); Q4 — risk limits move to

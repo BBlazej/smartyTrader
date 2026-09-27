@@ -171,7 +171,14 @@ class DecisionPipeline:
         pairs so the caller can persist outcomes and backfill entry decisions.
         """
         closed: list[tuple[str, OrderResult]] = []
-        for position in await self.executor.get_positions():
+        positions = await self.executor.get_positions()
+        owners: dict[str, str] = {}
+        if self._sleeve_book is not None:
+            try:  # §7.71: each close's outcome belongs to the owning sleeve's streak
+                owners = await self._sleeve_book.owners(self.executor, positions)
+            except Exception as exc:  # noqa: BLE001 - closing matters more than attribution
+                logger.warning("close-all: sleeve ownership unreadable", error=str(exc))
+        for position in positions:
             if position.quantity <= 0:
                 continue
             # §7.48: a short is closed by a covering BUY — selling it would *add* to it.
@@ -191,7 +198,7 @@ class DecisionPipeline:
             # A close-all fill is a real outcome for the loss streak, like every
             # other closing fill (§7.46 — it used to be skipped).
             if order.status == "filled" and order.realized_pnl is not None:
-                self.risk_engine.record_outcome(was_profitable=order.realized_pnl >= 0)
+                self._record_outcome(owners.get(position.symbol), order.realized_pnl >= 0)
             closed.append((position.symbol, order))
         return closed
 
@@ -278,9 +285,10 @@ class DecisionPipeline:
         # daily-loss block) must never strand us in a losing position. The cycle
         # ends with this close — no new entry on the same symbol.
         ownership, ownership_error = await self._sleeve_ownership(symbol)
-        auto_exit = await self._check_exit_levels(symbol, snapshot)
+        owner = ownership.strategy if ownership is not None else None
+        auto_exit = await self._check_exit_levels(symbol, snapshot, owner=owner)
         if auto_exit is not None:
-            auto_exit.strategy = ownership.strategy if ownership is not None else None
+            auto_exit.strategy = owner
             return auto_exit
 
         # Step 1c' — Strategy sleeves (§7.71): the owning sleeve's time stop fires
@@ -339,6 +347,8 @@ class DecisionPipeline:
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.BUILD_PROMPT)
         try:
             portfolio = await self.get_portfolio_state()
+            # §7.71: a sleeve decides, sizes and is gated on its *own* book.
+            book = await self._sleeve_portfolio(portfolio)
         except Exception as exc:  # noqa: BLE001
             step_logger.error("portfolio read failed", error=str(exc))
             return PipelineResult(
@@ -351,7 +361,7 @@ class DecisionPipeline:
         user_prompt = build_user_prompt(
             snapshot,
             prior_decisions,
-            book=self._book_context(symbol, portfolio, ownership, snapshot.fetched_at),
+            book=self._book_context(symbol, book, ownership, snapshot.fetched_at),
         )
 
         # Step 4 — Call LLM
@@ -375,11 +385,24 @@ class DecisionPipeline:
         planned_quantity: float | None = None
         planned_notional: float | None = None
         if signal.action in (Action.BUY, Action.SELL) and current_price:
-            planned_quantity = self._calculate_quantity(signal, portfolio, current_price)
+            planned_quantity = self._calculate_quantity(
+                signal,
+                book,
+                current_price,
+                # Venue cash is shared: a sleeve can't spend past the agent's free cash.
+                cash_cap=portfolio.cash if book is not portfolio else None,
+            )
             planned_notional = planned_quantity * current_price
         risk_result = self.risk_engine.evaluate(
-            signal, portfolio, planned_notional=planned_notional, current_price=current_price
+            signal, book, planned_notional=planned_notional, current_price=current_price
         )
+        if (
+            self._sleeve_book is not None
+            and signal.action == Action.BUY
+            and risk_result.verdict == RiskVerdict.APPROVED
+        ):
+            # The loose agent-wide breaker over all sleeves (CHANGE.md §4.8).
+            risk_result = self._sleeve_book.check_backstop(portfolio.total_value)
 
         # Persist the decision (+ market snapshot) right after the gate so every
         # outcome path — rejected, HOLD, or executed — records it, and an order
@@ -454,8 +477,7 @@ class DecisionPipeline:
             # only orders that report a realized_pnl (e.g. a closing sell)
             # update the tracker — we never fabricate a win at fill time.
             if order_result.status == "filled" and order_result.realized_pnl is not None:
-                was_profitable = order_result.realized_pnl >= 0
-                self.risk_engine.record_outcome(was_profitable=was_profitable)
+                self._record_outcome(self.strategy, order_result.realized_pnl >= 0)
 
             step_logger.info(
                 "order placed",
@@ -486,7 +508,7 @@ class DecisionPipeline:
             )
 
     async def _check_exit_levels(
-        self, symbol: str, snapshot: MarketSnapshot
+        self, symbol: str, snapshot: MarketSnapshot, owner: str | None = None
     ) -> PipelineResult | None:
         """Close this symbol's position if the mark breached its exit levels (§7.9).
 
@@ -535,7 +557,7 @@ class DecisionPipeline:
             take_profit=position.take_profit,
             quantity=position.quantity,
         )
-        return await self._close_for_exit(symbol, snapshot, position, mark, reason)
+        return await self._close_for_exit(symbol, snapshot, position, mark, reason, owner)
 
     async def _check_time_stop(
         self, symbol: str, snapshot: MarketSnapshot, ownership: Ownership
@@ -568,7 +590,9 @@ class DecisionPipeline:
             max_holding_hours=book.spec(ownership.strategy).max_holding_hours,
             quantity=position.quantity,
         )
-        result = await self._close_for_exit(symbol, snapshot, position, mark, TIME_STOP)
+        result = await self._close_for_exit(
+            symbol, snapshot, position, mark, TIME_STOP, ownership.strategy
+        )
         result.strategy = ownership.strategy
         return result
 
@@ -579,6 +603,7 @@ class DecisionPipeline:
         position: Position,
         mark: float,
         reason: str,
+        owner: str | None = None,
     ) -> PipelineResult:
         """Deterministically close ``position`` at ``mark`` — no LLM, no gate."""
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.ENFORCE_EXIT_LEVELS)
@@ -602,7 +627,7 @@ class DecisionPipeline:
         # A closed position is a real outcome for the loss-streak tracker, same
         # rule as any other fill: only realized numbers count (§7.8).
         if order_result.status == "filled" and order_result.realized_pnl is not None:
-            self.risk_engine.record_outcome(was_profitable=order_result.realized_pnl >= 0)
+            self._record_outcome(owner, order_result.realized_pnl >= 0)
 
         step_logger.info(
             "position closed on exit rule",
@@ -634,6 +659,19 @@ class DecisionPipeline:
         except Exception as exc:  # noqa: BLE001
             logger.error("sleeve ownership read failed", symbol=symbol, error=str(exc))
             return None, f"Sleeve ownership read failed: {exc}"
+
+    def _record_outcome(self, strategy: str | None, was_profitable: bool) -> None:
+        """Feed a closing fill to the loss streak of the sleeve that owned it (§7.71)."""
+        engine = self._sleeve_book.engine(strategy) if self._sleeve_book is not None else None
+        (engine or self.risk_engine).record_outcome(was_profitable=was_profitable)
+
+    async def _sleeve_portfolio(self, portfolio: PortfolioState) -> PortfolioState:
+        """This sleeve's own book once per-sleeve books are on; else the agent's (§7.71)."""
+        book = self._sleeve_book
+        if book is None or not book.per_sleeve_books or self.strategy is None:
+            return portfolio
+        sleeve = await book.sleeve_equity(self.strategy, portfolio, self.executor)
+        return sleeve.portfolio
 
     def _strategy_filter(self) -> dict[str, str]:
         """Storage kwargs narrowing reads to this sleeve's rows (empty without sleeves)."""
@@ -804,6 +842,7 @@ class DecisionPipeline:
         signal: TradeSignal,
         portfolio: PortfolioState,
         current_price: float | None = None,
+        cash_cap: float | None = None,
     ) -> float:
         """Calculate position size based on risk settings and available cash."""
         return calculate_quantity(
@@ -813,6 +852,7 @@ class DecisionPipeline:
             current_price,
             cost_factor=buy_cost_factor(self.executor),
             cost_model=CostModel.from_attrs(self.executor),
+            cash_cap=cash_cap,
         )
 
 
@@ -863,6 +903,7 @@ def calculate_quantity(
     current_price: float | None = None,
     cost_factor: float = 1.0,
     cost_model: CostModel | None = None,
+    cash_cap: float | None = None,
 ) -> float:
     """Position size: ``max_position_pct`` of total value, cash- and holdings-clamped.
 
@@ -878,6 +919,10 @@ def calculate_quantity(
     commission* (§7.65) — it dominates ``cost_factor`` when given. Quantities
     round *down* to 1e-8 — rounding up could exceed cash (§7.59 L2); a SELL
     returns the held size exactly.
+
+    ``cash_cap`` additionally bounds the spendable cash (§7.71): a strategy sleeve
+    sizes on its own book, but the venue cash is shared — a BUY can never spend
+    more than the sleeve's cash *or* the agent's actual free cash.
     """
     max_position_value = portfolio.total_value * settings.max_position_pct
     if signal.action == Action.BUY:
@@ -905,12 +950,14 @@ def calculate_quantity(
     # all-in unit cost, not the quoted price (§7.59 L1), honouring a venue minimum
     # commission when the profile has one (§7.65).
     if signal.action == Action.BUY:
+        cash = portfolio.cash if cash_cap is None else min(portfolio.cash, cash_cap)
+        cash = max(cash, 0.0)
         if cost_model is not None:
             fill_price = price * (1.0 + cost_model.slippage_pct)
-            affordable = cost_model.max_affordable_fill_notional(portfolio.cash)
+            affordable = cost_model.max_affordable_fill_notional(cash)
         else:
             fill_price = price * max(cost_factor, 1.0)
-            affordable = portfolio.cash
+            affordable = cash
         max_qty_by_cash = affordable / fill_price if fill_price > 0 else 0.0
         quantity = min(quantity, max_qty_by_cash)
 

@@ -267,6 +267,7 @@ Additional engine facts:
 - The drawdown high-water mark is seeded at startup from `Storage.get_effective_peak_equity()` (`seed_peak_equity`, fail-soft), so it survives restarts (§7.5). The seed is reset-aware (§7.53): with a `drawdown_resets` row it becomes `max(baseline_value, MAX(total_value since reset_at))` — the operator's audited CLI exit from a permanently-latched guard (`scripts/rebaseline_drawdown.py`, dry-run by default; no dashboard equivalent by design).
 - Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7). `_check_daily_loss` rolls the UTC day itself (§7.59 L3) — the post-processing rollover alone left the first check after midnight on yesterday's baseline.
 - The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
+- **Strategy sleeves (§7.71):** each sleeve has its own `RiskEngine` evaluating the **sleeve's book** (`SleeveBook.sleeve_equity`: `weight × base_equity` of the latest `strategy_allocations` row + the sleeve's realized PnL since + unrealized PnL of owned positions; cash = equity − owned market value), so all seven rules run per sleeve with the sleeve's limits (agent `risk:` block + sleeve `risk:` overrides; agent-wide safe-config tightening caps every sleeve). Sizing is additionally clamped to the agent's free cash. The agent engine keeps the portfolio-snapshot-seeded peak for one loose **backstop** (`check_backstop`, `sleeves.backstop_max_drawdown_pct`) on BUYs. Sleeve trackers rehydrate from `sleeve_snapshots` (peak since the allocation, today's first row) and tagged closing fills.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
 
 ## Control plane (§7.15 P1/P2 — implemented)
@@ -320,7 +321,7 @@ stateDiagram-v2
 ## Storage schema & retention
 
 - **One SQLite database** at `config.storage.database_path` (`data/trading_agent.db`), run in **WAL mode** so the dashboard can read while the agent writes, with no lock contention on the shared volume.
-- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53) and `watchlist_entries` (agent-scoped dynamic symbols added by the screener: symbol, source, added_at, expires_at TTL, ranking meta_json; self-expiring, §7.70).
+- Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53), `strategy_allocations` (audited sleeve capital split: agent, venue, cost-basis `base_equity`, `weights_json`, reason — a row per weights change, §7.71), `sleeve_snapshots` (per-cycle sleeve equity/cash/realized/unrealized/open positions — never pruned; seeds each sleeve's peak + daily baseline, §7.71) and `watchlist_entries` (agent-scoped dynamic symbols added by the screener: symbol, source, added_at, expires_at TTL, ranking meta_json; self-expiring, §7.70).
 - **Strategy tag (§7.71):** `llm_decisions.strategy` and `orders.strategy` (nullable, migrated at startup; NULL = no sleeves / legacy) name the sleeve that decided / placed the order (a close is tagged with the *owning* sleeve). Ownership itself is not stored — it is derived from the executor ledger's open lots and these decision rows, so it is exactly as restart-safe as the ledger.
 - **Agent scoping (§7.39):** both agents share the file, so `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
@@ -595,9 +596,14 @@ crypto_agent:
     exclude_symbols: []
   sleeves:                     # §7.71 — opt-in strategy sleeves (CHANGE.md P1)
     enabled: false             # off ⇒ one implicit style on `timeframe`
+    backstop_max_drawdown_pct: 0.20   # agent-wide breaker over all sleeves' entries
     strategies:                # config order = priority on a same-cycle tie
-      crypto_swing:   {timeframe: "1h", playbook: swing,    holding: {max_hours: 72}}
-      crypto_position: {timeframe: "4h", playbook: position, holding: {max_days: 28}}
+      crypto_swing:            # weight × allocated capital; risk: overrides the agent block
+        {timeframe: "1h", playbook: swing, holding: {max_hours: 72}, weight: 0.5,
+         risk: {max_position_pct: 0.05, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.06, max_stop_distance_pct: 0.08}}
+      crypto_position:
+        {timeframe: "4h", playbook: position, holding: {max_days: 28}, weight: 0.5,
+         risk: {max_position_pct: 0.10, daily_loss_limit_pct: 0.04, max_drawdown_pct: 0.15, max_stop_distance_pct: 0.20}}
 
 stocks_agent:
   enabled: false

@@ -160,6 +160,52 @@ class WatchlistEntryRow(Base):
     meta_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class StrategyAllocationRow(Base):
+    """Audited capital allocation across an agent's strategy sleeves (§7.71).
+
+    ``base_equity`` is the agent's cost-basis equity (cash + open positions at their
+    entry price) when the allocation was made; each sleeve's capital is
+    ``weight × base_equity``. With fixed weights a new row is written only when the
+    configured weights change (or on the first sleeve run); the allocator (CHANGE.md
+    P3) will append rows the same way. Never pruned — sleeve equity is measured from
+    the latest row, per agent and venue.
+    """
+
+    __tablename__ = "strategy_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    base_equity: Mapped[float] = mapped_column(Float)
+    weights_json: Mapped[str] = mapped_column(Text)  # {"crypto_swing": 0.5, ...}
+    reason: Mapped[str] = mapped_column(String(40), default="initial")
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class SleeveSnapshotRow(Base):
+    """One sleeve's equity at the end of a cycle (§7.71, CHANGE.md §4.8).
+
+    The per-sleeve twin of ``portfolio_snapshots``: the first row of the UTC day
+    rehydrates the sleeve's daily-loss baseline and MAX(equity) since the latest
+    allocation seeds its drawdown high-water mark — so both survive restarts.
+    Never pruned (same reason as portfolio snapshots).
+    """
+
+    __tablename__ = "sleeve_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    strategy: Mapped[str] = mapped_column(String(20), index=True)
+    equity: Mapped[float] = mapped_column(Float)
+    cash: Mapped[float] = mapped_column(Float)
+    positions_value: Mapped[float] = mapped_column(Float, default=0.0)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)  # since the allocation
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    open_positions: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
 class AgentControlRow(Base):
     """Control-plane row per agent (§7.15): the DB stays the single source of truth.
 

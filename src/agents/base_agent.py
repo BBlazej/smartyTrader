@@ -211,6 +211,7 @@ class BaseTradingAgent:
                     cycle_error = f"{label}: post-processing failed: {exc}"
                 results.append(result)
         self._logger.info("cycle end", executed=sum(1 for r in results if r.executed))
+        await self._record_sleeve_snapshots()
         await self._record_health(cycle_error)
         return results
 
@@ -276,8 +277,10 @@ class BaseTradingAgent:
                 owners = await self._sleeve_book.owners(self._pipeline.executor)
             except Exception as exc:  # noqa: BLE001 - untagged closes beat no closes
                 self._logger.warning("close-all: sleeve ownership unreadable", error=str(exc))
+        # A sleeve pipeline routes each close's outcome to the owning sleeve (§7.71).
+        closer = self._sleeve_runs[0].pipeline if self._sleeve_runs else self._pipeline
         try:
-            closed = await self._pipeline.close_all_positions()
+            closed = await closer.close_all_positions()
         except Exception as exc:  # noqa: BLE001
             self._logger.error("close-all failed", error=str(exc))
             await self._alerts.send("error", f"close-all failed: {exc}", severity="error")
@@ -291,6 +294,16 @@ class BaseTradingAgent:
             )
             await self._post_process(symbol, result)
         self._logger.info("close-all executed", closed=len(closed))
+
+    async def _record_sleeve_snapshots(self) -> None:
+        """Persist each sleeve's equity for its daily/peak trackers (§7.71). Fail-soft."""
+        book = self._sleeve_book
+        if book is None or not book.per_sleeve_books:
+            return
+        try:
+            await book.record_snapshots(self._pipeline.executor)
+        except Exception as exc:  # noqa: BLE001 - the next cycle writes fresh ones
+            self._logger.warning("failed to persist sleeve snapshots", error=str(exc))
 
     async def _record_health(self, last_error: str | None) -> None:
         """Heartbeat for the dashboard (``last_cycle_at`` / ``last_error``). Fail-soft."""
@@ -340,6 +353,12 @@ class BaseTradingAgent:
                     # The original row was lost (e.g. a failed write at placement):
                     # re-create it from the venue's answer rather than drop the fill.
                     decision_of = getattr(executor, "pending_decision_id", None)
+                    decision_id = decision_of(order.order_id) if callable(decision_of) else None
+                    extra: dict[str, str] = {}
+                    if self._sleeve_book is not None:  # keep the sleeve tag (§7.71)
+                        extra["strategy"] = await self._sleeve_book.strategy_of_decision(
+                            decision_id
+                        )
                     await self._storage.save_order(
                         order_id=order.order_id,
                         symbol=order.symbol,
@@ -347,9 +366,10 @@ class BaseTradingAgent:
                         quantity=order.quantity,
                         price=order.price,
                         status=order.status,
-                        decision_id=decision_of(order.order_id) if callable(decision_of) else None,
+                        decision_id=decision_id,
                         filled_at=filled_at if order.status == "filled" else None,
                         realized_pnl=order.realized_pnl if order.status == "filled" else None,
+                        **extra,
                     )
             except Exception as exc:  # noqa: BLE001
                 # Not confirmed → the executor re-delivers this transition next cycle.
@@ -363,8 +383,16 @@ class BaseTradingAgent:
                 if entry.entry_decision_id is not None:
                     await self._storage.add_realized_pnl(entry.entry_decision_id, entry.pnl)
             if order.status == "filled" and order.realized_pnl is not None:
-                # A late closing fill counts toward the loss streak like any other (§7.46).
-                self._risk_engine.record_outcome(was_profitable=order.realized_pnl >= 0)
+                # A late closing fill counts toward the loss streak like any other (§7.46)
+                # — the deciding sleeve's streak when sleeves run (§7.71).
+                engine = self._risk_engine
+                if self._sleeve_book is not None:
+                    decision_of = getattr(executor, "pending_decision_id", None)
+                    strategy = await self._sleeve_book.strategy_of_decision(
+                        decision_of(order.order_id) if callable(decision_of) else None
+                    )
+                    engine = self._sleeve_book.engine(strategy) or engine
+                engine.record_outcome(was_profitable=order.realized_pnl >= 0)
             if callable(confirm):
                 confirm(order.order_id)
             self._logger.info(
