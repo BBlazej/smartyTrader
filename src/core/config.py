@@ -734,7 +734,8 @@ class SaxoExecutionSettings:
 class DashboardSettings:
     """Standalone web dashboard (§7.15 P3–P4): FastAPI + Jinja2/HTMX.
 
-    Launched on its own (``scripts/run_dashboard.py``) and reads the shared SQLite
+    Launched on its own (``scripts/run_dashboard.py``); opens every per-mode book
+    (§7.78 ``open_books``) and reads each through its own storage
     DB as a reader (WAL mode lets it read while the agents write). Control actions
     write the ``agent_control`` latches directly — the same writes the agent-side
     control API makes — so they work whether or not ``control_api.enabled``.

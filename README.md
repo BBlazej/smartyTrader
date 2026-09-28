@@ -172,7 +172,7 @@ thresholds. Key sections:
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`. Paper ignores it |
-| `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
+| `storage` | One SQLite file per agent × trading mode (§7.78): `data_dir/<mode>_<agent>.db`, the mode derived from the executor's venue and guarded by a `(agent, mode)` identity table; WAL mode — concurrent reads while the agent writes. Retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever; `real_*` books never prune), `prune_interval_minutes` |
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
@@ -260,12 +260,12 @@ including re-arming the cycle interval — are stored only as diffs against
 `settings.yaml`, and removing one reverts the live value; §7.50) — all writing the same `agent_control` latches, behind
 Host-allowlist, cross-origin and CSRF-token guards (§7.43); `scripts/run_dashboard.py`,
 §7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
-and an on-demand backtester on one shared SQLite volume — rows are agent-scoped, so each agent
-keeps its own book, drawdown peak and history; §7.15 P5, §7.39), and an XTB demo
+and an on-demand backtester on one shared volume of per-mode SQLite books (§7.78) — each
+agent × mode keeps its own file, book, drawdown peak and history; §7.15 P5, §7.39), and an XTB demo
 execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
 its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
 (PLAN §7.66). Paper stays the default everywhere.
-**1004 tests passing at ~94% coverage.**
+**1137 tests passing at ~94% coverage.**
 
 Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
