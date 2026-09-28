@@ -7,10 +7,13 @@ is far below it — with no documented exit other than hand-editing SQLite.
 
 This script is that documented exit::
 
-    python -m scripts.rebaseline_drawdown --agent crypto            # dry run (shows plan)
-    python -m scripts/rebaseline_drawdown --agent crypto --yes      # apply at latest equity
-    python -m scripts/rebaseline_drawdown --agent stocks --value 95000 --yes
-    python -m scripts.rebaseline_drawdown --agent crypto --strategy crypto_swing --yes
+    python -m scripts.rebaseline_drawdown --agent crypto --mode paper          # dry run
+    python -m scripts.rebaseline_drawdown --agent crypto --mode demo --yes     # apply at latest equity
+    python -m scripts.rebaseline_drawdown --agent stocks --mode paper --value 95000 --yes
+    python -m scripts.rebaseline_drawdown --agent crypto --mode demo --strategy crypto_swing --yes
+
+``--mode`` selects the book file (``<data_dir>/<mode>_<agent>.db``, §7.78); its recorded
+identity is checked, so the reset can never land in another mode's file.
 
 The new baseline defaults to the agent's latest portfolio snapshot value (or pass
 ``--value``). Applying writes an audited ``drawdown_resets`` row (baseline + timestamp,
@@ -33,6 +36,7 @@ import asyncio
 import structlog
 
 from src.core.config import Settings
+from src.core.db_layout import MODES, db_path
 from src.core.storage import Storage
 from src.monitoring import setup_logging
 
@@ -112,6 +116,7 @@ async def run(
     config_path: str | None,
     strategy: str | None = None,
     venue: str | None = None,
+    mode: str = "paper",
 ) -> None:
     settings = Settings(config_path) if config_path else Settings()
     setup_logging(settings.monitoring.log_level)
@@ -121,7 +126,8 @@ async def run(
         if sleeves is None or sleeves.get(strategy) is None:
             raise SystemExit(f"'{strategy}' is not a configured sleeve of the {agent} agent")
 
-    storage = Storage(settings.storage.database_path)
+    # The one book of this agent × mode (§7.78), opened with its identity enforced.
+    storage = Storage(str(db_path(settings.storage.data_dir, mode, agent)), identity=(agent, mode))
     await storage.initialize()
     try:
         if strategy is not None:
@@ -160,6 +166,12 @@ def main() -> None:
     )
     parser.add_argument("--agent", required=True, choices=VALID_AGENTS)
     parser.add_argument(
+        "--mode",
+        required=True,
+        choices=list(MODES),
+        help="Which book to re-baseline: paper | demo | real (§7.78)",
+    )
+    parser.add_argument(
         "--value",
         type=float,
         default=None,
@@ -181,7 +193,17 @@ def main() -> None:
         "venue of the agent's latest portfolio snapshot, §7.76)",
     )
     args = parser.parse_args()
-    asyncio.run(run(args.agent, args.value, args.yes, args.config, args.strategy, args.venue))
+    asyncio.run(
+        run(
+            args.agent,
+            args.value,
+            args.yes,
+            args.config,
+            args.strategy,
+            args.venue,
+            mode=args.mode,
+        )
+    )
 
 
 if __name__ == "__main__":

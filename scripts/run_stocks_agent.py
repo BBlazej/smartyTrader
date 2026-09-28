@@ -42,7 +42,8 @@ from src.core.config import (
     Settings,
     live_trading_acknowledged,
 )
-from src.core.runner import RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
+from src.core.db_layout import DEMO, PAPER, REAL
+from src.core.runner import ModeMismatch, RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import create_paper_executor
 from src.execution.saxo_client import SaxoClient
@@ -152,7 +153,7 @@ def _make_components(settings: Settings) -> tuple[object, object]:
     return provider, executor
 
 
-async def run(run_once: bool = False) -> None:
+async def run(run_once: bool = False, expected_mode: str | None = None) -> None:
     load_dotenv()
     settings = Settings()
     setup_logging(settings.monitoring.log_level)
@@ -182,6 +183,7 @@ async def run(run_once: bool = False) -> None:
             alerts=build_alerts(settings),
         ),
         run_once=run_once,
+        expected_mode=expected_mode,
     )
 
 
@@ -197,16 +199,26 @@ def main() -> None:
         action="store_true",
         help="Run exactly one decision cycle and exit instead of the scheduled loop.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=[PAPER, DEMO, REAL],
+        default=None,
+        help="Refuse to start unless the built executor trades this mode (§7.78): it picks "
+        "the book file, so --mode demo guarantees SIM keys and --mode real a live account.",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(run_once=args.once))
+        asyncio.run(run(run_once=args.once, expected_mode=args.mode))
     except KeyboardInterrupt:
         pass
     except RunnerAlreadyRunning:
-        # §7.52: another runner owns this agent; run_agent logged the reason.
+        # §7.52: another runner owns this agent × mode; run_agent logged the reason.
         # Distinct exit code so cron/systemd notices a refused double-start.
         raise SystemExit(2)
+    except ModeMismatch:
+        # §7.78: --mode and the executor disagreed; nothing was constructed against a DB.
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":

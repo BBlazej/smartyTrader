@@ -18,10 +18,12 @@ Then it reads back every row the two runs wrote and prints them::
     python -m scripts.demo_agent_round_trip --sell-only --yes   # run 2 only: close what
                                                        # an earlier run left open
 
-Rows land in the **real** DB under agent ``crypto`` / venue ``myokx-sandbox`` —
-that is the point — with the decision reasoning marked ``SMOKE TEST`` so the model's
-history shows what they were. Refuses anything but a sandbox executor; trades only
-``--symbol`` (watchlist off, one decision per run regardless of bar timing).
+Rows land in the **demo book** (``data/demo_crypto.db``, §7.78) under agent ``crypto`` /
+venue ``myokx-sandbox`` — that is the point — with the decision reasoning marked
+``SMOKE TEST`` so the model's history shows what they were. The runner runs with
+``expected_mode=demo``, so this script structurally cannot touch a paper or real book.
+Refuses anything but a sandbox executor; trades only ``--symbol`` (watchlist off, one
+decision per run regardless of bar timing).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import asyncio
 import json
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -38,6 +41,7 @@ import structlog
 from scripts.demo_round_trip import ensure_demo
 from scripts.run_crypto_agent import _build_data_and_execution
 from src.agents.crypto_agent import CryptoAgent
+from src.core import db_layout
 from src.core.config import Settings
 from src.core.models import Action, TradeSignal
 from src.core.runner import build_alerts, load_dotenv, run_agent
@@ -121,6 +125,9 @@ async def run_phase(settings: Settings, llm: ScriptedLLM) -> None:
         ),
         run_once=True,
         llm_client=llm,
+        # §7.78: structurally demo-only — the runner refuses any other mode's executor
+        # and opens only data/demo_crypto.db.
+        expected_mode=db_layout.DEMO,
     )
 
 
@@ -131,6 +138,8 @@ def _rows(db: sqlite3.Connection, sql: str, *args: Any) -> list[dict[str, Any]]:
 
 def high_water_ids(db_path: str) -> dict[str, int]:
     """Current max ids, so the report shows only what this run wrote."""
+    if not Path(db_path).exists():  # first smoke run — the demo book is created by run 1
+        return {table: 0 for table in ("llm_decisions", "orders", "portfolio_snapshots")}
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
         return {
             table: db.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
@@ -189,9 +198,11 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit("crypto_agent.enabled is false — nothing would run")
     price = await _live_price(settings, args.symbol)
     buy = smoke_signal(Action.BUY, args.symbol, price)
+    # The demo book only (§7.78): every row this writes lands in data/demo_crypto.db.
+    book = str(db_layout.db_path(settings.storage.data_dir, db_layout.DEMO, "crypto"))
     plan = {
         "symbol": args.symbol,
-        "db": settings.storage.database_path,
+        "db": book,
         "live_price": price,
         "buy_signal": buy.model_dump(mode="json"),
         "sizing": f"max_position_pct={settings.risk.max_position_pct} of the demo book",
@@ -201,7 +212,7 @@ async def run(args: argparse.Namespace) -> int:
         print("\ndry run — nothing ran. Re-run with --yes to trade on the demo.")
         return 0
 
-    db_path = settings.storage.database_path
+    db_path = book
     since = high_water_ids(db_path)
     buy_llm = ScriptedLLM(buy)
     if args.sell_only:

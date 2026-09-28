@@ -179,6 +179,12 @@ venue_orders:
   fill_confirm_delay_seconds: 1.0 # one fetch_order this long after placing (same-cycle fills)
 
 storage:
+  # §7.78: one SQLite file per agent × trading mode — <data_dir>/<mode>_<agent>.db
+  # (paper_crypto.db, demo_crypto.db, …). The runner derives the file from the
+  # executor's venue; it is never configured here. data_dir holds them all.
+  data_dir: "data"
+  # Legacy shared DB (pre-§7.78), kept only as scripts/split_database.py's default
+  # source and for readers until the split has run. Safe to remove once split.
   database_path: "data/trading_agent.db"
   # Retention (§7.12). Market snapshots are re-creatable cache (~100-candle JSON
   # per symbol-cycle — the space hog), so they prune by default. Decisions/orders

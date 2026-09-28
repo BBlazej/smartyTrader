@@ -29,12 +29,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from pathlib import Path
 from typing import Any
 
 import structlog
 
 from scripts.run_crypto_agent import _build_data_and_execution
+from src.core import db_layout
 from src.core.config import Settings
 from src.core.models import OrderResult, OrderSide
 from src.core.runner import RunnerLock, load_dotenv
@@ -291,9 +291,13 @@ async def run(args: argparse.Namespace) -> int:
     if not symbol.endswith(f"/{quote}"):
         raise SystemExit(f"{symbol} is not quoted in crypto_agent.quote_currency ({quote})")
 
-    lock = RunnerLock(Path(settings.storage.database_path).parent / "crypto.runner.lock")
+    # The demo book's runner lock (§7.78): the script is demo-only, so a concurrent
+    # paper/real crypto runner is not competing for this account and is not blocked.
+    lock = RunnerLock(db_layout.lock_path(settings.storage.data_dir, db_layout.DEMO, "crypto"))
     if not lock.acquire():
-        raise SystemExit("the crypto runner is running — stop it first (it trades this account)")
+        raise SystemExit(
+            "the demo crypto runner is running — stop it first (it trades this account)"
+        )
     provider, executor, mode = _build_data_and_execution(settings)
     try:
         if not isinstance(executor, CcxtExecutor):

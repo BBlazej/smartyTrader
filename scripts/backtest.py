@@ -9,6 +9,11 @@ Examples:
     python -m scripts.backtest --days 30 --symbols BTC/USDT ETH/USDT --timeframe 1h
     python -m scripts.backtest --provider yfinance --symbols AAPL --days 90 --report out.json
     python -m scripts.backtest --strategy crypto_position --days 60   # one sleeve (§7.73)
+    python -m scripts.backtest --mode demo                            # the demo book (§7.78)
+
+The stored decisions come from **one book** (``<data_dir>/<mode>_<agent>.db``, §7.78):
+``--mode paper|demo|real`` (default ``paper``) picks it, and the agent follows the
+candle source (ccxt → crypto, yfinance → stocks) unless ``--agent`` says otherwise.
 
 ``--strategy NAME`` replays one strategy sleeve (§7.71) on its own terms: only its
 decisions, its timeframe, its effective risk limits and ``weight × initial_cash``.
@@ -25,12 +30,14 @@ import argparse
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import structlog
 
 from src.core.backtester import DecisionReplayBacktester, ReplayDecision
 from src.core.config import Settings, SleeveSpec
+from src.core.db_layout import MODES, db_path
 from src.core.models import OHLCV
 from src.core.sleeves import sleeve_risk_settings
 from src.core.storage import Storage
@@ -75,7 +82,8 @@ def _sleeve_spec(settings: Settings, agent: str, name: str | None) -> SleeveSpec
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     settings = Settings()
     setup = structlog.get_logger().bind(component="backtest")
-    agent = "stocks" if args.provider == "yfinance" else "crypto"
+    agent = getattr(args, "agent", None) or ("stocks" if args.provider == "yfinance" else "crypto")
+    mode = getattr(args, "mode", "paper")
     sleeve = _sleeve_spec(settings, agent, getattr(args, "strategy", None))
 
     end = _parse_dt(args.end, end_of_day=True) if args.end else datetime.now(UTC)
@@ -83,7 +91,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     if start >= end:
         raise SystemExit("--start must be before --end")
 
-    storage = Storage(settings.storage.database_path)
+    # One book's decisions (§7.78) — replay never mixes modes.
+    book = db_path(settings.storage.data_dir, mode, agent)
+    if not Path(book).exists():
+        raise SystemExit(f"no {mode} book for the {agent} agent at {book} — run that agent first")
+    setup.info("replaying book", mode=mode, agent=agent, database=str(book))
+    storage = Storage(str(book))
     await storage.initialize()
     provider = None
     try:
@@ -243,6 +256,18 @@ def main() -> None:
         "--strategy",
         default=None,
         help="Replay one strategy sleeve: its decisions, timeframe, risk limits, capital (§7.73)",
+    )
+    parser.add_argument(
+        "--agent",
+        choices=["crypto", "stocks"],
+        default=None,
+        help="Whose decisions to replay (default: from --provider, §7.78)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=list(MODES),
+        default="paper",
+        help="Book to replay decisions from: paper | demo | real (default paper, §7.78)",
     )
     args = parser.parse_args()
     asyncio.run(run(args))
