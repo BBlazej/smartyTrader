@@ -73,6 +73,7 @@ All executors implement the same `Executor` Protocol: `place_order`, `get_positi
 - **Protocol-based interfaces** for swappable components (executors, providers)
 - **Structured logging** via structlog — no `print()` statements
 - **Config-driven behavior** — read from `config/settings.yaml`, never hardcode thresholds or endpoints
+- **Unix line endings (LF) only** — every text file, new or edited. `.gitattributes` (`* text=auto eol=lf`) normalizes on commit and `ruff format` writes LF (`[tool.ruff.format] line-ending = "lf"`); never write CRLF, and never "preserve" a file's CRLF (all were converted 2026-09-28)
 
 ### Safety Rules
 

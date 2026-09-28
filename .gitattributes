@@ -1,0 +1,3 @@
+# Unix (LF) line endings everywhere — AGENTS.md coding rule. Git normalizes text
+# files to LF on commit and checks them out as LF on every platform.
+* text=auto eol=lf
