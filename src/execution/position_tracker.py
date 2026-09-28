@@ -151,6 +151,14 @@ class PositionTracker:
         ]
         return outcome
 
+    def discard(self, symbol: str) -> float:
+        """Forget ``symbol``'s long lots without a fill; returns the dropped quantity.
+
+        For venue dust (§7.75 c): a remainder below the lot size that no order can
+        ever close. No outcome is realized — nothing traded.
+        """
+        return sum(lot.quantity for lot in self._lots.pop(symbol, []))
+
     # ── Short side (§7.38) ─────────────────────────────
 
     def short_quantity(self, symbol: str) -> float:

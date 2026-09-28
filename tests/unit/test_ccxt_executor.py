@@ -1,4 +1,4 @@
-"""Unit tests for the keyed Kraken executor (via CCXT)."""
+"""Unit tests for the keyed ccxt spot executor (OKX Europe; formerly Kraken)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.config import VenueOrderSettings
 from src.core.models import OrderSide
 from src.execution.ccxt_executor import CcxtExecutor
+
+#: The shipped venue policy minus the post-placement wait (no sleeping in tests).
+NO_WAIT = VenueOrderSettings(fill_confirm_delay_seconds=0)
 
 
 @pytest.fixture()
@@ -17,7 +21,7 @@ def mock_client() -> AsyncMock:
 
 @pytest.fixture()
 def executor(mock_client: AsyncMock) -> CcxtExecutor:
-    return CcxtExecutor(mock_client, quote_currency="USDT", venue="test")
+    return CcxtExecutor(mock_client, quote_currency="USDT", venue="test", orders=NO_WAIT)
 
 
 class TestPlaceOrder:
@@ -46,13 +50,14 @@ class TestPlaceOrder:
             "amount": 1.0,
         }
 
-        result = await executor.place_order("ETH/USDT", OrderSide.SELL, quantity=1.0, price=2000.0)
+        result = await executor.place_order("ETH/USDT", OrderSide.BUY, quantity=1.0, price=2000.0)
 
+        # §7.75 a: a BUY limit crosses the reference by entry_offset_pct (0.2 %).
         mock_client.create_order.assert_awaited_once_with(
-            "ETH/USDT", "limit", "sell", 1.0, price=2000.0
+            "ETH/USDT", "limit", "buy", 1.0, price=pytest.approx(2004.0)
         )
         assert result.status == "pending"
-        assert result.price == 2000.0
+        assert result.price == pytest.approx(2004.0)
 
     @pytest.mark.asyncio
     async def test_rejected_order(self, executor: CcxtExecutor, mock_client: AsyncMock) -> None:
@@ -159,7 +164,9 @@ class TestRealCcxtSignature:
                 }
 
             exchange.fetch_balance = fake_fetch_balance  # type: ignore[method-assign]
-            executor = CcxtExecutor(exchange, quote_currency="EUR", venue="myokx-sandbox")
+            executor = CcxtExecutor(
+                exchange, quote_currency="EUR", venue="myokx-sandbox", orders=NO_WAIT
+            )
             assert await executor.get_cash() == pytest.approx(4600.0)
         finally:
             await exchange.close()
@@ -398,6 +405,7 @@ class TestReconcileOpenOrders:
             take_profit=120.0,
         )
         assert result.status == "pending"
+        mock_client.fetch_order.reset_mock()  # forget the post-placement confirm poll
 
     @pytest.mark.asyncio
     async def test_pending_order_lands_filled_with_attribution(
@@ -496,7 +504,7 @@ class TestReconcileOpenOrders:
     @pytest.mark.asyncio
     async def test_client_without_fetch_order_is_a_noop(self) -> None:
         client = AsyncMock(spec=["create_order", "cancel_order", "fetch_free_balance"])
-        executor = CcxtExecutor(client, quote_currency="USDT", venue="test")
+        executor = CcxtExecutor(client, quote_currency="USDT", venue="test", orders=NO_WAIT)
         # A list-spec mock is not async-aware; wire the call explicitly.
         client.create_order = AsyncMock(return_value={"id": "D-OPEN", "status": "open"})
         await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
@@ -535,7 +543,7 @@ class TestSpotPositionsFromLedger:
 
     async def test_filled_buy_shows_as_a_marked_position(self) -> None:
         client = self._spot_client()
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test", orders=NO_WAIT)
         await executor.place_order(
             "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, stop_loss=90.0, take_profit=130.0
         )
@@ -554,7 +562,7 @@ class TestSpotPositionsFromLedger:
         from src.core.models import PortfolioState
 
         client = self._spot_client()
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test", orders=NO_WAIT)
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         executor.update_price("BTC/USDT", 100.0)
         book = PortfolioState(
@@ -566,7 +574,7 @@ class TestSpotPositionsFromLedger:
     async def test_venue_balance_caps_the_ledger(self) -> None:
         client = self._spot_client()
         client.fetch_balance.return_value = {"total": {"BTC": 0.4}}  # e.g. partly withdrawn
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test", orders=NO_WAIT)
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         (pos,) = await executor.get_positions()
         assert pos.quantity == pytest.approx(0.4)
@@ -574,7 +582,7 @@ class TestSpotPositionsFromLedger:
     async def test_balance_failure_falls_back_to_the_ledger(self) -> None:
         client = self._spot_client()
         client.fetch_balance.side_effect = TimeoutError("venue slow")
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test", orders=NO_WAIT)
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         (pos,) = await executor.get_positions()
         assert pos.quantity == pytest.approx(1.0)
@@ -585,7 +593,7 @@ class TestSpotPositionsFromLedger:
         from src.core.risk_engine import RiskEngine
 
         client = self._spot_client()
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(client, quote_currency="EUR", venue="test", orders=NO_WAIT)
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         executor.update_price("BTC/USDT", 110.0)
         client.create_order.return_value = {
@@ -668,7 +676,9 @@ class TestPartialFills:
         assert await executor.reconcile_open_orders() == []
 
     def test_venue_label(self, mock_client: AsyncMock) -> None:
-        executor = CcxtExecutor(mock_client, quote_currency="EUR", venue="myokx-sandbox")
+        executor = CcxtExecutor(
+            mock_client, quote_currency="EUR", venue="myokx-sandbox", orders=NO_WAIT
+        )
         assert executor.venue == "myokx-sandbox"
 
 
@@ -706,10 +716,11 @@ class TestBaseCurrencyFees:
         await executor.place_order("BTC/USDT", OrderSide.BUY, 1.0, price=100.0)
         assert executor._tracker.quantity("BTC/USDT") == pytest.approx(1.0)
 
-    async def test_sell_is_booked_gross(
+    async def test_sell_fee_comes_off_realized_pnl(
         self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
-        # Sell fees arrive in the quote currency; the base ledger is unaffected.
+        # §7.75 e: a reported sell fee (here in the base coin, valued at the fill) is
+        # booked — outcomes are net of commission, so a fee-losing trade is a loss.
         mock_client.create_order.return_value = {
             "id": "F-3",
             "status": "closed",
@@ -725,7 +736,7 @@ class TestBaseCurrencyFees:
             "fees": [{"currency": "BTC", "cost": 0.001}],
         }
         result = await executor.place_order("BTC/USDT", OrderSide.SELL, 1.0, price=110.0)
-        assert result.realized_pnl == pytest.approx(10.0)  # gross of commission as before
+        assert result.realized_pnl == pytest.approx(10.0 - 0.001 * 110.0)
 
     async def test_reconciled_buy_books_net_of_base_fee(
         self, executor: CcxtExecutor, mock_client: AsyncMock
@@ -744,9 +755,15 @@ class TestBaseCurrencyFees:
         assert executor._tracker.quantity("BTC/USDT") == pytest.approx(0.998)
 
     def test_malformed_fees_payload_reports_no_fee(self) -> None:
-        from src.execution.ccxt_executor import _base_currency_fee
+        from src.execution.ccxt_executor import _fee_components
 
-        assert _base_currency_fee({"fees": "nonsense"}, "BTC/USDT") == 0.0
-        assert _base_currency_fee({"fee": {"currency": "BTC", "cost": None}}, "BTC/USDT") == 0.0
-        # Singular fee dict works too.
-        assert _base_currency_fee({"fee": {"currency": "btc", "cost": 0.5}}, "BTC/USDT") == 0.5
+        assert _fee_components({"fees": "nonsense"}, "BTC/USDT") == (0.0, 0.0)
+        assert _fee_components({"fee": {"currency": "BTC", "cost": None}}, "BTC/USDT") == (0.0, 0.0)
+        # Singular fee dict works too; the quote side is reported separately.
+        assert _fee_components({"fee": {"currency": "btc", "cost": 0.5}}, "BTC/USDT") == (0.5, 0.0)
+        assert _fee_components({"fees": [{"currency": "USDT", "cost": 0.2}]}, "BTC/USDT") == (
+            0.0,
+            0.2,
+        )
+        # A third-currency fee (exchange token) can't be valued — not booked.
+        assert _fee_components({"fees": [{"currency": "OKB", "cost": 1}]}, "BTC/USDT") == (0.0, 0.0)

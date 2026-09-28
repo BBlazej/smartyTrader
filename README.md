@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1004 tests, no network needed (live smokes are opt-in:
+pytest                      # 1052 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -76,6 +76,14 @@ fee/slippage-aware `PaperExecutor`. With OKX **demo-trading** keys
 the OKX demo (mode `myokx-sandbox`). Real money needs `crypto_agent.testnet: false`,
 `crypto_agent.live_trading: true` **and** env `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`
 (mode `<exchange>-LIVE`, §7.41); anything else stays on paper and logs why.
+Keyed orders follow the `venue_orders` block (§7.75): entries are limits 0.2 % across the
+last close (sizing reserves it), exits go at market, orders still working after
+`order_ttl_seconds` are cancelled, and outcomes are net of the fees the venue reports.
+To exercise the venue order path without waiting for the LLM to trade,
+`python -m scripts.demo_round_trip` (dry run; `--yes` to place) forces one small BUY → SELL
+round trip on the OKX **demo** through the same keyed executor. It is demo-only, holds the
+runner lock and writes nothing to the DB (§7.28). Its report shows the order terms sent,
+the venue's fee payloads and the account's fee tier.
 The stocks runner
 executes on the `PaperExecutor` by default. The old **XTB demo** path (§7.16) is
 dead: XTB closed its API access on 2025-03-14, and `wss://ws.xapi.pro` (what our
@@ -161,6 +169,7 @@ thresholds. Key sections:
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes) |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
+| `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`. Paper ignores it |
 | `storage` | SQLite path (WAL mode — concurrent reads while the agent writes), retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever), `prune_interval_minutes` |
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |

@@ -80,7 +80,10 @@ def _build_data_and_execution(settings: Settings) -> tuple[object, object, str]:
             ).client
             # e.g. "myokx-sandbox" / "myokx-live" — tags its rows (§7.61).
             executor = create_ccxt_executor(
-                order_client, quote_currency=cfg.quote_currency, venue=mode.lower()
+                order_client,
+                quote_currency=cfg.quote_currency,
+                venue=mode.lower(),
+                orders=settings.venue_orders,  # marketable pricing + order TTL (§7.75)
             )
             return provider, executor, mode
 

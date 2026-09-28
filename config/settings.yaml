@@ -165,6 +165,15 @@ execution:
       paper_min_commission: 1.0
       paper_fx_fee_pct: 0.0025
 
+# Keyed crypto venue orders (§7.75) — how CcxtExecutor turns the pipeline's reference
+# price (the last close) into a venue order. Paper execution ignores this block.
+venue_orders:
+  entry_offset_pct: 0.002         # BUY limit = close × (1 + this): crosses the spread (sizing reserves it)
+  exit_order_type: market         # every SELL closes a long (§7.47) and must fill: market | limit
+  exit_offset_pct: 0.005          # exit_order_type: limit → SELL limit = close × (1 − this)
+  order_ttl_seconds: 600          # cancel a venue order still working after this (0 = never)
+  fill_confirm_delay_seconds: 1.0 # one fetch_order this long after placing (same-cycle fills)
+
 storage:
   database_path: "data/trading_agent.db"
   # Retention (§7.12). Market snapshots are re-creatable cache (~100-candle JSON

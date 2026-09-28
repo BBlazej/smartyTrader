@@ -189,6 +189,12 @@ class DecisionPipeline:
                     symbol=position.symbol,
                 )
                 continue
+            if self._order_working(position.symbol, closing_side(position)):
+                logger.info(
+                    "close-all: closing order already working at the venue",
+                    symbol=position.symbol,
+                )
+                continue
             order = await self.executor.place_order(
                 symbol=position.symbol,
                 side=closing_side(position),
@@ -461,6 +467,20 @@ class DecisionPipeline:
                     error="Refused order without price (no usable market data)",
                     strategy=self.strategy,
                 )
+            if self._order_working(symbol, order_side):
+                step_logger.info(
+                    "same-side order already working at the venue; not stacking another",
+                    side=order_side.value,
+                )
+                return PipelineResult(
+                    symbol=symbol,
+                    signal=signal,
+                    risk_result=risk_result,
+                    snapshot=snapshot,
+                    decision_id=decision_id,
+                    skip_reason=f"{order_side.value} order already working at the venue",
+                    strategy=self.strategy,
+                )
             order_result = await self.executor.place_order(
                 symbol=symbol,
                 side=order_side,
@@ -607,6 +627,17 @@ class DecisionPipeline:
     ) -> PipelineResult:
         """Deterministically close ``position`` at ``mark`` — no LLM, no gate."""
         step_logger = logger.bind(symbol=symbol, step=PipelineStep.ENFORCE_EXIT_LEVELS)
+        if self._order_working(symbol, closing_side(position)):
+            # §7.75 b: the close is already at the venue (reconciliation settles it,
+            # or its TTL cancels it and the next cycle re-places at a fresh mark).
+            step_logger.info("exit order already working at the venue", exit_reason=reason)
+            return PipelineResult(
+                symbol=symbol,
+                snapshot=snapshot,
+                auto_exit=True,
+                exit_reason=reason,
+                skip_reason="exit order already working at the venue",
+            )
         try:
             order_result = await self.executor.place_order(
                 symbol=symbol,
@@ -659,6 +690,25 @@ class DecisionPipeline:
         except Exception as exc:  # noqa: BLE001
             logger.error("sleeve ownership read failed", symbol=symbol, error=str(exc))
             return None, f"Sleeve ownership read failed: {exc}"
+
+    def _order_working(self, symbol: str, side: OrderSide) -> bool:
+        """Whether an order on ``side`` is still working at the venue for ``symbol`` (§7.75 b).
+
+        Uses the executor's optional ``working_order_sides`` hook (venue executors;
+        paper fills instantly and has none). A second order on the same side is never
+        stacked on a working one — a resting exit SELL used to be re-sent every cycle,
+        which on a pre-funded account could sell coins the agent never bought.
+        Fail-open on a broken hook: a close must not be blocked by bookkeeping.
+        """
+        hook = getattr(self.executor, "working_order_sides", None)
+        if not callable(hook):
+            return False
+        try:
+            sides = hook(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("working-order lookup failed", symbol=symbol, error=str(exc))
+            return False
+        return isinstance(sides, (set, frozenset, list, tuple)) and side in sides
 
     def _record_outcome(self, strategy: str | None, was_profitable: bool) -> None:
         """Feed a closing fill to the loss streak of the sleeve that owned it (§7.71)."""
@@ -851,7 +901,7 @@ class DecisionPipeline:
             self.risk_engine.settings,
             current_price,
             cost_factor=buy_cost_factor(self.executor),
-            cost_model=CostModel.from_attrs(self.executor),
+            cost_model=sizing_cost_model(self.executor),
             cash_cap=cash_cap,
         )
 
@@ -892,8 +942,34 @@ def buy_cost_factor(executor: object) -> float:
     zero. A venue *minimum commission* (§7.65) is not linear in quantity, so it
     cannot fold into a factor — sizing uses
     :meth:`CostModel.max_affordable_fill_notional` when one is configured.
+
+    A venue BUY price offset (§7.75) is included — see :func:`sizing_cost_model`.
     """
-    return CostModel.from_attrs(executor).buy_cost_factor
+    return sizing_cost_model(executor).buy_cost_factor
+
+
+def sizing_cost_model(executor: object) -> CostModel:
+    """The executor's :class:`CostModel` for sizing, venue BUY price offset included.
+
+    A venue executor that prices BUYs *above* the reference price (a marketable
+    limit, §7.75) exposes ``buy_price_factor``; it is folded into ``slippage_pct``
+    so the cash clamp reserves that worst case and a cash-bound BUY can never be
+    refused by the venue for insufficient funds.
+    """
+    model = CostModel.from_attrs(executor)
+    price_factor = getattr(executor, "buy_price_factor", 1.0)
+    if (
+        isinstance(price_factor, (int, float))
+        and not isinstance(price_factor, bool)
+        and price_factor > 1.0
+    ):
+        model = CostModel(
+            fee_pct=model.fee_pct,
+            slippage_pct=(1.0 + model.slippage_pct) * price_factor - 1.0,
+            min_commission=model.min_commission,
+            fx_fee_pct=model.fx_fee_pct,
+        )
+    return model
 
 
 def calculate_quantity(

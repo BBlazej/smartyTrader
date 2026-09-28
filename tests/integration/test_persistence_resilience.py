@@ -13,7 +13,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from src.agents.crypto_agent import CryptoAgent
-from src.core.config import RiskSettings
+from src.core.config import RiskSettings, VenueOrderSettings
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.models import OHLCV, ClosedEntry, MarketSnapshot, OrderResult, OrderSide, TradeSignal
 from src.core.risk_engine import RiskEngine
@@ -141,10 +141,16 @@ class TestReconciliationIsLossless:
         client.create_order.return_value = {"id": "V-1", "status": "open"}
         client.fetch_free_balance.return_value = {"USDT": {"free": 1_000.0}}
         client.fetch_positions.return_value = []
-        executor = CcxtExecutor(client, quote_currency="EUR", venue="test")
+        executor = CcxtExecutor(
+            client,
+            quote_currency="EUR",
+            venue="test",
+            orders=VenueOrderSettings(fill_confirm_delay_seconds=0),
+        )
         await executor.place_order(
             "BTC/USDT", OrderSide.BUY, 1.0, price=100.0, decision_id=decision_id
         )
+        client.fetch_order.reset_mock()  # forget the post-placement confirm poll (§7.75 f)
         client.fetch_order.return_value = {
             "id": "V-1",
             "status": "closed",

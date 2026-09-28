@@ -425,6 +425,12 @@ class SaxoExecutor:
         self._exit_levels = levels
         return {"replayed_fills": replayed, "open_symbols": len(tracker.symbols())}
 
+    def working_order_sides(self, symbol: str) -> set[OrderSide]:
+        """Sides with an order still working in ``symbol`` — never stacked (§7.75 b)."""
+        return {
+            p.side for p in self._open_orders.values() if p.symbol == symbol and p.resolved is None
+        }
+
     def load_pending_orders(self, orders: list[PendingOrderRecord]) -> int:
         """Re-track stored ``pending`` orders so reconciliation resolves them (§7.58)."""
         for o in orders:

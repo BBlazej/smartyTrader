@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from scripts.run_crypto_agent import _build_data_and_execution, run
-from src.core.config import ExecutionSettings
+from src.core.config import ExecutionSettings, VenueOrderSettings
 from src.core.runner import load_dotenv
 
 
@@ -86,6 +86,7 @@ def _settings(
             paper_slippage_pct=slippage_pct,
             initial_cash=initial_cash,
         ),
+        venue_orders=VenueOrderSettings(),
     )
 
 
@@ -169,9 +170,11 @@ class TestBuildDataAndExecution:
         ):
             mock_provider.side_effect = [SimpleNamespace(client=object()), order_provider]
             _build_data_and_execution(_settings(testnet=True))
-        mock_executor.assert_called_once_with(
-            order_provider.client, quote_currency="EUR", venue="myokx-sandbox"
-        )
+        settings = mock_executor.call_args.kwargs
+        assert mock_executor.call_args.args == (order_provider.client,)
+        assert settings["quote_currency"] == "EUR" and settings["venue"] == "myokx-sandbox"
+        # §7.75: the venue order policy (marketable pricing, TTL) reaches the executor.
+        assert isinstance(settings["orders"], VenueOrderSettings)
 
     def test_old_kraken_env_names_are_not_read(self) -> None:
         from src.execution.paper_executor import PaperExecutor

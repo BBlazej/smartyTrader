@@ -186,6 +186,7 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
                         decision_id=o.decision_id,
                         stop_loss=sl,
                         take_profit=tp,
+                        placed_at=o.created_at,  # the order TTL survives a restart (§7.75)
                     )
                 )
             if pending:

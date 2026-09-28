@@ -479,6 +479,8 @@ class BaseTradingAgent:
             return
 
         if result.auto_exit:
+            if result.order_result is None and result.skip_reason:
+                return  # the close is already working at the venue (§7.75) — alerted then
             order = result.order_result
             closed = f"{order.quantity} {symbol} ({order.status})" if order else symbol
             await self._alerts.send(

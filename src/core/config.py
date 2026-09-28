@@ -76,6 +76,7 @@ class Settings:
         self.dashboard = DashboardSettings(**raw.get("dashboard", {}))
         self.xtb_execution = XTBExecutionSettings(**raw.get("xtb_execution", {}))
         self.saxo_execution = SaxoExecutionSettings(**raw.get("saxo_execution", {}))
+        self.venue_orders = VenueOrderSettings(**raw.get("venue_orders", {}))
         if self.xtb_execution.enabled and self.saxo_execution.enabled:
             raise ValueError("enable at most one stocks venue: xtb_execution or saxo_execution")
 
@@ -606,6 +607,59 @@ class XTBExecutionSettings:
         if len(set(symbol_map.values())) != len(symbol_map):
             raise ValueError("xtb_execution.symbol_map must be one-to-one")
         self.symbol_map: dict[str, str] = symbol_map
+
+
+class VenueOrderSettings:
+    """How a keyed ccxt venue executor prices and ages its orders (§7.75).
+
+    The pipeline hands every order a *reference* price — the snapshot's last close.
+    Sent as-is, that limit is not marketable whenever the book sits on the other
+    side of it (the first OKX demo BUY rested under the ask and never filled), and a
+    stop-loss SELL in a falling market would rest while the price kept dropping. So
+    the executor, not the pipeline, turns the reference into a venue order:
+
+    * BUY (entry) → limit at ``close × (1 + entry_offset_pct)``: crosses the spread,
+      still bounded (sizing reserves the offset, so cash can never be overspent);
+    * SELL (every spot close, §7.47) → ``market`` by default — an exit must fill;
+      ``limit`` prices it at ``close × (1 − exit_offset_pct)`` instead;
+    * an order still working after ``order_ttl_seconds`` is cancelled at the venue
+      (0 = never) — an exit is then re-placed at the next cycle's mark;
+    * one ``fetch_order`` ``fill_confirm_delay_seconds`` after placing resolves the
+      fill in the same cycle (OKX acknowledges ``create_order`` with an id only).
+
+    Paper execution is unaffected (it fills at the reference price + modelled
+    slippage). Venue plumbing, not a risk knob: outside the dashboard's safe-config.
+    """
+
+    EXIT_ORDER_TYPES = ("market", "limit")
+
+    def __init__(
+        self,
+        entry_offset_pct: float = 0.002,
+        exit_order_type: str = "market",
+        exit_offset_pct: float = 0.005,
+        order_ttl_seconds: float = 600.0,
+        fill_confirm_delay_seconds: float = 1.0,
+    ) -> None:
+        if exit_order_type not in self.EXIT_ORDER_TYPES:
+            raise ValueError("venue_orders.exit_order_type must be 'market' or 'limit'")
+        for name, value in (
+            ("entry_offset_pct", entry_offset_pct),
+            ("exit_offset_pct", exit_offset_pct),
+        ):
+            if not 0 <= float(value) < 0.05:
+                raise ValueError(f"venue_orders.{name} must be in [0, 0.05)")
+        for name, value in (
+            ("order_ttl_seconds", order_ttl_seconds),
+            ("fill_confirm_delay_seconds", fill_confirm_delay_seconds),
+        ):
+            if float(value) < 0:
+                raise ValueError(f"venue_orders.{name} must be non-negative seconds")
+        self.entry_offset_pct = float(entry_offset_pct)
+        self.exit_order_type = exit_order_type
+        self.exit_offset_pct = float(exit_offset_pct)
+        self.order_ttl_seconds = float(order_ttl_seconds)
+        self.fill_confirm_delay_seconds = float(fill_confirm_delay_seconds)
 
 
 class SaxoExecutionSettings:
