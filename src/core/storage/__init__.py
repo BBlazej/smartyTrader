@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .control import ControlMixin
 from .decisions import DecisionMixin
-from .engine import StorageBase
+from .engine import DatabaseIdentityError, StorageBase
 from .models import (
     AgentControlRow,
     Base,
@@ -28,6 +28,7 @@ __all__ = [
     "AgentControlRow",
     "Base",
     "ControlMixin",
+    "DatabaseIdentityError",
     "DecisionMixin",
     "LLMDecisionRow",
     "MarketSnapshotMixin",

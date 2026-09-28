@@ -98,11 +98,33 @@ class TestRunnerLock:
 
 
 class TestRunAgentRefusesDoubleStart:
-    async def test_scheduled_run_refused_while_lock_held(self, tmp_path: Path) -> None:
+    async def test_paper_and_demo_of_one_agent_may_run_side_by_side(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
+        # §7.78: another mode's lock doesn't block this one — separate files.
         settings = _settings(tmp_path)
         (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-        holder = (tmp_path / "data" / "crypto.runner.lock").open("a+")
+        holder = (tmp_path / "data" / "demo_crypto.runner.lock").open("a+")
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        request.addfinalizer(holder.close)
+        built: list[bool] = []
+        with (
+            patch("src.core.runner.DecisionPipeline"),
+            patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
+            patch("src.core.runner.prune_storage", new=AsyncMock()),
+        ):
+            await _run_once(settings, built)  # paper runs while demo holds its lock
+        assert built == [True]
+        assert (tmp_path / "data" / "paper_crypto.db").exists()
+
+    async def test_scheduled_run_refused_while_lock_held(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
+        settings = _settings(tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        holder = (tmp_path / "data" / "paper_crypto.runner.lock").open("a+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        request.addfinalizer(holder.close)
         built: list[bool] = []
 
         with pytest.raises(RunnerAlreadyRunning):
@@ -117,14 +139,20 @@ class TestRunAgentRefusesDoubleStart:
                 build_agent=lambda pipeline, storage, risk_engine, llm_client: _FakeAgent(),
             )
 
-        assert built == []  # nothing constructed…
-        assert not (tmp_path / "data" / "locked.db").exists()  # …and the DB was never touched
+        # §7.78: the executor decides the mode (and so the lock), so the components
+        # are built — no I/O — and closed again; the DB is never touched.
+        assert built == [True]
+        assert not (tmp_path / "data" / "paper_crypto.db").exists()
+        assert not (tmp_path / "data" / "locked.db").exists()
 
-    async def test_run_once_also_refused(self, tmp_path: Path) -> None:
+    async def test_run_once_also_refused(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
         settings = _settings(tmp_path)
         (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-        holder = (tmp_path / "data" / "crypto.runner.lock").open("a+")
+        holder = (tmp_path / "data" / "paper_crypto.runner.lock").open("a+")
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        request.addfinalizer(holder.close)
 
         with pytest.raises(RunnerAlreadyRunning):
             await _run_once(settings, [])
@@ -158,4 +186,4 @@ class TestRunAgentRefusesDoubleStart:
             build_agent=lambda pipeline, storage, risk_engine, llm_client: _FakeAgent(),
         )
         assert built == []
-        assert not (tmp_path / "data" / "crypto.runner.lock").exists()
+        assert not (tmp_path / "data" / "paper_crypto.runner.lock").exists()

@@ -17,28 +17,39 @@ from pathlib import Path
 import structlog
 
 from .config import StorageSettings
+from .db_layout import REAL
 from .storage import Storage
 
 
-async def prune_storage(storage: Storage, settings: StorageSettings) -> dict[str, int]:
+async def prune_storage(
+    storage: Storage, settings: StorageSettings, mode: str | None = None
+) -> dict[str, int]:
     """Run one retention pass: optional DB backup (§7.35), then pruning (§7.12).
 
     Fail-soft end to end: neither a failed backup nor a failed prune may take
     down the process that scheduled the job; failures log and carry on.
     Returns the per-table deleted-row counts (empty when nothing is enabled).
+
+    ``mode`` is the book's trading mode (§7.78): the **real**-money file never loses
+    decisions or orders — ``history_retention_days`` is ignored for it (the market
+    snapshot cache still expires).
     """
     log = structlog.get_logger().bind(component="retention")
 
     # Snapshot BEFORE deleting anything — a bad prune policy stays recoverable.
     await _maybe_backup(storage, settings, log)
 
-    if settings.snapshot_retention_days <= 0 and settings.history_retention_days <= 0:
+    history_days = settings.history_retention_days
+    if mode == REAL and history_days > 0:
+        log.info("real-money book: decision/order history is never pruned", mode=mode)
+        history_days = 0
+    if settings.snapshot_retention_days <= 0 and history_days <= 0:
         log.debug("retention pruning disabled (all windows <= 0)")
         return {}
     try:
         counts = await storage.prune(
             snapshot_days=settings.snapshot_retention_days,
-            history_days=settings.history_retention_days,
+            history_days=history_days,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("retention prune failed (continuing)", error=str(exc))

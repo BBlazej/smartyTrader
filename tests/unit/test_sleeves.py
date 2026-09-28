@@ -560,7 +560,7 @@ class TestRunnerSleeves:
         assert swing is not position
         assert swing.settings.max_position_pct == 0.05  # the sleeve's own override
         assert position.settings.max_position_pct == 0.1  # the agent block
-        store = Storage(str(tmp_path / "runner.db"))
+        store = Storage(str(tmp_path / "paper_crypto.db"))  # the runner's book (§7.78)
         await store.initialize()
         allocation = await store.get_latest_allocation(agent="crypto")
         await store.close()

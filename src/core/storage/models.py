@@ -250,3 +250,20 @@ class AgentControlRow(Base):
     # cycle; NULL/empty means plain settings.yaml. Credentials are never stored.
     config_override_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class DbIdentityRow(Base):
+    """Which book a database file holds — one row, written when the file is created (§7.78).
+
+    Each agent × trading mode has its own file (:mod:`src.core.db_layout`). A runner
+    opens its file with the identity it expects, and :class:`~src.core.storage.Storage`
+    refuses a mismatch — a real-money run can never write into a paper file, nor a
+    paper run into a real one — and refuses a legacy file with data but no identity.
+    """
+
+    __tablename__ = "db_identity"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # always 1
+    agent: Mapped[str] = mapped_column(String(20))
+    mode: Mapped[str] = mapped_column(String(10))  # paper | demo | real
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))

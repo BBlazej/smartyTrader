@@ -7,12 +7,18 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import ColumnElement, create_engine, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base
+from .models import Base, DbIdentityRow
+
+
+class DatabaseIdentityError(RuntimeError):
+    """The database file holds another book, or is a legacy file with no identity (§7.78)."""
+
 
 #: Tables whose rows belong to one agent (§7.39); ``agent_control`` is keyed by agent
 #: already and ``market_snapshots`` is a symbol-keyed candle cache.
@@ -34,7 +40,12 @@ class StorageBase:
     reads across all agents unless a method is given an explicit ``agent=``.
     """
 
-    def __init__(self, database_path: str, agent: str | None = None) -> None:
+    def __init__(
+        self,
+        database_path: str,
+        agent: str | None = None,
+        identity: tuple[str, str] | None = None,
+    ) -> None:
         # Normalize path — use absolute if relative
         db_path = Path(database_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +54,9 @@ class StorageBase:
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._closed = False
         self._agent = agent
+        # ``(agent, mode)`` this file must hold (§7.78) — enforced by initialize();
+        # ``None`` (dashboard, CLIs, tests) opens any file without checking.
+        self._identity = identity
         # Execution venue stamped on order/portfolio rows (§7.61); bound by the runner
         # once the executor exists.
         self._venue: str | None = None
@@ -116,8 +130,53 @@ class StorageBase:
             self._enable_wal(sync_engine)
             Base.metadata.create_all(sync_engine)
             self._apply_migrations(sync_engine)
+            if self._identity is not None:
+                self._check_identity(sync_engine, self._identity)
         finally:
             sync_engine.dispose()
+
+    def _check_identity(self, engine, identity: tuple[str, str]) -> None:
+        """Stamp a new file with its ``(agent, mode)`` or refuse a foreign one (§7.78)."""
+        agent, mode = identity
+        with engine.begin() as conn:
+            row = conn.execute(text("SELECT agent, mode FROM db_identity WHERE id = 1")).first()
+            if row is not None:
+                if (row[0], row[1]) != (agent, mode):
+                    raise DatabaseIdentityError(
+                        f"{self.database_path} holds the {row[1]} {row[0]} book, not "
+                        f"{mode} {agent} — refusing to write into it"
+                    )
+                return
+            if self._has_rows(conn):
+                raise DatabaseIdentityError(
+                    f"{self.database_path} has data but no identity (a pre-§7.78 shared "
+                    "database?) — split it with `python -m scripts.split_database`"
+                )
+            conn.execute(
+                text(
+                    "INSERT INTO db_identity (id, agent, mode, created_at) "
+                    "VALUES (1, :agent, :mode, :now)"
+                ),
+                # ISO text, as SQLAlchemy stores datetimes (sqlite3's default adapter is deprecated).
+                {
+                    "agent": agent,
+                    "mode": mode,
+                    "now": datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" "),
+                },
+            )
+
+    @staticmethod
+    def _has_rows(conn) -> bool:
+        for table in ("llm_decisions", "orders", "portfolio_snapshots", "agent_control"):
+            if conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1")).first() is not None:
+                return True
+        return False
+
+    async def get_identity(self) -> tuple[str, str] | None:
+        """The file's recorded ``(agent, mode)``, or ``None`` (legacy / not stamped)."""
+        async with await self._session() as session:
+            row = await session.get(DbIdentityRow, 1)
+            return (row.agent, row.mode) if row is not None else None
 
     @staticmethod
     def _enable_wal(engine) -> None:

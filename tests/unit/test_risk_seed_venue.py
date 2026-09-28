@@ -29,9 +29,14 @@ async def _snapshot(storage: Storage, value: float) -> None:
 
 
 @pytest.fixture()
-async def history(tmp_db_path: str) -> str:
-    """Legacy unstamped paper history at 100k, then a demo account at 4,600."""
-    storage = Storage(tmp_db_path, agent="crypto")
+async def history(tmp_path: Path) -> str:
+    """Legacy unstamped paper history at 100k, then a demo account at 4,600.
+
+    Written into the demo book's file (§7.78) so the runner test opens exactly it —
+    the mixed rows are the §7.76 scenario the venue scoping must still survive.
+    """
+    tmp_db_path = str(tmp_path / "demo_crypto.db")
+    storage = Storage(tmp_db_path, agent="crypto", identity=("crypto", "demo"))
     await storage.initialize()
     for _ in range(3):
         await _snapshot(storage, 100_000.0)  # pre-§7.61 paper rows: venue NULL

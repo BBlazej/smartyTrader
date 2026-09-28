@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.core import db_layout
 from src.core.config import Settings
 from src.core.runner import run_agent
 from src.core.storage import Storage
@@ -32,8 +33,10 @@ monitoring: {{log_level: INFO}}
     return Settings(str(config))
 
 
-async def _seed_override(db_path: str, raw: str | None) -> None:
-    seed = Storage(db_path)
+async def _seed_override(database_path: str, raw: str | None) -> None:
+    # The runner opens its own book file (§7.78): paper crypto next to the old path.
+    book = db_layout.db_path(Path(database_path).parent, "paper", "crypto")
+    seed = Storage(str(book), identity=("crypto", "paper"))
     await seed.initialize()
     try:
         await seed.set_config_override("crypto", raw)

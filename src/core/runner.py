@@ -39,6 +39,13 @@ from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings
 from .control_config import parse_and_apply, risk_baseline
+from .db_layout import (
+    CONTROL_PORT_OFFSET,
+    UnknownVenueError,
+    db_path,
+    lock_path,
+    venue_mode,
+)
 from .decision_pipeline import DecisionPipeline
 from .llm_client import LLMClient
 from .portfolio import read_portfolio
@@ -72,6 +79,24 @@ def load_dotenv(path: str = ".env") -> None:
 
 class RunnerAlreadyRunning(RuntimeError):
     """Raised when another runner instance of the same agent owns the lock (§7.52)."""
+
+
+class ModeMismatch(RuntimeError):
+    """The built executor trades another mode than the runner was asked for (§7.78)."""
+
+
+async def _close_components(provider: Any, executor: Any) -> None:
+    """Release a provider/executor pair that will not run (fail-soft, never raises)."""
+    for component in (provider, executor):
+        close = getattr(component, "close", None)
+        if not callable(close):
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # noqa: BLE001 - refusing to start matters more
+            logger.warning("component close failed", error=str(exc))
 
 
 class RunnerLock:
@@ -166,6 +191,7 @@ async def run_agent(
     timeframe: str | None = None,
     decide_on_new_bar_only: bool = False,
     llm_client: Any | None = None,
+    expected_mode: str | None = None,
 ) -> None:
     """Shared agent lifecycle for both runners. Returns when the loop exits.
 
@@ -175,6 +201,8 @@ async def run_agent(
     wired pipeline/storage/risk/LLM and returns the market's agent instance.
     ``llm_client`` replaces the configured LLM (same ``ask_trade_signal``/``close``
     surface) — only the venue smoke test uses it, to force a known signal (§7.28).
+    ``expected_mode`` (``paper``/``demo``/``real``) makes the runner refuse
+    (:class:`ModeMismatch`) when the built executor trades another mode (§7.78).
     """
     log = structlog.get_logger().bind(component="runner")
 
@@ -189,37 +217,66 @@ async def run_agent(
         )
         return
 
-    # Single-instance guard (§7.52): refuse a second runner of this agent *before*
-    # touching the DB — two processes over one shared SQLite file would trade from
-    # separate in-memory books while both stamping the same control row. The lock is
-    # held for the whole run; any exit path below (or process death) releases it.
-    # An in-memory DB cannot be shared across processes at all, so there is nothing
-    # to guard (and no directory to put a lock file in).
+    # The executor decides the trading mode, the mode decides the database (§7.78):
+    # ``<data_dir>/<mode>_<component>.db`` — derived, never configured, so a config
+    # typo can't point real trading at a paper file. Building the components does no
+    # I/O (clients connect lazily); every refusal below closes them again before any
+    # DB, network or order activity.
+    provider, executor = build_components()
+    venue = executor_venue(executor)
+    try:
+        mode = venue_mode(venue)
+        if expected_mode is not None and mode != expected_mode:
+            raise ModeMismatch(
+                f"{component} runner asked for {expected_mode} but its executor trades "
+                f"{mode} (venue {venue!r}) — check the keys / testnet / live settings"
+            )
+    except (UnknownVenueError, ModeMismatch):
+        await _close_components(provider, executor)
+        raise
+
+    # Single-instance guard (§7.52), per agent × mode: two runners of the same book
+    # would trade from separate in-memory state over one file, but paper and demo of
+    # one agent may run side by side (separate files). The lock is held for the whole
+    # run; any exit path below (or process death) releases it. An in-memory DB cannot
+    # be shared across processes, so there is nothing to guard.
+    storage_settings = settings.storage
+    in_memory = bool(getattr(storage_settings, "in_memory", False)) or (
+        getattr(storage_settings, "database_path", None) == ":memory:"
+    )
     runner_lock: RunnerLock | None = None
-    if settings.storage.database_path != ":memory:":
-        runner_lock = RunnerLock(
-            Path(settings.storage.database_path).parent / f"{component}.runner.lock"
-        )
+    if not in_memory:
+        runner_lock = RunnerLock(lock_path(storage_settings.data_dir, mode, component))
     if runner_lock is not None and not runner_lock.acquire():
+        await _close_components(provider, executor)
         message = (
-            f"another {component} runner already holds {runner_lock.path}; refusing to start "
-            "a second instance (it would share the DB with separate in-memory state)"
+            f"another {mode} {component} runner already holds {runner_lock.path}; refusing "
+            "to start a second instance (it would share the DB with separate in-memory state)"
         )
         log.error(message, lock_file=str(runner_lock.path))
         raise RunnerAlreadyRunning(message)
 
-    # Agent-bound storage (§7.39): both agents share one DB file, so every write is
-    # stamped with this component and every book/decision/order read stays within it.
-    storage = Storage(settings.storage.database_path, agent=component)
-    await storage.initialize()
+    # This book's own file (§7.78), checked against its recorded identity: a real run
+    # never writes into a paper file (DatabaseIdentityError otherwise). Rows are still
+    # agent- and venue-stamped (§7.39/§7.61) as a second layer.
+    database = ":memory:" if in_memory else str(db_path(storage_settings.data_dir, mode, component))
+    storage = Storage(database, agent=component, identity=(component, mode))
+    try:
+        await storage.initialize()
+    except Exception:
+        await storage.close()
+        await _close_components(provider, executor)
+        if runner_lock is not None:
+            runner_lock.release()
+        raise
+    log.info("trading book opened", mode=mode, venue=venue, database=database)
 
     llm_client = llm_client if llm_client is not None else LLMClient(settings.llm)
     risk_engine = RiskEngine(settings.risk)
 
-    provider, executor = build_components()
     # Tag this run's order/portfolio rows with the executor's venue (§7.61), so a
-    # later paper <-> venue (or sandbox -> live) switch never replays foreign history.
-    storage.bind_venue(executor_venue(executor))
+    # later sandbox -> live switch inside one mode never replays foreign history.
+    storage.bind_venue(venue)
 
     # Seed the drawdown high-water mark from persisted portfolio history so a
     # restart cannot reset the guard (§7.5). The read is reset-aware (§7.53): an
@@ -238,7 +295,7 @@ async def run_agent(
 
     # Retention pruning (§7.12): one pass at startup — so even --once cron usage
     # stays hygienic — plus a scheduled pass while running (registered below).
-    await prune_storage(storage, settings.storage)
+    await prune_storage(storage, settings.storage, mode=mode)
 
     pipeline = DecisionPipeline(
         provider=provider,
@@ -428,7 +485,7 @@ async def run_agent(
     manager.schedule_cycle(agent.run_cycle, effective_interval, job_id=job_id)
     if settings.storage.prune_interval_minutes > 0:
         manager.schedule_cycle(
-            lambda: prune_storage(storage, settings.storage),
+            lambda: prune_storage(storage, settings.storage, mode=mode),
             settings.storage.prune_interval_minutes,
             job_id="storage_prune",
         )
@@ -452,6 +509,8 @@ async def run_agent(
             from .control_api import create_control_app
 
             port = control_cfg.stocks_port if component == "stocks" else control_cfg.crypto_port
+            # Paper and demo of one agent may run side by side (§7.78): one port each.
+            port += CONTROL_PORT_OFFSET[mode]
             app = create_control_app(
                 storage=storage,
                 agent_name=component,
