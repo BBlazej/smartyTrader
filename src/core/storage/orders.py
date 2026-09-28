@@ -25,6 +25,8 @@ class OrderMixin:
         agent: str | None = None,
         realized_pnl: float | None = None,
         strategy: str | None = None,
+        fee_base: float | None = None,
+        fee_quote: float | None = None,
     ) -> int:
         async with await self._session() as session:
             row = OrderRow(
@@ -40,6 +42,8 @@ class OrderMixin:
                 realized_pnl=realized_pnl,
                 venue=self._venue,
                 strategy=strategy,
+                fee_base=fee_base,
+                fee_quote=fee_quote,
             )
             session.add(row)
             await session.commit()
@@ -53,16 +57,23 @@ class OrderMixin:
         filled_at: datetime | None = None,
         realized_pnl: float | None = None,
         quantity: float | None = None,
+        fee_base: float | None = None,
+        fee_quote: float | None = None,
     ) -> bool:
         """Patch a stored order after venue reconciliation (§7.28).
 
         Returns ``True`` when a row with ``order_id`` existed. ``price``,
-        ``filled_at``, ``realized_pnl`` and ``quantity`` are only written when
-        supplied, so a later ``canceled`` transition never blanks an earlier fill
+        ``filled_at``, ``realized_pnl``, ``quantity`` and the fees are only written
+        when supplied, so a later ``canceled`` transition never blanks an earlier fill
         record. ``quantity`` is the *filled* amount (§7.61) — the row was written
-        with the requested size, and the restart replay (§7.58) rebuilds lots from it.
+        with the requested size, and the restart replay (§7.58) rebuilds lots from it,
+        net of ``fee_base``/``fee_quote`` (§7.77).
         """
         values: dict[str, object] = {"status": status}
+        if fee_base is not None:
+            values["fee_base"] = fee_base
+        if fee_quote is not None:
+            values["fee_quote"] = fee_quote
         if quantity is not None:
             values["quantity"] = quantity
         if price is not None:

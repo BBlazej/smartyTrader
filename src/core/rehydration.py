@@ -153,6 +153,9 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
                         decision_id=o.decision_id,
                         stop_loss=sl,
                         take_profit=tp,
+                        # §7.77: book the replayed lot net of its fees, like the live fill.
+                        fee_base=float(o.fee_base or 0.0),
+                        fee_quote=float(o.fee_quote or 0.0),
                     )
                 )
             counts = load_fills(fills)

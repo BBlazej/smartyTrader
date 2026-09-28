@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import structlog
+
 from ..core.models import ClosedEntry
+
+logger = structlog.get_logger()
 
 
 @dataclass
@@ -32,9 +36,9 @@ class _Lot:
 class FillRecord:
     """A historical fill replayed into a tracker at startup (§7.25).
 
-    Deliberately fee-free: stored orders do not record commissions, so rebuilt
-    lots carry ``fee_paid=0`` — the cost basis and decision attribution are what
-    matter for post-restart outcome tracking.
+    Carries the fees the venue reported for it (§7.77, persisted on the order row;
+    0 for paper/legacy rows), so a replayed lot is booked exactly like the live fill
+    was: net of a base-currency fee, with every fee in its cost basis.
     """
 
     symbol: str
@@ -46,6 +50,8 @@ class FillRecord:
     # levels from these after a restart (§7.58).
     stop_loss: float | None = None
     take_profit: float | None = None
+    fee_base: float = 0.0
+    fee_quote: float = 0.0
 
 
 ExitLevels = tuple[float | None, float | None]
@@ -137,6 +143,9 @@ class PositionTracker:
             outcome.net_pnl += net
             per_entry[lot.decision_id] = per_entry.get(lot.decision_id, 0.0) + net
 
+            # The consumed share of the buy fee leaves the lot with it — otherwise a
+            # later sell of the remainder charged the whole fee again (§7.77 find).
+            lot.fee_paid -= buy_fee_share
             lot.quantity -= take
             remaining -= take
             if lot.quantity <= 1e-12:
@@ -202,6 +211,7 @@ class PositionTracker:
             outcome.net_pnl += net
             per_entry[lot.decision_id] = per_entry.get(lot.decision_id, 0.0) + net
 
+            lot.fee_paid -= open_fee_share  # see on_sell: never charge the fee twice
             lot.quantity -= take
             remaining -= take
             if lot.quantity <= 1e-12:
@@ -215,6 +225,47 @@ class PositionTracker:
             for decision_id, pnl in per_entry.items()
         ]
         return outcome
+
+
+def book_fill(
+    tracker: PositionTracker,
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    *,
+    fee_base: float = 0.0,
+    fee_quote: float = 0.0,
+    decision_id: int | None = None,
+) -> SellOutcome | None:
+    """Book one venue fill into ``tracker`` with its reported fees (§7.75 e / §7.77).
+
+    The **single** booking rule for the live fill path *and* the restart replay, so a
+    rebuilt ledger matches the one it replaces. BUY: a base-currency fee shrinks the lot
+    (OKX charges spot buy fees in the coin — you receive less than was filled), and its
+    value plus any quote fee joins the lot's cost basis. SELL: consumes FIFO lots, with
+    both fees coming off the realized outcome. Returns the sell's outcome, or ``None``
+    for a buy or a sell with nothing tracked (no fabricated outcome, §7.8).
+    """
+    if side == "buy":
+        booked = quantity
+        if 0 < fee_base < quantity:
+            booked = quantity - fee_base
+        elif fee_base >= quantity > 0:
+            logger.warning(
+                "reported base-currency fee exceeds fill; booking gross",
+                symbol=symbol,
+                fee=fee_base,
+                filled=quantity,
+            )
+            fee_base = 0.0
+        tracker.on_buy(
+            symbol, booked, price, fee=fee_base * price + fee_quote, decision_id=decision_id
+        )
+        return None
+    if tracker.quantity(symbol) <= 0:
+        return None
+    return tracker.on_sell(symbol, quantity, price, fee=fee_quote + fee_base * price)
 
 
 def replay_fills(
@@ -231,13 +282,21 @@ def replay_fills(
     replayed = 0
     levels: dict[str, ExitLevels] = {}
     for f in fills:
-        if f.side == "buy":
-            tracker.on_buy(f.symbol, f.quantity, f.price, decision_id=f.decision_id)
-            levels[f.symbol] = (f.stop_loss, f.take_profit)
-        elif f.side == "sell":
-            tracker.on_sell(f.symbol, f.quantity, f.price)
-        else:  # guard against bad rows
+        if f.side not in ("buy", "sell"):  # guard against bad rows
             continue
+        # Same booking rule as the live fill (§7.77): net of reported fees.
+        book_fill(
+            tracker,
+            f.symbol,
+            f.side,
+            f.quantity,
+            f.price,
+            fee_base=f.fee_base,
+            fee_quote=f.fee_quote,
+            decision_id=f.decision_id,
+        )
+        if f.side == "buy":
+            levels[f.symbol] = (f.stop_loss, f.take_profit)
         replayed += 1
         if tracker.quantity(f.symbol) <= 1e-12:
             levels.pop(f.symbol, None)

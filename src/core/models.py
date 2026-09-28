@@ -206,6 +206,10 @@ class OrderResult(BaseModel):
     realized_pnl: float | None = None  # PnL realized by this order (set on a closing sell)
     # Per-entry-decision attribution of realized_pnl (set on closing fills).
     closed_entries: list[ClosedEntry] = []
+    # Fees the venue reported for this fill, in the pair's base / quote currency
+    # (§7.77). Persisted on the order row so a restart replays the ledger net of them.
+    fee_base: float | None = None
+    fee_quote: float | None = None
 
 
 # ── Executor Protocol ───────────────────────────────────────

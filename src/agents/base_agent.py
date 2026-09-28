@@ -21,6 +21,7 @@ import structlog
 
 from ..core.decision_pipeline import DecisionPipeline, PipelineResult
 from ..core.llm_client import LLMClient
+from ..core.models import OrderResult
 from ..core.risk_engine import RiskEngine
 from ..core.sleeves import SleeveBook, SleeveRun
 from ..core.storage import AgentControlRow, Storage
@@ -348,6 +349,7 @@ class BaseTradingAgent:
                     realized_pnl=order.realized_pnl if order.status == "filled" else None,
                     # The filled amount, not the requested one (§7.61 partial fills).
                     quantity=order.quantity if order.status == "filled" else None,
+                    **_fee_fields(order),
                 )
                 if not found:
                     # The original row was lost (e.g. a failed write at placement):
@@ -370,6 +372,7 @@ class BaseTradingAgent:
                         filled_at=filled_at if order.status == "filled" else None,
                         realized_pnl=order.realized_pnl if order.status == "filled" else None,
                         **extra,
+                        **_fee_fields(order),
                     )
             except Exception as exc:  # noqa: BLE001
                 # Not confirmed → the executor re-delivers this transition next cycle.
@@ -526,6 +529,7 @@ class BaseTradingAgent:
         }
         if result.strategy is not None:
             row["strategy"] = result.strategy  # §7.71 sleeve tag
+        row.update(_fee_fields(order))  # §7.77: the restart replay books net of them
         last_error: Exception | None = None
         for attempt, delay in enumerate((0.0, *self._persist_retry_delays), start=1):
             if delay:
@@ -574,3 +578,14 @@ class BaseTradingAgent:
             )
         except Exception as exc:  # noqa: BLE001 - next cycle writes a fresh snapshot
             self._logger.warning("failed to persist portfolio snapshot", error=str(exc))
+
+
+def _fee_fields(order: OrderResult) -> dict[str, float]:
+    """The venue-reported fees of a *filled* order, as storage kwargs (§7.77).
+
+    Only present values are passed, so rows without fees (paper, legacy) keep NULL.
+    """
+    if order.status != "filled":
+        return {}
+    fees = {"fee_base": order.fee_base, "fee_quote": order.fee_quote}
+    return {key: float(value) for key, value in fees.items() if value is not None}

@@ -15,6 +15,8 @@ Then it reads back every row the two runs wrote and prints them::
 
     python -m scripts.demo_agent_round_trip            # dry run: plan only, nothing runs
     python -m scripts.demo_agent_round_trip --yes      # trade on the demo + report
+    python -m scripts.demo_agent_round_trip --sell-only --yes   # run 2 only: close what
+                                                       # an earlier run left open
 
 Rows land in the **real** DB under agent ``crypto`` / venue ``myokx-sandbox`` —
 that is the point — with the decision reasoning marked ``SMOKE TEST`` so the model's
@@ -150,7 +152,7 @@ def read_back(db_path: str, since: dict[str, int]) -> dict[str, Any]:
             "orders": _rows(
                 db,
                 "SELECT id, order_id, agent, venue, symbol, side, quantity, price, status,"
-                " decision_id, realized_pnl, created_at, filled_at, strategy"
+                " decision_id, realized_pnl, created_at, filled_at, strategy, fee_base, fee_quote"
                 " FROM orders WHERE id > ? ORDER BY id",
                 since["orders"],
             ),
@@ -202,8 +204,13 @@ async def run(args: argparse.Namespace) -> int:
     db_path = settings.storage.database_path
     since = high_water_ids(db_path)
     buy_llm = ScriptedLLM(buy)
-    log.info("run 1: scripted BUY through the real runner", symbol=args.symbol)
-    await run_phase(settings, buy_llm)
+    if args.sell_only:
+        # E.g. run 1's fill was only confirmed after it exited (a venue timeout):
+        # the restart reconciles the pending row, then the SELL closes it.
+        log.info("run 1 skipped (--sell-only)", symbol=args.symbol)
+    else:
+        log.info("run 1: scripted BUY through the real runner", symbol=args.symbol)
+        await run_phase(settings, buy_llm)
 
     # Run 2 is a fresh runner — a real restart: ledger + exit levels from the DB.
     sell_llm = ScriptedLLM(smoke_signal(Action.SELL, args.symbol, price))
@@ -216,7 +223,7 @@ async def run(args: argparse.Namespace) -> int:
     print(json.dumps(report, indent=2, default=str))
     orders = report["orders"]
     ok = (
-        len(orders) == 2
+        len(orders) == (1 if args.sell_only else 2)
         and all(o["status"] == "filled" for o in orders)
         and orders[-1]["realized_pnl"] is not None
     )
@@ -228,6 +235,11 @@ def main() -> None:
         description="Agent-driven BUY → SELL round trip on the OKX demo (§7.28)."
     )
     parser.add_argument("--symbol", default="BTC/EUR", help="demo-tradable pair")
+    parser.add_argument(
+        "--sell-only",
+        action="store_true",
+        help="skip run 1: restart + scripted SELL only (closes a position an earlier run left)",
+    )
     parser.add_argument("--yes", action="store_true", help="actually run and trade on the demo")
     raise SystemExit(asyncio.run(run(parser.parse_args())))
 

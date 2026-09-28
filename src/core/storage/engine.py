@@ -201,6 +201,10 @@ class StorageBase:
                     conn.execute(
                         text("UPDATE orders SET created_at = filled_at WHERE created_at IS NULL")
                     )
+            for fee_column in ("fee_base", "fee_quote"):  # §7.77 — NULL for legacy rows
+                if fee_column not in order_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE orders ADD COLUMN {fee_column} FLOAT NULL"))
             if "venue" not in order_cols:  # §7.61 — paper order ids are self-identifying
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE orders ADD COLUMN venue VARCHAR(40) NULL"))

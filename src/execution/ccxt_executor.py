@@ -48,7 +48,7 @@ import structlog
 from ..core.config import VenueOrderSettings
 from ..core.costs import base_currency
 from ..core.models import OrderResult, OrderSide, Position
-from .position_tracker import FillRecord, PositionTracker, replay_fills
+from .position_tracker import FillRecord, PositionTracker, book_fill, replay_fills
 
 logger = structlog.get_logger()
 
@@ -106,6 +106,12 @@ def _fee_components(raw: dict[str, Any], symbol: str) -> tuple[float, float]:
                 "fill fee in a third currency not booked", symbol=symbol, currency=currency
             )
     return base_fee, quote_fee
+
+
+def _reported_fees(raw: dict[str, Any], symbol: str) -> tuple[float | None, float | None]:
+    """``(fee_base, fee_quote)`` for an ``OrderResult``: ``None`` where none was reported."""
+    base_fee, quote_fee = _fee_components(raw, symbol)
+    return (base_fee or None), (quote_fee or None)
 
 
 def _resolve_status(raw: dict[str, Any], requested: float) -> tuple[str, float, str | None]:
@@ -425,6 +431,7 @@ class CcxtExecutor:
         # Feed the local FIFO ledger so closing sells realize PnL back to the
         # entry decisions (§7.8). Skipped without a usable fill price.
         if status == "filled" and fill_price is not None:
+            result.fee_base, result.fee_quote = _reported_fees(raw, symbol)
             result.realized_pnl, result.closed_entries = self._record_fill(
                 symbol, side, filled_qty, float(fill_price), decision_id, raw
             )
@@ -501,37 +508,26 @@ class CcxtExecutor:
     ) -> tuple[float | None, list[Any]]:
         """Push one confirmed fill through the FIFO ledger, fees included (§7.8/§7.75 e).
 
-        BUY: a base-currency fee shrinks the lot (OKX charges spot buy fees in the
-        coin — booking the gross fill would drift the ledger above the real balance),
-        and its value plus any quote fee joins the lot's cost basis. SELL: the fee
-        comes off the realized PnL. Returns ``(net realized_pnl, closed_entries)``
-        for closing sells.
+        Uses :func:`book_fill` — the same rule the restart replay applies to the fees
+        persisted on the order row (§7.77), so a rebuilt ledger matches this one: a
+        base-currency BUY fee shrinks the lot and joins its cost basis with any quote
+        fee; a SELL's fees come off the realized PnL. Returns ``(net realized_pnl,
+        closed_entries)`` for closing sells.
         """
         base_fee, quote_fee = _fee_components(raw, symbol)
+        outcome = book_fill(
+            self._tracker,
+            symbol,
+            side.value,
+            filled_qty,
+            fill,
+            fee_base=base_fee,
+            fee_quote=quote_fee,
+            decision_id=decision_id,
+        )
         if side == OrderSide.BUY:
-            booked = filled_qty
-            if 0 < base_fee < filled_qty:
-                booked = filled_qty - base_fee
-            elif base_fee >= filled_qty > 0:
-                logger.warning(
-                    "reported base-currency fee exceeds fill; booking gross",
-                    symbol=symbol,
-                    fee=base_fee,
-                    filled=filled_qty,
-                )
-                base_fee = 0.0
-            self._tracker.on_buy(
-                symbol,
-                booked,
-                fill,
-                fee=base_fee * fill + quote_fee,
-                decision_id=decision_id,
-            )
             return None, []
-        if self._tracker.quantity(symbol) > 0:
-            outcome = self._tracker.on_sell(
-                symbol, filled_qty, fill, fee=quote_fee + base_fee * fill
-            )
+        if outcome is not None:
             self._write_off_dust(symbol)
             return outcome.net_pnl, list(outcome.closed_entries)
         # Nothing tracked (e.g. holdings bought outside the agent, or history
@@ -644,6 +640,7 @@ class CcxtExecutor:
                         order_id=order_id,
                     )
                 else:
+                    result.fee_base, result.fee_quote = _reported_fees(raw, pending.symbol)
                     result.realized_pnl, result.closed_entries = self._record_fill(
                         pending.symbol,
                         pending.side,

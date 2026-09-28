@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1070 tests, no network needed (live smokes are opt-in:
+pytest                      # 1080 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)

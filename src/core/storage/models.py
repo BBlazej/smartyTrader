@@ -104,6 +104,11 @@ class OrderRow(Base):
     # Sleeve the order was placed for (§7.71): the entry's sleeve, or the owning
     # sleeve of the position a close reduced. NULL without sleeves.
     strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Fees the venue reported for the fill (§7.77): base-currency (OKX spot BUYs pay in
+    # the coin) and quote-currency. The restart replay books lots net of them exactly
+    # like the live path; NULL = none reported / legacy row.
+    fee_base: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_quote: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class PortfolioSnapshotRow(Base):

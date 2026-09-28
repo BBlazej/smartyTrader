@@ -29,6 +29,10 @@ Quirks and gotchas for the venues, gathered as we integrate.
   reports **0.10 % maker / 0.20 % taker** (`fetch_trading_fee`, checked 2026-09-28) — the
   crypto paper profile uses 0.20 % (§7.75). Buy fees are charged in the **base** currency
   (see PLAN §7.65); every fill payload carries its fees.
+- **Demo API timeouts:** the demo endpoint intermittently answers `50004 "API endpoint request
+  timeout"` (seen on `fetch_order`, 2026-09-28). The order may still have filled; the executor
+  leaves it `pending` and reconciliation resolves it later (§7.28/§7.58). Equity dips until then
+  (PLAN §7.79).
 - **Statuses:** CCXT normalizes exchange statuses. We map `closed → filled`,
   `open/pending → pending`, `canceled/cancelled/expired → cancelled`, `rejected → rejected`
   (see `src/execution/ccxt_executor.py::_STATUS_MAP`).
