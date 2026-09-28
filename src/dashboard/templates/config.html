@@ -16,8 +16,8 @@
   </p>
 
   <div class="pill-row">
-    {% for a in agents %}
-      <a class="btn {{ 'active' if a == agent }}" href="/config/{{ a }}">{{ a }}</a>
+    {% for b in books %}
+      <a class="btn {{ 'active' if b.key == agent }}" href="/config/{{ b.key }}">{{ b.key }}</a>
     {% endfor %}
   </div>
 

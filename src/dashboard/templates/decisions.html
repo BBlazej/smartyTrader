@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Decisions · Trading Agents{% endblock %}
 {% block content %}
-  <h1>Decisions{% if selected_agent %} — {{ selected_agent }}{% endif %}</h1>
+  <h1>Decisions{% if selected_key %} — {{ selected_key }}{% endif %}</h1>
   {% include "_agent_tabs.html" %}
 
   {% set s = stats %}

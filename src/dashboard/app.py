@@ -1,12 +1,20 @@
-"""The dashboard web app (§7.15 P3–P4) — FastAPI + Jinja2/HTMX.
+"""One web app over every agent × mode book (§7.15 P3–P4, §7.78) — FastAPI + Jinja2/HTMX.
 
-Reads the shared SQLite DB as a reader (WAL mode → concurrent with the agents'
-writes) through :class:`~src.core.storage.Storage`, and writes control intent
-(pause / resume / close-all) straight into the ``agent_control`` table via the same
-repository methods the agent-side control API uses. The running agents re-read that
-row every cycle (:meth:`BaseTradingAgent._handle_control`), so a button press here is
-honored on their next tick and survives restarts — no live HTTP coupling to the agent
-process, and it works whether or not ``control_api.enabled``.
+Since §7.78 each ``(mode, agent)`` pair keeps its own SQLite file, and the dashboard
+opens one :class:`~src.dashboard.books.Book` per file found in ``storage.data_dir``.
+Every page, latch write and launch targets exactly *one* book's
+:class:`~src.core.storage.Storage` — foreign modes' rows are absent from that file,
+not filtered out of a shared one. Before the first split there is no
+``<mode>_<agent>.db`` file: then the legacy shared ``storage.database_path`` opens as
+one book per configured agent keyed by agent name, i.e. exactly the pre-§7.78 view and
+URLs (``/control/crypto/pause``, ``?agent=stocks``, …).
+
+Control intent (pause / resume / close-all) is written straight into that book's
+``agent_control`` table via the same repository methods the agent-side control API
+uses. The running agents re-read that row every cycle
+(:meth:`BaseTradingAgent._handle_control`), so a button press here is honored on their
+next tick and survives restarts — no live HTTP coupling to the agent process, and it
+works whether or not ``control_api.enabled``.
 
 Safety invariants (inherited from §7.15):
 
@@ -54,6 +62,7 @@ from ..core.web_security import (
     install_request_guards,
     new_csrf_token,
 )
+from .books import Book, find_book
 from .launch import AgentLauncher
 from .views import (
     agent_status,
@@ -157,16 +166,28 @@ def _form_to_payload(form: dict[str, str]) -> dict[str, Any]:
 
 
 def create_dashboard_app(
-    storage: Storage,
-    settings: Settings,
+    storage: Storage | None = None,
+    settings: Settings | None = None,
     launcher: AgentLauncher | None = None,
+    books: list[Book] | None = None,
 ) -> FastAPI:
-    """Build the dashboard app over an initialized ``storage`` + loaded ``settings``.
+    """Build the dashboard app over loaded ``settings`` and one book per SQLite file.
 
+    §7.78 book model: every page, latch write and launch targets one *book*
+    (``(mode, agent)``). Pass ``books`` (from :func:`~src.dashboard.books.open_books`)
+    for the per-mode files, or a single legacy ``storage`` — it becomes one book per
+    configured agent keyed by agent name, i.e. exactly the pre-§7.78 behavior and URLs.
     ``launcher`` overrides process supervision (§7.24, tests); when omitted and
     ``dashboard.allow_launch`` is true, a default :class:`AgentLauncher` is built with
-    its pid/log files next to the SQLite database.
+    its pid/log files next to the SQLite database (keyed per book).
     """
+    if settings is None:
+        raise ValueError("settings is required")
+    if books is None:
+        if storage is None:
+            raise ValueError("either storage or books must be provided")
+        agents = list(getattr(settings.dashboard, "agents", ["crypto", "stocks"]))
+        books = [Book(key=a, mode=None, agent=a, storage=storage) for a in agents]
     app = FastAPI(title="trading-agent dashboard", docs_url=None, redoc_url=None)
     # §7.43: Host allowlist (DNS rebinding) + cross-origin write rejection (CSRF).
     install_request_guards(
@@ -187,38 +208,40 @@ def create_dashboard_app(
     # chart payload can be embedded as JSON. Values are safe, non-user data.
     templates.env.filters["tojson"] = lambda v: _json.dumps(v)
 
-    agents: list[str] = list(getattr(settings.dashboard, "agents", ["crypto", "stocks"]))
     refresh_seconds = int(getattr(settings.dashboard, "refresh_seconds", 5))
 
-    # Data dir shared by the launcher and the log viewer: next to the live SQLite DB.
-    data_dir = Path(storage.database_path).parent
+    # Data dir shared by the launcher and the log viewer: next to the live SQLite DB
+    # (legacy single file) or the configured ``storage.data_dir`` of the book files.
+    data_dir = Path(storage.database_path).parent if storage else Path(settings.storage.data_dir)
 
     # §7.24 opt-in process supervision: absent unless explicitly allowed by config.
     if launcher is None and getattr(settings.dashboard, "allow_launch", False):
         launcher = AgentLauncher(data_dir=data_dir)
     allow_launch = launcher is not None
 
-    def _check_agent(agent: str) -> None:
-        if agent not in agents:
-            raise HTTPException(status_code=404, detail=f"unknown agent '{agent}'")
+    def _book_views() -> list[dict[str, Any]]:
+        return [{"key": b.key, "mode": b.mode, "agent": b.agent} for b in books]
+
+    def _require_book(key: str | None = None, agent: str | None = None) -> Book:
+        """Resolve a request's book (``?book=``/legacy ``?agent=``); unknown → 404.
+
+        Path routes pass their path segment as ``key``; it still matches a legacy
+        book keyed by bare agent name, so pre-§7.78 URLs keep working.
+        """
+        book = find_book(books, key=key, agent=agent)
+        if book is None:
+            raise HTTPException(status_code=404, detail=f"unknown book '{key or agent}'")
+        return book
 
     def _require_csrf(request: Request, form_token: str | None = None) -> None:
         """Every dashboard write must present the token its own pages embed (§7.43)."""
         if not csrf_ok(csrf_token, request.headers.get(CSRF_HEADER) or form_token):
             raise HTTPException(status_code=403, detail="missing or invalid CSRF token")
 
-    def _book_agent(agent: str | None) -> str:
-        """Agent whose book a page shows (§7.39): explicit ``?agent=``, else the first
-        configured one. Books are per agent — never a blend of both agents' snapshots."""
-        if agent is None:
-            return agents[0]
-        _check_agent(agent)
-        return agent
-
     def _ctx(request: Request, **extra: Any) -> dict[str, Any]:
         base = {
             "request": request,
-            "agents": agents,
+            "books": _book_views(),
             "refresh_seconds": refresh_seconds,
             "allow_launch": allow_launch,
             "active": "",
@@ -229,28 +252,30 @@ def create_dashboard_app(
 
     async def _health_rows() -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for agent in agents:
-            control = await storage.get_agent_control(agent)
-            agent_cfg = getattr(settings, f"{agent}_agent", None)
+        for book in books:
+            control = await book.storage.get_agent_control(book.agent)
+            agent_cfg = getattr(settings, f"{book.agent}_agent", None)
             enabled = bool(getattr(agent_cfg, "enabled", False))
             state = getattr(control, "state", "running") if control else "running"
-            last_cycle_at = getattr(control, "last_cycle_at", None) if control else None
             # §7.51: LLM outages show on the card, not just in the decisions table.
             try:
-                recent = await storage.get_recent_decisions(
-                    limit=20, include_fallback=True, agent=agent
+                recent = await book.storage.get_recent_decisions(
+                    limit=20, include_fallback=True, agent=book.agent
                 )
             except Exception:  # noqa: BLE001 - a health card must never fail the page
                 recent = []
             fallbacks = sum(1 for d in recent if getattr(d, "is_fallback", False))
             # §7.69: per-decision LLM latency percentiles (p50/p95) from stored rows.
             try:
-                llm_stats = await storage.get_llm_latency_stats(limit=100, agent=agent)
+                llm_stats = await book.storage.get_llm_latency_stats(limit=100, agent=book.agent)
             except Exception:  # noqa: BLE001 - a health card must never fail the page
                 llm_stats = None
             rows.append(
                 {
-                    "name": agent,
+                    # Card name = book key (``crypto`` legacy, ``demo_crypto`` per-mode).
+                    "name": book.key,
+                    "agent": book.agent,
+                    "mode": book.mode,
                     "enabled": enabled,
                     "state": state,
                     # Effective status: the latch is intent only — a dead agent keeps
@@ -258,7 +283,7 @@ def create_dashboard_app(
                     "status": agent_status(
                         enabled=enabled,
                         state=state,
-                        last_cycle_at=last_cycle_at,
+                        last_cycle_at=getattr(control, "last_cycle_at", None) if control else None,
                         interval_minutes=int(getattr(agent_cfg, "interval_minutes", 5) or 5),
                     ),
                     "close_all_requested": bool(
@@ -270,8 +295,8 @@ def create_dashboard_app(
                         getattr(control, "config_override_json", None) if control else None
                     ),
                     # §7.24: pid when this dashboard launched/adopted the runner process.
-                    "managed_pid": launcher.managed_pid(agent) if launcher else None,
-                    "has_log": _agent_log_path(agent).exists(),
+                    "managed_pid": launcher.managed_pid(book.key) if launcher else None,
+                    "has_log": _agent_log_path(book.key).exists(),
                     "fallbacks": fallbacks,
                     "recent_decisions": len(recent),
                     "llm_stats": llm_stats,
@@ -282,19 +307,23 @@ def create_dashboard_app(
     # ── Pages ─────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    async def overview(request: Request, agent: str | None = None) -> HTMLResponse:
-        selected = _book_agent(agent)
-        latest = await storage.get_latest_portfolio_snapshot(agent=selected)
-        history = await storage.get_portfolio_history(limit=200, agent=selected)
+    async def overview(
+        request: Request, book: str | None = None, agent: str | None = None
+    ) -> HTMLResponse:
+        selected = _require_book(book, agent)
+        latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
+        history = await selected.storage.get_portfolio_history(limit=200, agent=selected.agent)
         chart = portfolio_chart(history)
-        recent = await storage.get_recent_decisions(limit=8, include_fallback=True, agent=selected)
+        recent = await selected.storage.get_recent_decisions(
+            limit=8, include_fallback=True, agent=selected.agent
+        )
         return templates.TemplateResponse(
             request,
             "overview.html",
             _ctx(
                 request,
                 active="overview",
-                selected_agent=selected,
+                selected_key=selected.key,
                 latest=latest,
                 chart=chart,
                 positions=parse_positions(latest),
@@ -305,59 +334,85 @@ def create_dashboard_app(
 
     @app.get("/decisions", response_class=HTMLResponse)
     async def decisions(
-        request: Request, limit: int = 200, agent: str | None = None
+        request: Request,
+        limit: int = 200,
+        book: str | None = None,
+        agent: str | None = None,
     ) -> HTMLResponse:
         limit = max(1, min(limit, 1000))
-        if agent is not None:
-            _check_agent(agent)
-        # No ?agent= → every agent's decisions (the table shows which agent made each).
-        rows = await storage.get_recent_decisions(limit=limit, include_fallback=True, agent=agent)
+        selected_key: str | None = None
+        if book is not None or agent is not None:
+            selected = _require_book(book, agent)
+            selected_key = selected.key
+            rows = await selected.storage.get_recent_decisions(
+                limit=limit, include_fallback=True, agent=selected.agent
+            )
+        else:
+            # No selection → every book's decisions (the table shows agent + file).
+            # One read per *distinct* storage (legacy books share one handle).
+            storages: dict[int, Storage] = {}
+            for b in books:
+                storages.setdefault(id(b.storage), b.storage)
+            parts = [
+                await s.get_recent_decisions(limit=limit, include_fallback=True)
+                for s in storages.values()
+            ]
+            # Rows are naive-UTC; untimed ones sort last. The sentinel matches them.
+            naive_min = datetime.min  # noqa: DTZ901
+            rows = sorted(
+                (row for part in parts for row in part),
+                key=lambda r: (r.timestamp is not None, r.timestamp or naive_min),
+                reverse=True,
+            )[:limit]
         return templates.TemplateResponse(
             request,
             "decisions.html",
             _ctx(
                 request,
                 active="decisions",
-                selected_agent=agent,
-                allow_all_agents=True,
+                selected_key=selected_key,
+                allow_all_books=True,
                 decisions=rows,
                 stats=decision_stats(rows),
             ),
         )
 
     async def _sleeve_view(
-        agent: str, symbols: list[str]
+        book: Book, symbols: list[str]
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Per-sleeve table + ``symbol → sleeve`` (§7.71); empty without sleeves."""
+        agent = book.agent
         try:
-            snapshots = await storage.get_latest_sleeve_snapshots(agent=agent)
+            snapshots = await book.storage.get_latest_sleeve_snapshots(agent=agent)
             if not snapshots:
                 return [], {}
-            allocation = await storage.get_latest_allocation(agent=agent)
+            allocation = await book.storage.get_latest_allocation(agent=agent)
             since = allocation.created_at if allocation is not None else None
             peaks: dict[str, float | None] = {}
             performance: dict[str, Any] = {}
             for snap in snapshots:
                 if since is not None:
-                    peaks[snap.strategy] = await storage.get_effective_sleeve_peak(
+                    peaks[snap.strategy] = await book.storage.get_effective_sleeve_peak(
                         snap.strategy, since, agent=agent
                     )
                 # §7.73: the sleeve's ledger since its allocation.
                 performance[snap.strategy] = sleeve_performance(
                     snap.strategy,
-                    await storage.get_strategy_orders(snap.strategy, since, agent=agent),
-                    await storage.get_sleeve_equity_series(snap.strategy, since, agent=agent),
+                    await book.storage.get_strategy_orders(snap.strategy, since, agent=agent),
+                    await book.storage.get_sleeve_equity_series(snap.strategy, since, agent=agent),
                 )
-            owners = await storage.get_position_strategies(symbols, agent=agent)
+            owners = await book.storage.get_position_strategies(symbols, agent=agent)
         except Exception:  # the sleeve table must never fail the page
             logger.warning("sleeve view unavailable", agent=agent, exc_info=True)
             return [], {}
         return sleeve_rows(snapshots, allocation, peaks, performance), owners
 
     @app.get("/positions", response_class=HTMLResponse)
-    async def positions_page(request: Request, agent: str | None = None) -> HTMLResponse:
-        selected = _book_agent(agent)
-        latest = await storage.get_latest_portfolio_snapshot(agent=selected)
+    async def positions_page(
+        request: Request, book: str | None = None, agent: str | None = None
+    ) -> HTMLResponse:
+        selected = _require_book(book, agent)
+        latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
         positions = parse_positions(latest)
         sleeves, owners = await _sleeve_view(selected, [p.symbol for p in positions])
         return templates.TemplateResponse(
@@ -366,7 +421,7 @@ def create_dashboard_app(
             _ctx(
                 request,
                 active="positions",
-                selected_agent=selected,
+                selected_key=selected.key,
                 latest=latest,
                 positions=positions,
                 sleeves=sleeves,
@@ -374,11 +429,11 @@ def create_dashboard_app(
             ),
         )
 
-    # ── Agent logs (tail of data/agent_<name>.out.log, §7.24 launches) ───
+    # ── Agent logs (tail of data/agent_<book>.out.log, §7.24 launches) ───
 
-    def _agent_log_path(agent: str) -> Path:
-        # Same data dir the launcher writes to: next to the shared SQLite DB.
-        return data_dir / f"agent_{agent}.out.log"
+    def _agent_log_path(key: str) -> Path:
+        # Same data dir the launcher writes to, keyed per book (§7.78).
+        return data_dir / f"agent_{key}.out.log"
 
     def _read_log_tail(path: Path, max_bytes: int = 64 * 1024) -> tuple[str, bool]:
         """(tail text, byte-truncated?) — never reads more than the last chunk."""
@@ -395,10 +450,10 @@ def create_dashboard_app(
             text = text.split("\n", 1)[1]
         return tail_lines(text), size > max_bytes
 
-    @app.get("/logs/{agent}", response_class=HTMLResponse)
-    async def logs_page(request: Request, agent: str) -> HTMLResponse:
-        _check_agent(agent)
-        path = _agent_log_path(agent)
+    @app.get("/logs/{key}", response_class=HTMLResponse)
+    async def logs_page(request: Request, key: str) -> HTMLResponse:
+        book = _require_book(key)
+        path = _agent_log_path(book.key)
         exists = path.exists()
         tail, truncated = _read_log_tail(path) if exists else ("", False)
         return templates.TemplateResponse(
@@ -407,7 +462,7 @@ def create_dashboard_app(
             _ctx(
                 request,
                 active="logs",
-                agent=agent,
+                agent=book.key,
                 log_path=str(path),
                 exists=exists,
                 tail=tail,
@@ -415,36 +470,36 @@ def create_dashboard_app(
             ),
         )
 
-    @app.get("/logs/{agent}/partial", response_class=HTMLResponse)
-    async def logs_partial(request: Request, agent: str) -> HTMLResponse:
-        _check_agent(agent)
-        path = _agent_log_path(agent)
+    @app.get("/logs/{key}/partial", response_class=HTMLResponse)
+    async def logs_partial(request: Request, key: str) -> HTMLResponse:
+        book = _require_book(key)
+        path = _agent_log_path(book.key)
         exists = path.exists()
         tail, truncated = _read_log_tail(path) if exists else ("", False)
         return templates.TemplateResponse(
             request,
             "_log_tail.html",
-            _ctx(request, agent=agent, exists=exists, tail=tail, truncated=truncated),
+            _ctx(request, agent=book.key, exists=exists, tail=tail, truncated=truncated),
         )
 
-    @app.get("/config/{agent}", response_class=HTMLResponse)
-    async def config_page(request: Request, agent: str) -> HTMLResponse:
-        _check_agent(agent)
-        control = await storage.get_agent_control(agent)
+    @app.get("/config/{key}", response_class=HTMLResponse)
+    async def config_page(request: Request, key: str) -> HTMLResponse:
+        book = _require_book(key)
+        control = await book.storage.get_agent_control(book.agent)
         try:
             overrides = parse_overrides(
                 getattr(control, "config_override_json", None) if control else None
             )
         except Exception:  # noqa: BLE001 - never fail the form on a corrupt blob
             overrides = None
-        agent_settings = getattr(settings, f"{agent}_agent", None)
+        agent_settings = getattr(settings, f"{book.agent}_agent", None)
         return templates.TemplateResponse(
             request,
             "config.html",
             _ctx(
                 request,
                 active="config",
-                agent=agent,
+                agent=book.key,
                 config=safe_config_view(settings, overrides),
                 agent_config=agent_config_view(agent_settings, overrides)
                 if agent_settings is not None
@@ -454,9 +509,9 @@ def create_dashboard_app(
             ),
         )
 
-    @app.post("/config/{agent}", response_class=HTMLResponse)
-    async def config_save(request: Request, agent: str) -> HTMLResponse:
-        _check_agent(agent)
+    @app.post("/config/{key}", response_class=HTMLResponse)
+    async def config_save(request: Request, key: str) -> HTMLResponse:
+        book = _require_book(key)
         # Parse the urlencoded body ourselves (no python-multipart dep): every
         # submitted key is passed through so an injected credential-shaped field
         # survives to be rejected wholesale by the SafeConfigOverrides whitelist.
@@ -468,27 +523,27 @@ def create_dashboard_app(
             payload,
             baseline=risk_baseline(settings),
             quote_currency=getattr(
-                getattr(settings, f"{agent}_agent", None), "quote_currency", None
+                getattr(settings, f"{book.agent}_agent", None), "quote_currency", None
             ),
         )
         if model is None:
             # Re-render the form with the attempted values echoed back + the rejection.
-            control = await storage.get_agent_control(agent)
+            control = await book.storage.get_agent_control(book.agent)
             try:
                 overrides = parse_overrides(
                     getattr(control, "config_override_json", None) if control else None
                 )
             except Exception:  # noqa: BLE001
                 overrides = None
-            agent_settings = getattr(settings, f"{agent}_agent", None)
-            logger.warning("dashboard config rejected", agent=agent, error=error)
+            agent_settings = getattr(settings, f"{book.agent}_agent", None)
+            logger.warning("dashboard config rejected", agent=book.key, error=error)
             return templates.TemplateResponse(
                 request,
                 "config.html",
                 _ctx(
                     request,
                     active="config",
-                    agent=agent,
+                    agent=book.key,
                     config=safe_config_view(settings, overrides),
                     agent_config=agent_config_view(agent_settings, overrides)
                     if agent_settings is not None
@@ -501,28 +556,28 @@ def create_dashboard_app(
         # §7.50: the form shows merged (YAML ∘ override) values, so strip fields that
         # merely echo the YAML baseline — a save then persists only genuine overrides
         # and never pins defaults against later, stricter YAML edits.
-        model = strip_noop_overrides(model, settings, agent)
+        model = strip_noop_overrides(model, settings, book.agent)
         dumped = model.model_dump(exclude_none=True)
         stored = model.model_dump_json(exclude_none=True)
-        await storage.set_config_override(agent, stored if dumped else None)
-        logger.info("dashboard config saved", agent=agent, fields=list(dumped))
-        return RedirectResponse(url=f"/config/{agent}?saved=1", status_code=303)
+        await book.storage.set_config_override(book.agent, stored if dumped else None)
+        logger.info("dashboard config saved", agent=book.key, fields=list(dumped))
+        return RedirectResponse(url=f"/config/{book.key}?saved=1", status_code=303)
 
-    # ── Control (writes the DB latch; agent acts next cycle) ───
+    # ── Control (writes the book's DB latch; its agent acts next cycle) ───
 
-    @app.post("/control/{agent}/{action}", response_class=HTMLResponse)
-    async def control(request: Request, agent: str, action: str) -> HTMLResponse:
+    @app.post("/control/{key}/{action}", response_class=HTMLResponse)
+    async def control(request: Request, key: str, action: str) -> HTMLResponse:
         _require_csrf(request)
-        _check_agent(agent)
+        book = _require_book(key)
         if action == "pause":
-            await storage.set_agent_state(agent, "paused")
+            await book.storage.set_agent_state(book.agent, "paused")
         elif action == "resume":
-            await storage.set_agent_state(agent, "running")
+            await book.storage.set_agent_state(book.agent, "running")
         elif action == "close-all":
-            await storage.request_close_all(agent, requested=True)
+            await book.storage.request_close_all(book.agent, requested=True)
         else:  # pragma: no cover - unknown verbs never posted by our UI
             raise HTTPException(status_code=404, detail=f"unknown control action '{action}'")
-        logger.info("dashboard control action", agent=agent, action=action)
+        logger.info("dashboard control action", agent=book.key, action=action)
         # Return the refreshed health fragment so HTMX swaps the cards in place.
         return templates.TemplateResponse(
             request, "_health.html", _ctx(request, health_rows=await _health_rows())
@@ -536,22 +591,24 @@ def create_dashboard_app(
 
     # ── Process supervision (§7.24 — opt-in via dashboard.allow_launch) ───
 
-    @app.post("/launch/{agent}/{action}", response_class=HTMLResponse)
-    async def launch(request: Request, agent: str, action: str) -> HTMLResponse:
+    @app.post("/launch/{key}/{action}", response_class=HTMLResponse)
+    async def launch(request: Request, key: str, action: str) -> HTMLResponse:
         _require_csrf(request)
         if launcher is None:  # supervision disabled wholesale
             raise HTTPException(status_code=403, detail="process launching is disabled")
-        _check_agent(agent)
+        book = _require_book(key)
         if action == "start":
-            cfg = getattr(settings, f"{agent}_agent", None)
+            cfg = getattr(settings, f"{book.agent}_agent", None)
             if not getattr(cfg, "enabled", False):
                 # The runner would exit at its enabled-gate; starting it is pointless.
-                raise HTTPException(status_code=409, detail=f"{agent} agent is disabled in config")
-            control = await storage.get_agent_control(agent)
+                raise HTTPException(
+                    status_code=409, detail=f"{book.agent} agent is disabled in config"
+                )
+            control_row = await book.storage.get_agent_control(book.agent)
             status = agent_status(
                 enabled=True,
-                state=getattr(control, "state", "running") if control else "running",
-                last_cycle_at=getattr(control, "last_cycle_at", None) if control else None,
+                state=getattr(control_row, "state", "running") if control_row else "running",
+                last_cycle_at=getattr(control_row, "last_cycle_at", None) if control_row else None,
                 interval_minutes=int(getattr(cfg, "interval_minutes", 5) or 5),
             )
             if status == "running":
@@ -559,22 +616,27 @@ def create_dashboard_app(
                 # elsewhere); launching a second one would double-decide.
                 raise HTTPException(
                     status_code=409,
-                    detail=f"{agent} already running (fresh heartbeat) — not launching a second",
+                    detail=(
+                        f"{book.key} already running (fresh heartbeat) — not launching a second"
+                    ),
                 )
             try:
-                await launcher.start(agent)
+                await launcher.start(book.key)
             except RuntimeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         elif action == "stop":
-            stopped = await launcher.stop(agent)
+            stopped = await launcher.stop(book.key)
             if not stopped:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"{agent} was not launched by this dashboard — not killing foreign processes",
+                    detail=(
+                        f"{book.key} was not launched by this dashboard — "
+                        "not killing foreign processes"
+                    ),
                 )
         else:  # pragma: no cover - unknown verbs never posted by our UI
             raise HTTPException(status_code=404, detail=f"unknown launch action '{action}'")
-        logger.info("dashboard launch action", agent=agent, action=action)
+        logger.info("dashboard launch action", agent=book.key, action=action)
         return templates.TemplateResponse(
             request, "_health.html", _ctx(request, health_rows=await _health_rows())
         )
@@ -582,9 +644,12 @@ def create_dashboard_app(
     # ── JSON for the uPlot chart (safe fields only) ───────────
 
     @app.get("/api/portfolio.json")
-    async def portfolio_json(limit: int = 200, agent: str | None = None) -> dict[str, Any]:
+    async def portfolio_json(
+        limit: int = 200, book: str | None = None, agent: str | None = None
+    ) -> dict[str, Any]:
         limit = max(1, min(limit, 1000))
-        history = await storage.get_portfolio_history(limit=limit, agent=_book_agent(agent))
+        selected = _require_book(book, agent)
+        history = await selected.storage.get_portfolio_history(limit=limit, agent=selected.agent)
         return portfolio_chart(history)
 
     @app.get("/healthz")

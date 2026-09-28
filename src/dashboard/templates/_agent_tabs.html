@@ -1,9 +1,9 @@
-{# Per-agent book selector (§7.39): each agent has its own portfolio/decisions. #}
+{# Per-book selector (§7.39/§7.78): one tab per agent × mode file. #}
 <div class="pill-row" style="margin-bottom:1rem;">
-  {% if allow_all_agents %}
-    <a class="btn{{ ' active-pill' if selected_agent is none }}" href="?">all agents</a>
+  {% if allow_all_books %}
+    <a class="btn{{ ' active-pill' if selected_key is none }}" href="?">all books</a>
   {% endif %}
-  {% for a in agents %}
-    <a class="btn{{ ' active-pill' if selected_agent == a }}" href="?agent={{ a }}">{{ a }}</a>
+  {% for b in books %}
+    <a class="btn{{ ' active-pill' if selected_key == b.key }}" href="?agent={{ b.key }}">{{ b.key }}</a>
   {% endfor %}
 </div>

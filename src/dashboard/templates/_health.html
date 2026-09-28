@@ -3,6 +3,7 @@
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <strong>{{ a.name }}</strong>
+        {% if a.mode %}<span class="badge b-off" title="trading mode of this book's SQLite file (§7.78)">{{ a.mode }}</span>{% endif %}
         <span class="badge b-{{ a.status }}"
               title="Liveness is derived from the heartbeat: offline when no cycle finished within ~2× the configured interval">{{ a.status }}</span>
       </div>
@@ -29,7 +30,7 @@
             <button class="btn danger" hx-post="/launch/{{ a.name }}/stop" hx-target="#health" hx-swap="outerHTML"
                     hx-confirm="Terminate the {{ a.name }} agent process (pid {{ a.managed_pid }}) started from this dashboard?">Stop (pid {{ a.managed_pid }})</button>
           {% elif a.status == 'offline' and a.enabled %}
-            <button class="btn" title="Spawns scripts.run_{{ a.name }}_agent on this host; logs go to data/agent_{{ a.name }}.out.log"
+            <button class="btn" title="Spawns this book's runner on this host (§7.78); logs go to data/agent_{{ a.name }}.out.log"
                     hx-post="/launch/{{ a.name }}/start" hx-target="#health" hx-swap="outerHTML">Start</button>
           {% endif %}
         {% endif %}

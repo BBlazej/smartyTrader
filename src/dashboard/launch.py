@@ -13,12 +13,15 @@ the browser on a single host. Safety posture (§7.15 heritage):
   running agent started elsewhere (terminal, systemd, another container) can be
   paused via its latch but is never killed by pid guesswork.
 
-Adoption across dashboard restarts uses a per-agent pidfile in the data dir; a
+Keys are *book* names (§7.78): one per agent × mode — ``crypto`` for a legacy
+single-file setup, ``demo_crypto`` for a per-mode book (a compound key spawns the
+runner with ``--mode demo``, so the dashboard can start paper and demo side by side).
+Adoption across dashboard restarts uses a per-book pidfile in the data dir; a
 pid is only adopted when it is alive *and* its ``/proc`` cmdline still matches
-the expected runner module, so a recycled pid is never killed. Child stdout /
-stderr are appended to ``data/agent_<name>.out.log``. Children deliberately
-*outlive* the dashboard (killing the dashboard must not halt trading); the
-pidfile lets a restarted dashboard re-adopt them.
+the expected runner module (and ``--mode`` flag), so a recycled pid is never killed.
+Child stdout / stderr are appended to ``data/agent_<key>.out.log``. Children
+deliberately *outlive* the dashboard (killing the dashboard must not halt trading);
+the pidfile lets a restarted dashboard re-adopt them.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import structlog
+
+from ..core.db_layout import parse_book_key
 
 logger = structlog.get_logger(__name__)
 
@@ -48,9 +53,13 @@ class AgentLauncher:
         self._children: dict[str, asyncio.subprocess.Process] = {}
 
     @staticmethod
-    def default_command(agent: str) -> list[str]:
-        """Runner-module invocation for an agent, mirroring the documented CLI."""
-        return [sys.executable, "-m", f"scripts.run_{agent}_agent"]
+    def default_command(key: str) -> list[str]:
+        """Runner-module invocation for a book key, mirroring the documented CLI (§7.78)."""
+        parsed = parse_book_key(key)
+        if parsed is None:
+            return [sys.executable, "-m", f"scripts.run_{key}_agent"]
+        mode, agent = parsed
+        return [sys.executable, "-m", f"scripts.run_{agent}_agent", "--mode", mode]
 
     # ── pidfiles ────────────────────────────────────────────────
 
@@ -68,13 +77,22 @@ class AgentLauncher:
             return False
         return True
 
-    def _cmdline_matches(self, pid: int, agent: str) -> bool:
-        """Verify a foreign/adopted pid really is this agent's runner (Linux)."""
+    def _cmdline_matches(self, pid: int, key: str) -> bool:
+        """Verify a foreign/adopted pid really is this book's runner (Linux)."""
         try:
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         except OSError:
             return False
-        return f"scripts.run_{agent}_agent" in raw.decode(errors="replace")
+        argv = raw.decode(errors="replace").split("\x00")
+        parsed = parse_book_key(key)
+        agent = parsed[1] if parsed is not None else key
+        if not any(f"scripts.run_{agent}_agent" in arg for arg in argv):
+            return False
+        # A mode-keyed pid may only adopt the runner started with that --mode (§7.78).
+        if parsed is None:
+            return True
+        mode = parsed[0]
+        return any(arg == "--mode" and argv[i + 1 : i + 2] == [mode] for i, arg in enumerate(argv))
 
     def _adopted_pid(self, agent: str) -> int | None:
         """A live pid from the pidfile whose cmdline matches; prunes stale files."""

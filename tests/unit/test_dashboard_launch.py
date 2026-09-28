@@ -104,3 +104,54 @@ class TestAdoption:
         launcher = AgentLauncher(tmp_path)
         assert launcher.managed_pid("crypto") is None
         assert not (tmp_path / "crypto_agent.pid").exists()
+
+
+class TestBookKeys:
+    """§7.78: compound ``<mode>_<agent>`` keys spawn/adopt mode-flagged runners."""
+
+    def test_default_command_adds_mode_flag_for_compound_keys(self) -> None:
+        legacy = AgentLauncher.default_command("crypto")
+        assert legacy[1:3] == ["-m", "scripts.run_crypto_agent"]
+        assert "--mode" not in legacy
+        demo = AgentLauncher.default_command("demo_crypto")
+        assert demo[1:3] == ["-m", "scripts.run_crypto_agent"]
+        assert demo[3:] == ["--mode", "demo"]
+
+    async def test_mode_key_never_adopts_wrong_mode_runner(self, tmp_path) -> None:
+        # A paper runner must not be adopted as the demo book's process (§7.52 twin).
+        child = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(2)",
+            "scripts.run_crypto_agent",
+            "--mode",
+            "paper",
+        )
+        (tmp_path / "demo_crypto_agent.pid").write_text(str(child.pid))
+        launcher = AgentLauncher(tmp_path)
+        try:
+            assert launcher.managed_pid("demo_crypto") is None  # wrong --mode
+            assert not (tmp_path / "demo_crypto_agent.pid").exists()
+            assert _alive(child.pid)  # foreign process untouched
+        finally:
+            child.terminate()
+            await child.wait()
+
+    async def test_mode_key_adopts_matching_runner(self, tmp_path) -> None:
+        child = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(2)",
+            "scripts.run_crypto_agent",
+            "--mode",
+            "demo",
+        )
+        (tmp_path / "demo_crypto_agent.pid").write_text(str(child.pid))
+        launcher = AgentLauncher(tmp_path)
+        try:
+            assert launcher.managed_pid("demo_crypto") == child.pid
+            assert await launcher.stop("demo_crypto") is True
+            assert not _alive(child.pid)
+        finally:
+            if child.returncode is None:  # pragma: no cover - only if stop failed
+                child.kill()

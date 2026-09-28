@@ -71,7 +71,7 @@
       <a href="/" class="{{ 'active' if active == 'overview' }}">Overview</a>
       <a href="/decisions" class="{{ 'active' if active == 'decisions' }}">Decisions</a>
       <a href="/positions" class="{{ 'active' if active == 'positions' }}">Positions</a>
-      <a href="/config/crypto" class="{{ 'active' if active == 'config' }}">Config</a>
+      {% if books %}<a href="/config/{{ books[0].key }}" class="{{ 'active' if active == 'config' }}">Config</a>{% endif %}
     </nav>
   </header>
   <main>
