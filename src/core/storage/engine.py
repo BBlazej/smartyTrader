@@ -18,6 +18,10 @@ from .models import Base
 #: already and ``market_snapshots`` is a symbol-keyed candle cache.
 _AGENT_SCOPED_TABLES: tuple[str, ...] = ("llm_decisions", "orders", "portfolio_snapshots")
 
+#: The paper executor's venue label (``PaperExecutor.venue``) — the only venue legacy
+#: unstamped rows can belong to (§7.76).
+PAPER_VENUE = "paper"
+
 
 class StorageBase:
     """Async repository core: lifecycle + session factory for all data mixins.
@@ -65,6 +69,31 @@ class StorageBase:
     def _venue_match(column: ColumnElement, venue: str) -> ColumnElement:
         """Rows of ``venue`` plus legacy unstamped (NULL) rows (§7.61)."""
         return or_(column == venue, column.is_(None))
+
+    def _risk_venue(self, venue: str | None) -> str | None:
+        """The venue a risk seed reads (§7.76): explicit, else the bound one; ``None`` = all."""
+        return venue if venue is not None else self._venue
+
+    @staticmethod
+    def _risk_venue_match(column: ColumnElement, venue: str) -> ColumnElement:
+        """Risk-seed scope (§7.76): exactly ``venue``.
+
+        Legacy unstamped (NULL) rows predate venue tagging (§7.61), when only the paper
+        executor ever ran, so they count for ``paper`` only. Admitting them for a keyed
+        venue latched the OKX demo's drawdown gate on a 100,000 paper peak.
+        """
+        if venue == PAPER_VENUE:
+            return or_(column == venue, column.is_(None))
+        return column == venue
+
+    @staticmethod
+    def _risk_venue_applies(row_venue: str | None, venue: str | None) -> bool:
+        """Python twin of :meth:`_risk_venue_match` for single rows (reset rows)."""
+        if venue is None:
+            return True
+        if row_venue is None:
+            return venue == PAPER_VENUE
+        return row_venue == venue
 
     @property
     def database_path(self) -> str:
@@ -189,6 +218,15 @@ class StorageBase:
                         "DELETE FROM agent_control WHERE agent IN ('crypto_agent', 'stocks_agent')"
                     )
                 )
+        # drawdown_resets.venue (§7.76): a reset applies to the venue it was taken on;
+        # legacy rows stay NULL (paper history, like every pre-§7.61 row).
+        if inspector.has_table("drawdown_resets"):
+            reset_cols = {c["name"] for c in inspector.get_columns("drawdown_resets")}
+            if "venue" not in reset_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("ALTER TABLE drawdown_resets ADD COLUMN venue VARCHAR(40) NULL")
+                    )
         # portfolio_snapshots.venue (§7.61): legacy rows stay NULL (read as any venue).
         if inspector.has_table("portfolio_snapshots"):
             snap_cols = {c["name"] for c in inspector.get_columns("portfolio_snapshots")}

@@ -46,7 +46,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1052 tests, no network needed (live smokes are opt-in:
+pytest                      # 1070 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -83,7 +83,9 @@ To exercise the venue order path without waiting for the LLM to trade,
 `python -m scripts.demo_round_trip` (dry run; `--yes` to place) forces one small BUY → SELL
 round trip on the OKX **demo** through the same keyed executor. It is demo-only, holds the
 runner lock and writes nothing to the DB (§7.28). Its report shows the order terms sent,
-the venue's fee payloads and the account's fee tier.
+the venue's fee payloads and the account's fee tier. `python -m scripts.demo_agent_round_trip`
+(`--yes` to run) does the same through the **real agent runner**: a scripted BUY, a restart,
+a scripted SELL. The orders, decisions and snapshots land in the DB, marked `SMOKE TEST`.
 The stocks runner
 executes on the `PaperExecutor` by default. The old **XTB demo** path (§7.16) is
 dead: XTB closed its API access on 2025-03-14, and `wss://ws.xapi.pro` (what our

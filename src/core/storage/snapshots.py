@@ -79,12 +79,13 @@ class PortfolioSnapshotMixin:
             return row.id
 
     async def get_first_portfolio_snapshot_of_day(
-        self, agent: str | None = None
+        self, agent: str | None = None, venue: str | None = None
     ) -> PortfolioSnapshotRow | None:
         """Earliest portfolio snapshot of the current UTC day (or ``None``).
 
         Its ``total_value`` rehydrates today's daily-loss baseline after a
-        restart (§7.7). Timestamps are stored as naive UTC.
+        restart (§7.7). Timestamps are stored as naive UTC. Risk-seed scoped to
+        ``venue`` (default: the bound one, §7.76).
         """
         from datetime import time as dtime
 
@@ -94,20 +95,26 @@ class PortfolioSnapshotMixin:
                 select(PortfolioSnapshotRow).where(PortfolioSnapshotRow.timestamp >= day_start),
                 agent,
             )
+            stmt = self._risk_scoped_snapshots(stmt, venue)
             stmt = stmt.order_by(PortfolioSnapshotRow.timestamp.asc()).limit(1)
             result = await session.execute(stmt)
             return result.scalars().first()
 
-    async def get_max_portfolio_value(self, agent: str | None = None) -> float | None:
+    async def get_max_portfolio_value(
+        self, agent: str | None = None, venue: str | None = None
+    ) -> float | None:
         """Highest total_value ever recorded in portfolio snapshots (or ``None``).
 
         Used to seed the risk engine's drawdown high-water mark at startup so
-        the guard persists across process restarts.
+        the guard persists across process restarts. Risk-seed scoped to ``venue``
+        (default: the bound one) — another venue's equity is not this account's peak
+        (§7.76).
         """
         from sqlalchemy import func
 
         async with await self._session() as session:
             stmt = self._scoped_snapshots(select(func.max(PortfolioSnapshotRow.total_value)), agent)
+            stmt = self._risk_scoped_snapshots(stmt, venue)
             result = await session.execute(stmt)
             value = result.scalar()
             return float(value) if value is not None else None
@@ -115,12 +122,13 @@ class PortfolioSnapshotMixin:
     # ── Drawdown peak re-baseline (§7.53) ────────────────────
 
     async def record_drawdown_reset(
-        self, baseline_value: float, agent: str | None = None
+        self, baseline_value: float, agent: str | None = None, venue: str | None = None
     ) -> DrawdownResetRow:
         """Persist an operator's explicit drawdown re-baseline (audited, CLI-only).
 
         Upsert per agent; the audit trail is this row plus the structlog line —
         superseded values are not kept here (the snapshot history stays intact).
+        ``venue`` is the account whose peak it resets (§7.76; ``None`` = legacy/paper).
         """
         scope = self._agent_scope(agent)
         if scope is None:  # pragma: no cover - callers always name an agent
@@ -128,15 +136,17 @@ class PortfolioSnapshotMixin:
         async with await self._session() as session:
             row = await session.get(DrawdownResetRow, scope)
             if row is None:
-                row = DrawdownResetRow(agent=scope, baseline_value=baseline_value)
+                row = DrawdownResetRow(agent=scope, baseline_value=baseline_value, venue=venue)
                 session.add(row)
             else:
                 row.baseline_value = baseline_value
                 row.reset_at = datetime.now(UTC)
+                row.venue = venue
             await session.commit()
             logger.info(
                 "drawdown peak rebaselined",
                 agent=scope,
+                venue=venue,
                 baseline_value=baseline_value,
                 reset_at=str(row.reset_at),
             )
@@ -149,18 +159,23 @@ class PortfolioSnapshotMixin:
                 return None
             return await session.get(DrawdownResetRow, scope)
 
-    async def get_effective_peak_equity(self, agent: str | None = None) -> float | None:
+    async def get_effective_peak_equity(
+        self, agent: str | None = None, venue: str | None = None
+    ) -> float | None:
         """The drawdown high-water seed an operator can actually escape (§7.53).
 
         Without a reset row this is the historical MAX over never-pruned snapshots.
         After one, history before ``reset_at`` no longer latches the guard: the seed
-        is ``max(baseline_value, MAX(total_value since reset_at))``.
+        is ``max(baseline_value, MAX(total_value since reset_at))``. Both are scoped to
+        ``venue`` (default: the bound one, §7.76), and a reset taken on another venue
+        does not apply.
         """
         from sqlalchemy import func
 
+        venue = self._risk_venue(venue)
         reset = await self.get_drawdown_reset(agent)
-        if reset is None:
-            return await self.get_max_portfolio_value(agent)
+        if reset is None or not self._risk_venue_applies(reset.venue, venue):
+            return await self.get_max_portfolio_value(agent, venue=venue)
         async with await self._session() as session:
             stmt = self._scoped_snapshots(
                 select(func.max(PortfolioSnapshotRow.total_value)).where(
@@ -168,6 +183,7 @@ class PortfolioSnapshotMixin:
                 ),
                 agent,
             )
+            stmt = self._risk_scoped_snapshots(stmt, venue)
             result = await session.execute(stmt)
             since = result.scalar()
         if since is None:
@@ -201,4 +217,11 @@ class PortfolioSnapshotMixin:
         scope = self._agent_scope(agent)
         if scope is not None:
             stmt = stmt.where(PortfolioSnapshotRow.agent == scope)
+        return stmt
+
+    def _risk_scoped_snapshots(self, stmt: Select, venue: str | None) -> Select:
+        """Restrict a risk-seed snapshot read to one venue (§7.76); unbound → all."""
+        venue = self._risk_venue(venue)
+        if venue is not None:
+            stmt = stmt.where(self._risk_venue_match(PortfolioSnapshotRow.venue, venue))
         return stmt

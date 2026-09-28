@@ -137,6 +137,10 @@ class DrawdownResetRow(Base):
     agent: Mapped[str] = mapped_column(String(20), primary_key=True)  # crypto | stocks
     baseline_value: Mapped[float] = mapped_column(Float)
     reset_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    # The venue whose peak was re-baselined (§7.76) — a paper reset never moves a
+    # keyed account's latch. NULL = legacy row (paper). One row per agent: the latest
+    # reset wins, whichever venue it was for.
+    venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class WatchlistEntryRow(Base):

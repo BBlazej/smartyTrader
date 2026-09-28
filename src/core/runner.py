@@ -165,6 +165,7 @@ async def run_agent(
     run_once: bool = False,
     timeframe: str | None = None,
     decide_on_new_bar_only: bool = False,
+    llm_client: Any | None = None,
 ) -> None:
     """Shared agent lifecycle for both runners. Returns when the loop exits.
 
@@ -172,6 +173,8 @@ async def run_agent(
     market-specific data feed and execution adapter stays in the script (and out
     of reach entirely when the agent is disabled). ``build_agent`` receives the
     wired pipeline/storage/risk/LLM and returns the market's agent instance.
+    ``llm_client`` replaces the configured LLM (same ``ask_trade_signal``/``close``
+    surface) — only the venue smoke test uses it, to force a known signal (§7.28).
     """
     log = structlog.get_logger().bind(component="runner")
 
@@ -210,22 +213,24 @@ async def run_agent(
     storage = Storage(settings.storage.database_path, agent=component)
     await storage.initialize()
 
-    llm_client = LLMClient(settings.llm)
+    llm_client = llm_client if llm_client is not None else LLMClient(settings.llm)
     risk_engine = RiskEngine(settings.risk)
-
-    # Seed the drawdown high-water mark from persisted portfolio history so a
-    # restart cannot reset the guard (§7.5). The read is reset-aware (§7.53): an
-    # operator's CLI re-baseline cuts the latch history off at ``reset_at``.
-    # Fail-soft: without history the engine seeds lazily from the first reading.
-    try:
-        risk_engine.seed_peak_equity(await storage.get_effective_peak_equity())
-    except Exception as exc:  # noqa: BLE001
-        log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
 
     provider, executor = build_components()
     # Tag this run's order/portfolio rows with the executor's venue (§7.61), so a
     # later paper <-> venue (or sandbox -> live) switch never replays foreign history.
     storage.bind_venue(executor_venue(executor))
+
+    # Seed the drawdown high-water mark from persisted portfolio history so a
+    # restart cannot reset the guard (§7.5). The read is reset-aware (§7.53): an
+    # operator's CLI re-baseline cuts the latch history off at ``reset_at``. It runs
+    # *after* bind_venue and reads only this venue's history (§7.76) — the demo
+    # account's gate once latched on a 100,000 paper peak. Fail-soft: without
+    # history the engine seeds lazily from the first reading.
+    try:
+        risk_engine.seed_peak_equity(await storage.get_effective_peak_equity())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not seed drawdown peak from storage; starting fresh", error=str(exc))
 
     # Rebuild the paper book and risk trackers from persisted state so a
     # restart never silently resets cash, positions or the loss guards (§7.7).

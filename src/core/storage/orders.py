@@ -95,7 +95,11 @@ class OrderMixin:
             return list(result.scalars().all())
 
     async def get_recent_closing_fills(
-        self, limit: int = 50, agent: str | None = None, strategy: str | None = None
+        self,
+        limit: int = 50,
+        agent: str | None = None,
+        strategy: str | None = None,
+        venue: str | None = None,
     ) -> list[OrderRow]:
         """Newest-first filled orders that realized PnL — one row per closing fill (§7.46).
 
@@ -103,6 +107,8 @@ class OrderMixin:
         reads them instead of decision rows (an LLM round trip stamps PnL on both
         the SELL and the entry decision, which double-counted every loss).
         ``strategy`` narrows to one sleeve's closes (§7.71 per-sleeve streaks).
+        Risk-seed scoped to ``venue`` (default: the bound one) — paper losses never
+        arm a keyed account's cooldown (§7.76).
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(
@@ -113,6 +119,9 @@ class OrderMixin:
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)
+            risk_venue = self._risk_venue(venue)
+            if risk_venue is not None:
+                stmt = stmt.where(self._risk_venue_match(OrderRow.venue, risk_venue))
             stmt = stmt.order_by(OrderRow.id.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())

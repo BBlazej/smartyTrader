@@ -40,14 +40,17 @@ VALID_AGENTS = ("crypto", "stocks")
 
 
 async def plan_rebaseline(
-    storage: Storage, agent: str, value: float | None = None
+    storage: Storage, agent: str, value: float | None = None, venue: str | None = None
 ) -> tuple[float | None, float]:
     """Resolve (old peak seed, proposed new baseline) without writing anything.
+
+    ``venue`` selects the account whose peak is reset (§7.76 — each venue has its
+    own latch); ``None`` reads across venues (legacy behaviour).
 
     Raises ``SystemExit`` on unusable input (no history and no explicit value,
     or a non-positive baseline) so the CLI fails before touching the DB.
     """
-    latest = await storage.get_latest_portfolio_snapshot(agent=agent)
+    latest = await storage.get_latest_portfolio_snapshot(agent=agent, venue=venue)
     if value is None:
         if latest is None:
             raise SystemExit(
@@ -57,7 +60,7 @@ async def plan_rebaseline(
     if value <= 0:
         raise SystemExit("the new baseline must be a positive portfolio value")
 
-    old_seed = await storage.get_effective_peak_equity(agent=agent)
+    old_seed = await storage.get_effective_peak_equity(agent=agent, venue=venue)
     return old_seed, value
 
 
@@ -108,6 +111,7 @@ async def run(
     apply: bool,
     config_path: str | None,
     strategy: str | None = None,
+    venue: str | None = None,
 ) -> None:
     settings = Settings(config_path) if config_path else Settings()
     setup_logging(settings.monitoring.log_level)
@@ -123,18 +127,24 @@ async def run(
         if strategy is not None:
             await run_sleeve(storage, agent, strategy, value, apply)
             return
-        old_seed, new_baseline = await plan_rebaseline(storage, agent, value)
-        latest = await storage.get_latest_portfolio_snapshot(agent=agent)
+        if venue is None:  # §7.76: the account the agent last traded on
+            newest = await storage.get_latest_portfolio_snapshot(agent=agent)
+            venue = newest.venue if newest is not None else None
+        old_seed, new_baseline = await plan_rebaseline(storage, agent, value, venue)
+        latest = await storage.get_latest_portfolio_snapshot(agent=agent, venue=venue)
         log.info(
             "drawdown re-baseline plan",
             agent=agent,
+            venue=venue,
             previous_peak_seed=old_seed,
             new_baseline=new_baseline,
             latest_equity=None if latest is None else float(latest.total_value),
             applied=apply,
         )
         if apply:
-            await storage.record_drawdown_reset(baseline_value=new_baseline, agent=agent)
+            await storage.record_drawdown_reset(
+                baseline_value=new_baseline, agent=agent, venue=venue
+            )
         else:
             log.warning("dry run — re-run with --yes to persist the re-baseline")
     finally:
@@ -164,8 +174,14 @@ def main() -> None:
         default=None,
         help="Re-baseline this strategy sleeve's peak instead of the agent's (§7.71)",
     )
+    parser.add_argument(
+        "--venue",
+        default=None,
+        help="Venue whose peak to reset, e.g. paper / myokx-sandbox (default: the "
+        "venue of the agent's latest portfolio snapshot, §7.76)",
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.agent, args.value, args.yes, args.config, args.strategy))
+    asyncio.run(run(args.agent, args.value, args.yes, args.config, args.strategy, args.venue))
 
 
 if __name__ == "__main__":

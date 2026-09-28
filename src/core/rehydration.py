@@ -31,6 +31,7 @@ from ..execution.position_tracker import FillRecord
 from .models import OrderSide, Position
 from .risk_engine import RiskEngine
 from .storage import Storage
+from .storage.engine import PAPER_VENUE
 
 logger = structlog.get_logger()
 
@@ -239,7 +240,11 @@ async def rehydrate_loss_streak(
                 limit=50, **({"strategy": strategy} if strategy is not None else {})
             )
         ]
-        if not outcomes and strategy is None:  # pre-§7.46: entry decisions carry one outcome
+        # pre-§7.46: entry decisions carry one outcome. Decisions have no venue, and
+        # that history is paper — never a keyed account's streak (§7.76).
+        bound = getattr(storage, "venue", None)
+        on_paper = not isinstance(bound, str) or bound == PAPER_VENUE
+        if not outcomes and strategy is None and on_paper:
             outcomes = [
                 (float(d.realized_pnl or 0.0), _as_utc(d.timestamp))
                 for d in await storage.get_closed_decisions(limit=50)
