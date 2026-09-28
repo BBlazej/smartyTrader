@@ -119,8 +119,10 @@ class FakeVenue:
                 "fees": fees,
                 "lastTradeTimestamp": FILL_MS if filled else None,
             }
-        fees = [] if order.get("booked") else self._fill(order, order["amount"], px)
-        order["booked"] = True
+        if not order.get("booked"):
+            order["fees"] = self._fill(order, order["amount"], px)
+            order["booked"] = True
+        fees = order["fees"]  # every poll reports the fill's fees, like the venue
         return {
             "id": order_id,
             "status": "closed",

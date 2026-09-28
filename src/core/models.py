@@ -118,6 +118,11 @@ class Position(BaseModel):
 class PortfolioState(BaseModel):
     cash: float
     positions: list[Position] = []
+    # Cash committed to venue BUY orders the ledger has not booked yet — working at
+    # the venue, or filled but unconfirmed (a status-poll timeout). Counted in
+    # ``total_value`` so equity doesn't dip by the order's notional until
+    # reconciliation catches up (§7.79), but never spendable: sizing reads ``cash``.
+    pending_value: float = 0.0
 
     @property
     def total_value(self) -> float:
@@ -127,7 +132,7 @@ class PortfolioState(BaseModel):
             p.quantity * p.current_price * (-1.0 if p.side == PositionSide.SHORT else 1.0)
             for p in self.positions
         )
-        return self.cash + position_value
+        return self.cash + self.pending_value + position_value
 
     @property
     def unrealized_pnl(self) -> float:

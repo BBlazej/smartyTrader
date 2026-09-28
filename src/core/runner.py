@@ -41,7 +41,7 @@ from .config import Settings
 from .control_config import parse_and_apply, risk_baseline
 from .decision_pipeline import DecisionPipeline
 from .llm_client import LLMClient
-from .models import PortfolioState
+from .portfolio import read_portfolio
 from .rehydration import executor_venue, rehydrate_from_storage
 from .retention import prune_storage
 from .risk_engine import RiskEngine
@@ -272,9 +272,7 @@ async def run_agent(
         )
         # Not fail-soft on purpose: without an allocation every sleeve would gate on
         # the whole agent book with its (possibly looser) own limits.
-        await sleeve_book.ensure_allocation(
-            PortfolioState(cash=await executor.get_cash(), positions=await executor.get_positions())
-        )
+        await sleeve_book.ensure_allocation(await read_portfolio(executor))
         await sleeve_book.restore()
         for spec in sleeves_cfg.strategies:
             sleeve_pipeline = DecisionPipeline(

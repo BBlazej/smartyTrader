@@ -41,6 +41,7 @@ import structlog
 from .config import RiskSettings, SleeveSpec, SleevesSettings
 from .control_config import _TIGHTER
 from .models import PortfolioState, Position, PositionSide, RiskResult, RiskVerdict
+from .portfolio import read_portfolio
 from .rehydration import rehydrate_loss_streak
 from .risk_engine import RiskEngine
 
@@ -260,9 +261,14 @@ class SleeveBook:
         row = await self._storage.get_latest_allocation()
         stored = json.loads(row.weights_json) if row is not None else None
         if row is None or stored != weights:
-            base = agent_portfolio.cash + sum(
-                p.quantity * p.avg_entry_price * (-1.0 if p.side == PositionSide.SHORT else 1.0)
-                for p in agent_portfolio.positions
+            # Cash committed to a still-unbooked BUY is equity too (§7.79).
+            base = (
+                agent_portfolio.cash
+                + agent_portfolio.pending_value
+                + sum(
+                    p.quantity * p.avg_entry_price * (-1.0 if p.side == PositionSide.SHORT else 1.0)
+                    for p in agent_portfolio.positions
+                )
             )
             reason = "initial" if row is None else "weights_changed"
             row = await self._storage.record_allocation(base, weights, reason=reason)
@@ -319,8 +325,8 @@ class SleeveBook:
         """End-of-cycle: persist each sleeve's equity and feed its daily/peak trackers."""
         if self.allocation is None:
             return []
-        positions = await executor.get_positions()
-        portfolio = PortfolioState(cash=await executor.get_cash(), positions=positions)
+        portfolio = await read_portfolio(executor)
+        positions = portfolio.positions
         owners = await self.owners(executor, positions)
         books: list[SleeveEquity] = []
         for name in self.names:

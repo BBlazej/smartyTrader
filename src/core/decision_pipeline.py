@@ -32,6 +32,7 @@ from .models import (
     RiskVerdict,
     TradeSignal,
 )
+from .portfolio import read_portfolio
 from .risk_engine import RiskEngine, long_exposure
 from .sleeves import TIME_STOP, Ownership, SleeveBook
 from .storage import Storage
@@ -795,9 +796,8 @@ class DecisionPipeline:
         it; it used to be ``_get_portfolio_state``, an encapsulation leak pinned
         into the test contract (§7.19).
         """
-        positions = await self.executor.get_positions()
-        cash = await self.executor.get_cash()
-        return PortfolioState(cash=cash, positions=positions)
+        # Includes cash committed to unbooked venue BUYs (§7.79).
+        return await read_portfolio(self.executor)
 
     async def _awaiting_new_bar(
         self, symbol: str, timeframe: str, closed: list[OHLCV]

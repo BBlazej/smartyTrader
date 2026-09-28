@@ -277,6 +277,8 @@ class SaxoExecutor:
                 decision_id=decision_id,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                placed_at=datetime.now(UTC),
+                price=price,
             )
             logger.info("saxo order still working; reconciled next cycle", order_id=order_id)
         return result
@@ -425,6 +427,14 @@ class SaxoExecutor:
         self._exit_levels = levels
         return {"replayed_fills": replayed, "open_symbols": len(tracker.symbols())}
 
+    def pending_buy_value(self) -> float:
+        """Cash committed to still-working BUYs — equity, not spendable (§7.79)."""
+        return sum(
+            p.quantity * p.price
+            for p in self._open_orders.values()
+            if p.side == OrderSide.BUY and p.resolved is None and p.price is not None
+        )
+
     def working_order_sides(self, symbol: str) -> set[OrderSide]:
         """Sides with an order still working in ``symbol`` — never stacked (§7.75 b)."""
         return {
@@ -444,6 +454,7 @@ class SaxoExecutor:
                         decision_id=o.decision_id,
                         stop_loss=o.stop_loss,
                         take_profit=o.take_profit,
+                        price=o.price,
                     ),
                 )
         return len(self._open_orders)

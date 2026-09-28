@@ -154,6 +154,8 @@ class _PendingOrder:
     resolved: OrderResult | None = None
     # When it was placed — an order older than ``order_ttl_seconds`` is cancelled (§7.75).
     placed_at: datetime | None = None
+    # Limit (or reference) price: values the cash a working BUY has committed (§7.79).
+    price: float | None = None
 
 
 @dataclass
@@ -173,6 +175,8 @@ class PendingOrderRecord:
     take_profit: float | None = None
     # The stored row's ``created_at`` — keeps the order TTL honest across a restart.
     placed_at: datetime | None = None
+    # The stored row's price — values a reloaded working BUY (§7.79).
+    price: float | None = None
 
 
 class ExchangeClient(Protocol):
@@ -451,6 +455,7 @@ class CcxtExecutor:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 placed_at=datetime.now(UTC),
+                price=limit_price or price,
             )
         return result
 
@@ -493,6 +498,7 @@ class CcxtExecutor:
                     stop_loss=o.stop_loss,
                     take_profit=o.take_profit,
                     placed_at=placed_at or now,
+                    price=o.price,
                 ),
             )
         return len(self._open_orders)
@@ -675,6 +681,21 @@ class CcxtExecutor:
             for p in self._open_orders.values()
             if p.symbol == symbol and p.side == OrderSide.BUY and p.resolved is None
         ]
+
+    def pending_buy_value(self) -> float:
+        """Cash committed to BUY orders the ledger hasn't booked yet (§7.79).
+
+        A resting limit has the cash locked at the venue (not in the free balance),
+        and a fill whose status poll timed out has spent it while its coins are not in
+        the ledger yet. Either way, equity would dip by the notional until
+        reconciliation resolves the order. Valued at the order's limit (or reference)
+        price; once resolved, the fill is in the ledger and the order leaves this sum.
+        """
+        return sum(
+            p.quantity * p.price
+            for p in self._open_orders.values()
+            if p.side == OrderSide.BUY and p.resolved is None and p.price is not None
+        )
 
     def working_order_sides(self, symbol: str) -> set[OrderSide]:
         """Sides with an order still working at the venue in ``symbol`` (§7.75 b).
