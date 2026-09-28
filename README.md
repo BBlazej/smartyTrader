@@ -26,7 +26,7 @@ rejected with a reason and nothing is sent to the exchange.
   realized PnL once each position closed* (net of fees). The model sees what it
   decided **and how it turned out**, so it can avoid repeating losing patterns.
 - **Realistic paper PnL.** The paper executor models per-side fees, slippage and
-  per-venue cost schedules — OKX EU taker rates for crypto, Saxo's 0.08 % with a
+  per-venue cost schedules — the OKX account's own taker rate (0.20 %) for crypto, Saxo's 0.08 % with a
   minimum commission plus FX fee for stocks (§7.65) — so realized PnL (and the
   win/loss the risk engine tracks) is net-of-fee and comparable to the "win rate >
   50% after fees" live-readiness gate.

@@ -433,7 +433,8 @@ class ExecutionSettings:
     **Per-venue cost profiles (§7.65):** the flat ``paper_*`` fields are the
     default schedule; ``paper_costs`` overrides them per runner component
     (``crypto`` / ``stocks``), because each paper book should simulate the
-    venue it stands in for — OKX EU spot (taker 0.10%, no minimum) vs Saxo US
+    venue it stands in for — OKX EU spot (taker 0.20% as the account reports it,
+    §7.75; no minimum) vs Saxo US
     stocks (0.08% with a **min $1/side** plus 0.25% FX). ``paper_costs_for()``
     resolves the effective schedule; runners and the backtester use it so
     paper numbers are honest for the §4.3 gates.

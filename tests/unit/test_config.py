@@ -94,7 +94,7 @@ class TestExecutionSettings:
     def test_execution_settings_loaded_from_yaml(self, config_path: str) -> None:
         s = Settings(config_path=config_path)
 
-        # §7.65: the shipped default mirrors OKX EU spot base tier (taker 0.10%).
+        # §7.65: the generic flat default; venue profiles override it per component.
         assert s.execution.paper_fee_pct == 0.001
         assert s.execution.paper_slippage_pct == 0.001
         assert s.execution.paper_min_commission == 0.0
@@ -114,7 +114,9 @@ class TestPaperCostProfiles:
         s = Settings(config_path=config_path)
 
         crypto = s.execution.paper_cost_params("crypto")
-        assert crypto["paper_fee_pct"] == 0.001  # OKX EU taker, no minimum
+        # The OKX account's reported taker rate (§7.75): every agent order is a taker.
+        assert crypto["paper_fee_pct"] == 0.002
+        assert crypto["paper_slippage_pct"] == 0.001  # flat default
         assert crypto["paper_min_commission"] == 0.0
 
         stocks = s.execution.paper_cost_params("stocks")

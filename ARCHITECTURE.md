@@ -674,8 +674,7 @@ risk:
   enforce_exit_levels: true
 
 # Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
-# fees/slippage (§7.65). The flat fields are the default schedule — set to OKX EU
-# spot base tier (taker 0.10%/side from 2026-09-25; verify your account's rate); a
+# fees/slippage (§7.65). The flat fields are the generic default schedule; a
 # percentage-only venue has no minimum. paper_costs overrides per runner component,
 # so each paper book simulates the venue it stands in for.
 execution:
@@ -689,7 +688,8 @@ execution:
   # with a min ~1 unit/side (~1% on a €100 position — invisible to a percentage-only
   # model) plus 0.25% FX per EUR↔USD conversion (avoidable later by holding USD).
   paper_costs:
-    crypto: {}
+    crypto:
+      paper_fee_pct: 0.002      # the OKX account's reported taker rate (§7.75)
     stocks:
       paper_fee_pct: 0.0008
       paper_min_commission: 1.0

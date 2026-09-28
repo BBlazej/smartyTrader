@@ -25,9 +25,10 @@ Quirks and gotchas for the venues, gathered as we integrate.
   margin/derivatives — a spot account gets `[]`. `CcxtExecutor` therefore never calls it:
   positions come from its own fill ledger, capped by `fetch_balance()` totals and marked
   each cycle (§7.41/§7.64).
-- **Fees:** spot base tier ≈ 0.08 % maker / 0.10 % taker (lower EU spot-only fees from
-  2026-09-25 — check the account); buy fees are charged in the **base** currency (see
-  PLAN §7.65).
+- **Fees:** published spot base tier ≈ 0.08 % maker / 0.10 % taker, but our account
+  reports **0.10 % maker / 0.20 % taker** (`fetch_trading_fee`, checked 2026-09-28) — the
+  crypto paper profile uses 0.20 % (§7.75). Buy fees are charged in the **base** currency
+  (see PLAN §7.65); every fill payload carries its fees.
 - **Statuses:** CCXT normalizes exchange statuses. We map `closed → filled`,
   `open/pending → pending`, `canceled/cancelled/expired → cancelled`, `rejected → rejected`
   (see `src/execution/ccxt_executor.py::_STATUS_MAP`).

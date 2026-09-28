@@ -711,8 +711,8 @@ class CcxtExecutor:
     async def trading_fee(self, symbol: str) -> dict[str, float] | None:
         """This account's ``{"maker", "taker"}`` fee rates for *symbol*, if the venue says.
 
-        The paper profile (``execution.paper_costs``) is an assumption; this is the
-        account's real tier (§7.75 e — the OKX demo charged 0.20 % vs the 0.10 % profile).
+        The paper profile (``execution.paper_costs``) must mirror this (§7.75 e — the
+        OKX account reports taker 0.20 %, and the crypto paper profile follows it).
         """
         fetch = getattr(self._client, "fetch_trading_fee", None)
         if not callable(fetch):
