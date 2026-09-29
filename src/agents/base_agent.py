@@ -83,6 +83,11 @@ class BaseTradingAgent:
         self._sleeve_runs: list[SleeveRun] = []
         self._sleeve_book: SleeveBook | None = None
 
+    @property
+    def symbols(self) -> list[str]:
+        """The traded symbol list right now (core + overrides + watchlist)."""
+        return list(self._symbols)
+
     def set_symbols(self, symbols: list[str]) -> None:
         """Replace the traded symbol list (safe config override, §7.15)."""
         if symbols and symbols != self._symbols:

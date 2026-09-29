@@ -38,6 +38,7 @@ from ..analysis.candles import timeframe_delta
 from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings
+from .context import ContextReader, ContextRefresher
 from .control_config import parse_and_apply, risk_baseline
 from .db_layout import (
     CONTROL_PORT_OFFSET,
@@ -297,6 +298,24 @@ async def run_agent(
     # stays hygienic — plus a scheduled pass while running (registered below).
     await prune_storage(storage, settings.storage, mode=mode)
 
+    # Market context (§7.18, opt-in): providers feed the context tables on their
+    # own cadence; every pipeline reads them per decision (prompt + event guard).
+    # Off → no reader, no providers, no HTTP client: behavior exactly as before.
+    context_cfg = getattr(getattr(settings, f"{component}_agent", None), "context", None)
+    context_reader: ContextReader | None = None
+    context_refresher: ContextRefresher | None = None
+    context_http = None
+    if getattr(context_cfg, "enabled", False) is True:
+        from ..data.context import build_context_providers
+
+        context_providers, context_http = build_context_providers(
+            context_cfg, settings.macro_calendar
+        )
+        context_reader = ContextReader(storage, context_cfg)
+        context_refresher = ContextRefresher(
+            storage=storage, providers=context_providers, component=component
+        )
+
     pipeline = DecisionPipeline(
         provider=provider,
         llm_client=llm_client,
@@ -305,6 +324,7 @@ async def run_agent(
         storage=storage,
         decision_history_limit=decision_history_limit,
         decide_on_new_bar_only=decide_on_new_bar_only,
+        context_reader=context_reader,
     )
     agent = build_agent(pipeline, storage, risk_engine, llm_client)
 
@@ -343,6 +363,7 @@ async def run_agent(
                 decide_on_new_bar_only=decide_on_new_bar_only,
                 strategy=spec.name,
                 sleeve_book=sleeve_book,
+                context_reader=context_reader,
             )
             sleeve_runs.append(SleeveRun(spec.name, sleeve_pipeline, spec.timeframe))
         agent.set_sleeves(sleeve_runs, sleeve_book)
@@ -462,6 +483,27 @@ async def run_agent(
         # fresh run already trades its capped dynamic symbols.
         await _refresh_watchlist()
 
+    context_refresh = None
+    if context_refresher is not None:
+
+        async def _refresh_context() -> None:
+            try:
+                symbols = list(getattr(agent, "symbols", None) or _core_symbols())
+                await context_refresher.refresh(symbols)
+            except Exception as exc:  # noqa: BLE001 - never halts trading (fail-soft job)
+                log.warning("market context refresh failed", error=str(exc))
+
+        context_refresh = _refresh_context
+        # Before the first cycle (after the watchlist, so dynamic symbols get news).
+        await _refresh_context()
+
+    async def _close_context() -> None:
+        if context_http is not None:
+            try:
+                await context_http.aclose()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("context HTTP client close failed", error=str(exc))
+
     if run_once:
         # Explicit single-cycle mode: one full cycle, then a clean shutdown.
         # A failing cycle propagates so the operator sees a non-zero exit code.
@@ -470,6 +512,7 @@ async def run_agent(
             await agent.run_cycle()
         finally:
             await agent.shutdown()
+            await _close_context()
             await provider.close()
             await executor.close()
             await storage.close()
@@ -495,6 +538,11 @@ async def run_agent(
             watchlist_refresh,
             watchlist_cfg.refresh_minutes,
             job_id="watchlist_refresh",
+        )
+    if context_refresh is not None:
+        # §7.18: market context on its own cadence, off the trade path.
+        manager.schedule_cycle(
+            context_refresh, context_cfg.refresh_minutes, job_id="context_refresh"
         )
 
     # Control API (§7.15 P2): in-process FastAPI server when explicitly enabled.
@@ -549,6 +597,7 @@ async def run_agent(
                 control_task.cancel()
         manager.shutdown()
         await agent.shutdown()
+        await _close_context()
         # Release the data provider / execution adapter (the ccxt client owns an
         # aiohttp session that must be closed explicitly, or it leaks on exit).
         await provider.close()

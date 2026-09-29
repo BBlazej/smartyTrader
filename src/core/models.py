@@ -388,6 +388,7 @@ class SymbolContext(BaseModel):
 
     symbol: str
     now: datetime
+    lookahead_hours: float = 48.0  # upcoming-events horizon shown in the prompt
     sentiment: SentimentReading | None = None
     events: list[MarketEvent] = []  # macro + earnings in the reader's window, by time
     notices: list[MarketEvent] = []  # delisting notices for this asset

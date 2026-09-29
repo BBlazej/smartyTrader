@@ -8,14 +8,23 @@ calls every enabled provider, isolates their failures and persists the batches.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
 import httpx
 
+from ...analysis.sanitize import safe_label
 from ...core.models import MarketEvent, NewsItem, SentimentReading
+
+__all__ = [
+    "ContextBatch",
+    "ContextProvider",
+    "FeedTooLarge",
+    "base_asset",
+    "get_bytes",
+    "safe_label",
+]
 
 
 @dataclass
@@ -64,18 +73,3 @@ async def get_bytes(client: httpx.AsyncClient, url: str, max_bytes: int) -> byte
 def base_asset(symbol: str) -> str:
     """``BTC/EUR`` → ``BTC``; a stock ticker is its own asset (``AAPL`` → ``AAPL``)."""
     return symbol.split("/")[0].strip().upper()
-
-
-_SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9 /%.,()&+:'\-]")
-_TAG_RE = re.compile(r"<[^>]*>")
-
-
-def safe_label(text: str, limit: int = 120) -> str:
-    """Reduce external short text (an event title) to a plain, bounded label.
-
-    Calendar titles come from third parties; they reach the trading prompt, so only
-    a conservative character set survives and length is capped.
-    """
-    cleaned = _SAFE_LABEL_RE.sub(" ", _TAG_RE.sub(" ", text))
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:limit].rstrip()

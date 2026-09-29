@@ -9,14 +9,25 @@ no override is configured. Pure string building — no I/O.
 
 from __future__ import annotations
 
-from ..core.models import BookContext, DecisionRecord, MarketSnapshot, PositionSide
+from datetime import datetime, timedelta
+
+from ..core.models import (
+    BookContext,
+    DecisionRecord,
+    EventKind,
+    MarketSnapshot,
+    PositionSide,
+    SymbolContext,
+)
 from .candles import split_forming
+from .sanitize import safe_label
 
 
 def build_user_prompt(
     snapshot: MarketSnapshot,
     prior_decisions: list[DecisionRecord] | None = None,
     book: BookContext | None = None,
+    context: SymbolContext | None = None,
 ) -> str:
     """Build a structured prompt from the market snapshot and indicators.
 
@@ -24,7 +35,9 @@ def build_user_prompt(
     ``CONTEXT`` section so the LLM can learn from the agent's own track record.
     ``book`` adds a ``YOUR BOOK`` section — the position held in this symbol, cash
     and the position limit (§7.45) — so the model knows whether a BUY opens or adds
-    and whether a SELL has anything to close.
+    and whether a SELL has anything to close. ``context`` adds a ``MARKET CONTEXT``
+    section (§7.18) — sentiment, scheduled events, venue notices and the news digest
+    card, structured fields only (raw news text never reaches this prompt).
     """
     lines: list[str] = []
 
@@ -64,6 +77,10 @@ def build_user_prompt(
     if book is not None:
         lines.append("")
         lines.extend(_render_book(snapshot.symbol, book))
+
+    if context is not None:
+        lines.append("")
+        lines.extend(_render_context(context))
 
     if prior_decisions:
         lines.append("")
@@ -139,6 +156,83 @@ def _render_book(symbol: str, book: BookContext) -> list[str]:
             f"({cap:.2f}); room to add: {headroom:.2f}"
             + (" — at the limit, a BUY will be rejected." if headroom <= 0 else "")
         )
+    return lines
+
+
+#: Display names for sentiment sources (§7.18).
+_SENTIMENT_NAMES: dict[str, str] = {"fear_greed": "Crypto Fear & Greed index (0-100)"}
+#: At most this many scheduled events are listed.
+_MAX_EVENTS = 10
+#: Events this recent still show (their after-window may still be open).
+_RECENT_EVENTS = timedelta(hours=6)
+
+
+def _when(at: datetime, now: datetime) -> str:
+    delta = (at - now).total_seconds() / 3600.0
+    return f"in {_hours(delta)}" if delta >= 0 else f"{_hours(-delta)} ago"
+
+
+def _render_context(ctx: SymbolContext) -> list[str]:
+    """The ``MARKET CONTEXT`` section (§7.18): structured external data, labelled as such.
+
+    Every external string is reduced by :func:`safe_label`; the section states that
+    context informs but never overrides the price evidence (CHANGE.md §4.5), and that
+    entry blackouts are enforced by the risk gate regardless of the answer.
+    """
+    now = ctx.now
+    lines = [
+        (
+            "MARKET CONTEXT (external data — it informs your judgement but never overrides "
+            "the price evidence above; event blackouts are enforced by the risk gate):"
+        )
+    ]
+    if ctx.sentiment is not None:
+        reading = ctx.sentiment
+        name = _SENTIMENT_NAMES.get(reading.source, safe_label(reading.source, 30))
+        label = f" ({safe_label(reading.label, 40)})" if reading.label else ""
+        lines.append(
+            f"  Sentiment: {name} {reading.value:.0f}{label}, "
+            f"as of {reading.as_of:%Y-%m-%d %H:%M} UTC"
+        )
+    horizon = now + timedelta(hours=ctx.lookahead_hours)
+    shown = [e for e in ctx.events if now - _RECENT_EVENTS <= e.at <= horizon][:_MAX_EVENTS]
+    if shown:
+        lines.append(
+            f"  Scheduled events (last {_hours(6)} and next {_hours(ctx.lookahead_hours)}):"
+        )
+        for event in shown:
+            if event.kind is EventKind.EARNINGS:
+                what = f"{safe_label(event.asset or '', 20)} earnings release"
+            else:
+                what = f"{safe_label(event.currency or '', 10)} {safe_label(event.title, 80)}"
+            lines.append(
+                f"    {event.at:%Y-%m-%d %H:%M} UTC ({_when(event.at, now)}) — {what} "
+                f"[{event.importance.value} impact]"
+            )
+    else:
+        lines.append(
+            f"  Scheduled events: none on record in the next {_hours(ctx.lookahead_hours)}."
+        )
+    for notice in ctx.notices[-3:]:
+        lines.append(
+            f"  Venue notice: the exchange announced a DELISTING of "
+            f"{safe_label(notice.asset or '', 20)} on {notice.at:%Y-%m-%d} — "
+            "new entries are blocked; plan an orderly exit of any position."
+        )
+    card = ctx.card
+    if card is not None:
+        lines.append(
+            f"  News digest (as of {card.as_of:%Y-%m-%d %H:%M} UTC, from {len(card.sources)} "
+            f"source(s), digest confidence {card.confidence:.2f}): news sentiment "
+            f"{card.sentiment:+.2f} on a -1..+1 scale"
+        )
+        for catalyst in card.catalysts:
+            label = safe_label(catalyst, 160)
+            if label:
+                lines.append(f"    - {label}")
+        if card.event_risk:
+            upcoming = ", ".join(f"{e.type} {e.date}" for e in card.event_risk)
+            lines.append(f"    Mentioned upcoming: {upcoming}")
     return lines
 
 

@@ -14,6 +14,7 @@ from ..analysis.candles import bar_close_time, split_forming
 from ..analysis.indicators import compute_indicators
 from ..analysis.prompt_builder import DEFAULT_SYSTEM_PROMPT, build_user_prompt
 from .config import RiskSettings
+from .context import ContextReader
 from .costs import CostModel
 from .llm_client import LLMCallMetrics, LLMClient
 from .models import (
@@ -30,6 +31,7 @@ from .models import (
     PositionSide,
     RiskResult,
     RiskVerdict,
+    SymbolContext,
     TradeSignal,
 )
 from .portfolio import read_portfolio
@@ -134,6 +136,7 @@ class DecisionPipeline:
         decide_on_new_bar_only: bool = False,
         strategy: str | None = None,
         sleeve_book: SleeveBook | None = None,
+        context_reader: ContextReader | None = None,
     ) -> None:
         self.provider = provider
         self.llm_client = llm_client
@@ -152,6 +155,9 @@ class DecisionPipeline:
         # SleeveBook enforces the symbol lock + the owning sleeve's time stop.
         self.strategy = strategy
         self._sleeve_book = sleeve_book
+        # §7.18: market context (sentiment, events, notices, news card) for the
+        # prompt and the event guard. ``None`` = context off — exactly as before.
+        self._context_reader = context_reader
 
     @property
     def decision_history_limit(self) -> int:
@@ -365,10 +371,12 @@ class DecisionPipeline:
                 strategy=self.strategy,
             )
         prior_decisions = await self.get_recent_decisions(symbol)
+        symbol_context, _context_error = await self._read_context(symbol, snapshot)
         user_prompt = build_user_prompt(
             snapshot,
             prior_decisions,
             book=self._book_context(symbol, book, ownership, snapshot.fetched_at),
+            context=symbol_context,
         )
 
         # Step 4 — Call LLM
@@ -675,6 +683,20 @@ class DecisionPipeline:
             auto_exit=True,
             exit_reason=reason,
         )
+
+    async def _read_context(
+        self, symbol: str, snapshot: MarketSnapshot
+    ) -> tuple[SymbolContext | None, str | None]:
+        """This symbol's market context (§7.18) and, on failure, why it is missing."""
+        if self._context_reader is None:
+            return None, None
+        now = snapshot.fetched_at
+        now = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+        try:
+            return await self._context_reader.for_symbol(symbol, now), None
+        except Exception as exc:  # noqa: BLE001 - the prompt goes on without it
+            logger.warning("market context unreadable", symbol=symbol, error=str(exc))
+            return None, str(exc)
 
     async def _sleeve_ownership(self, symbol: str) -> tuple[Ownership | None, str | None]:
         """``(ownership, error)`` of ``symbol``'s open position in sleeve mode (§7.71).
