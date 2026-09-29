@@ -74,10 +74,6 @@ _TIGHTER: dict[str, str] = {
     "consecutive_losses_cooldown_minutes": "ge",
 }
 
-#: Keys once accepted but since removed from the surface; dropped (not rejected) when
-#: *reading* stored overrides so a legacy row doesn't disable every other override.
-_LEGACY_RISK_KEYS: tuple[str, ...] = ("enforce_exit_levels",)
-
 
 def loosened_risk_fields(risk: RiskOverride | None, baseline: Any) -> dict[str, str]:
     """``{field: message}`` for override fields looser than the YAML ``baseline``."""
@@ -155,21 +151,10 @@ def agent_config_view(agent_settings: Any, overrides: SafeConfigOverrides | None
 
 
 def parse_overrides(raw: str | None) -> SafeConfigOverrides | None:
-    """Parse stored override JSON; empty → ``None``. Raises :`ValidationError` on bad content.
-
-    Legacy keys removed from the surface (``risk.enforce_exit_levels``, §7.43) are
-    dropped with a warning instead of failing the whole row.
-    """
+    """Parse stored override JSON; empty → ``None``. Raises :`ValidationError` on bad content."""
     if not raw or not isinstance(raw, str) or not raw.strip():
         return None
-    data = json.loads(raw)
-    risk = data.get("risk") if isinstance(data, dict) else None
-    if isinstance(risk, dict):
-        for key in _LEGACY_RISK_KEYS:
-            if key in risk:
-                risk.pop(key)
-                logger.warning("ignoring legacy stored override", key=f"risk.{key}")
-    return SafeConfigOverrides.model_validate(data)
+    return SafeConfigOverrides.model_validate(json.loads(raw))
 
 
 def parse_and_apply(

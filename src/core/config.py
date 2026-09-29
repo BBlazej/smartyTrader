@@ -18,14 +18,10 @@ from ..analysis.candles import timeframe_delta
 LIVE_TRADING_ACK_ENV = "LIVE_TRADING_ACK"
 
 #: Env override for the LLM endpoint — any OpenAI-compatible server (LM Studio,
-#: Unsloth desktop, llama-server, Ollama). ``LM_STUDIO_ENDPOINT`` is its deprecated
-#: former name, still honored (with a warning) so an old ``.env`` keeps working.
+#: Unsloth desktop, llama-server, Ollama).
 LLM_ENDPOINT_ENV = "LOCAL_LLM_ENDPOINT"
-LEGACY_LLM_ENDPOINT_ENV = "LM_STUDIO_ENDPOINT"
-#: Env opt-in for strict JSON ``response_format``; ``LM_STUDIO_USE_JSON_SCHEMA`` is its
-#: deprecated former name (still honored, with a warning) — same rename as the endpoint.
+#: Env opt-in for strict JSON ``response_format``.
 LLM_JSON_SCHEMA_ENV = "LOCAL_LLM_USE_JSON_SCHEMA"
-LEGACY_LLM_JSON_SCHEMA_ENV = "LM_STUDIO_USE_JSON_SCHEMA"
 LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 
 
@@ -110,16 +106,7 @@ class LLMSettings:
         # fed into the signal parser.
         max_response_chars: int = 20_000,
     ) -> None:
-        env_endpoint = os.getenv(LLM_ENDPOINT_ENV, "").strip()
-        legacy_endpoint = os.getenv(LEGACY_LLM_ENDPOINT_ENV, "").strip()
-        if not env_endpoint and legacy_endpoint:
-            import structlog
-
-            structlog.get_logger().warning(
-                f"{LEGACY_LLM_ENDPOINT_ENV} is deprecated — rename it to {LLM_ENDPOINT_ENV}"
-            )
-            env_endpoint = legacy_endpoint
-        self.endpoint = env_endpoint or endpoint
+        self.endpoint = os.getenv(LLM_ENDPOINT_ENV, "").strip() or endpoint
         # Bearer key for servers that require one (Unsloth desktop, llama-server
         # --api-key, vLLM). A secret: env ``LLM_API_KEY`` only — never YAML, never
         # logged. Unset (LM Studio's default) sends no Authorization header.
@@ -135,20 +122,9 @@ class LLMSettings:
         # Opt-in: request a strict JSON response schema. Enable once you've
         # confirmed the local model supports ``response_format`` — some setups
         # reject it, which would otherwise force the safe HOLD fallback every cycle.
-        env_schema = os.getenv(LLM_JSON_SCHEMA_ENV, "").strip()
-        legacy_schema = os.getenv(LEGACY_LLM_JSON_SCHEMA_ENV, "").strip()
-        if not env_schema and legacy_schema:
-            import structlog
-
-            structlog.get_logger().warning(
-                f"{LEGACY_LLM_JSON_SCHEMA_ENV} is deprecated — rename it to {LLM_JSON_SCHEMA_ENV}"
-            )
-            env_schema = legacy_schema
-        self.use_json_schema = use_json_schema or env_schema.lower() in ("1", "true", "yes")
-
-
-#: Removed agent keys still tolerated in old configs (warned, ignored).
-_LEGACY_AGENT_KEYS: frozenset[str] = frozenset({"broker", "demo"})
+        self.use_json_schema = use_json_schema or os.getenv(
+            LLM_JSON_SCHEMA_ENV, ""
+        ).strip().lower() in ("1", "true", "yes")
 
 
 class AgentConfig:
@@ -192,21 +168,7 @@ class AgentConfig:
         # use the agent-level market_hours/market_timezone/market_holidays above.
         exchanges: dict[str, dict[str, Any]] | None = None,
         symbol_exchanges: dict[str, str] | None = None,
-        **legacy: Any,
     ) -> None:
-        # ``broker``/``demo`` were XTB-era stocks keys nothing ever read (the venue is
-        # chosen by saxo_execution / xtb_execution). Tolerated with a warning so an old
-        # settings.yaml still loads; any other unknown key is still a config error.
-        unknown = set(legacy) - _LEGACY_AGENT_KEYS
-        if unknown:
-            raise TypeError(f"unexpected agent config keys: {sorted(unknown)}")
-        if legacy:
-            import structlog
-
-            structlog.get_logger().warning(
-                "ignoring obsolete agent config keys — remove them from settings.yaml",
-                keys=sorted(legacy),
-            )
         self.enabled = enabled
         self.exchange = exchange
         self.testnet = testnet

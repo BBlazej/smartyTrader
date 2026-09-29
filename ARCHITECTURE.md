@@ -813,7 +813,7 @@ xtb_execution:
 
 > `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
 
-Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LOCAL_LLM_ENDPOINT` (formerly `LM_STUDIO_ENDPOINT`), `LLM_API_KEY`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LM_STUDIO_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
+Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LOCAL_LLM_ENDPOINT`, `LLM_API_KEY`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LOCAL_LLM_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
 
 ## Dependencies (current)
 
@@ -871,4 +871,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **1308 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1303 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

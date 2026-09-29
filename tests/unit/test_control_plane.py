@@ -517,13 +517,6 @@ class TestTightenOnlyOverrides:
         model, error = validate_overrides_payload({"risk": {"enforce_exit_levels": False}})
         assert model is None and "enforce_exit_levels" in (error or "")
 
-    def test_legacy_stored_row_keeps_its_other_overrides(self) -> None:
-        from src.core.control_config import parse_overrides
-
-        legacy = '{"risk": {"min_confidence": 0.7, "enforce_exit_levels": false}}'
-        parsed = parse_overrides(legacy)
-        assert parsed is not None and parsed.risk.min_confidence == 0.7
-
     def test_apply_skips_stored_values_looser_than_yaml(self) -> None:
         """The YAML may be tightened after an override was stored: never loosen live."""
         from types import SimpleNamespace
