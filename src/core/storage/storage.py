@@ -7,6 +7,7 @@ every public method stays on one importable class — callers keep using
 
 from __future__ import annotations
 
+from .context import ContextMixin
 from .control import ControlMixin
 from .decisions import DecisionMixin
 from .engine import StorageBase
@@ -26,6 +27,7 @@ class Storage(
     PruneMixin,
     WatchlistMixin,
     SleeveMixin,
+    ContextMixin,
     StorageBase,
 ):
     """Async repository for all trading data."""

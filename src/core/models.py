@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import Annotated, Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 # ── LLM Signal ────────────────────────────────────────────────
 
@@ -252,3 +252,143 @@ class Executor(Protocol):
     async def get_cash(self) -> float: ...
 
     async def close(self) -> None: ...
+
+
+# ── Market context (§7.18, CHANGE.md §4.4 / P5) ─────────────
+
+
+class EventKind(str, Enum):
+    """What a :class:`MarketEvent` is — only ``delisting``/``earnings``/``macro`` gate."""
+
+    MACRO = "macro"  # scheduled economic release / central-bank decision
+    EARNINGS = "earnings"  # a stock's earnings release
+    DELISTING = "delisting"  # the venue announced it will delist the asset
+
+
+class EventImportance(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+    @property
+    def rank(self) -> int:
+        return {"low": 0, "medium": 1, "high": 2}[self.value]
+
+
+class MarketEvent(BaseModel):
+    """A dated external event — calendar data, never LLM text (CHANGE.md §4.4).
+
+    ``asset`` is the base asset / ticker (``BTC`` for ``BTC/EUR``, ``AAPL``) the event
+    concerns; ``None`` = market-wide (a macro release, which carries ``currency``
+    instead — the economy it belongs to). ``at`` is the scheduled time, or for a
+    delisting the notice's publication time. The deterministic event guard in the
+    risk engine reads these rows directly.
+    """
+
+    source: str = Field(max_length=20)
+    kind: EventKind
+    at: datetime
+    title: str = Field(max_length=200)
+    asset: str | None = Field(default=None, max_length=20)
+    currency: str | None = Field(default=None, max_length=10)
+    importance: EventImportance = EventImportance.HIGH
+    url: str | None = Field(default=None, max_length=500)
+
+    def dedup_key(self) -> str:
+        """Stable identity across refreshes (same event fetched twice = one row)."""
+        import hashlib
+
+        at = self.at.astimezone(UTC) if self.at.tzinfo else self.at.replace(tzinfo=UTC)
+        raw = "|".join(
+            [
+                self.source,
+                self.kind.value,
+                self.asset or "",
+                self.currency or "",
+                at.strftime("%Y-%m-%dT%H:%M"),
+                self.title.strip().lower(),
+            ]
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+class SentimentReading(BaseModel):
+    """One market-wide sentiment reading (e.g. the crypto Fear & Greed index, 0–100)."""
+
+    source: str = Field(max_length=20)
+    value: float
+    label: str | None = Field(default=None, max_length=40)
+    as_of: datetime
+
+
+class NewsItem(BaseModel):
+    """One ingested news/filing item (§7.18). Raw text — never enters a trading prompt.
+
+    Only the batch summarizer reads ``text``; the trading prompt sees the validated
+    :class:`ContextCard` built from it (CHANGE.md §7: prompt-injection mitigation).
+    """
+
+    source: str = Field(max_length=40)
+    url: str = Field(max_length=1000)
+    title: str = Field(max_length=300)
+    text: str = ""
+    published_at: datetime
+    symbols: list[str] = []
+
+    def content_hash(self) -> str:
+        """Dedup key: the same article from two feeds (or two refreshes) is one item."""
+        import hashlib
+
+        raw = f"{self.url.strip()}|{self.title.strip().lower()}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+class CardEvent(BaseModel):
+    """An upcoming event the summarizer noticed in the news (informational only)."""
+
+    model_config = {"extra": "forbid"}
+
+    type: str = Field(pattern=r"^(earnings|macro|listing|delisting|regulatory|upgrade|other)$")
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ContextCard(BaseModel):
+    """Per-symbol news digest produced by the batch summarizer (CHANGE.md §4.4).
+
+    Strict and bounded like :class:`TradeSignal`: unknown fields are rejected, every
+    string is length-capped and ``sources`` must cite the fed items' URLs (checked by
+    :func:`src.analysis.context_cards.parse_context_card`). The trading prompt renders
+    only these structured fields. Event *guards* never read a card — they use calendar
+    data (:class:`MarketEvent`).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    symbol: str = Field(max_length=20)
+    as_of: datetime
+    sentiment: float = Field(ge=-1.0, le=1.0)
+    catalysts: list[Annotated[str, StringConstraints(min_length=1, max_length=160)]] = Field(
+        default_factory=list, max_length=5
+    )
+    event_risk: list[CardEvent] = Field(default_factory=list, max_length=5)
+    sources: list[Annotated[str, StringConstraints(max_length=1000)]] = Field(
+        min_length=1, max_length=8
+    )
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class SymbolContext(BaseModel):
+    """Everything external the pipeline knows about one symbol at decision time (§7.18).
+
+    Built by :class:`src.core.context.ContextReader`: fresh sentiment (``None`` when
+    stale/missing), scheduled events near ``now``, venue notices (delistings) and the
+    latest unexpired context card. Rendered into the prompt's MARKET CONTEXT section
+    and checked by :meth:`RiskEngine.check_event_guard`.
+    """
+
+    symbol: str
+    now: datetime
+    sentiment: SentimentReading | None = None
+    events: list[MarketEvent] = []  # macro + earnings in the reader's window, by time
+    notices: list[MarketEvent] = []  # delisting notices for this asset
+    card: ContextCard | None = None

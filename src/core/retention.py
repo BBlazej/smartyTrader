@@ -39,13 +39,15 @@ async def prune_storage(
     # Snapshot BEFORE deleting anything — a bad prune policy stays recoverable.
     await _maybe_backup(storage, settings, log)
 
+    context_counts = await _prune_context(storage, settings, log)
+
     history_days = settings.history_retention_days
     if mode == REAL and history_days > 0:
         log.info("real-money book: decision/order history is never pruned", mode=mode)
         history_days = 0
     if settings.snapshot_retention_days <= 0 and history_days <= 0:
         log.debug("retention pruning disabled (all windows <= 0)")
-        return {}
+        return context_counts
     try:
         counts = await storage.prune(
             snapshot_days=settings.snapshot_retention_days,
@@ -53,8 +55,23 @@ async def prune_storage(
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("retention prune failed (continuing)", error=str(exc))
-        return {}
+        return context_counts
     log.info("retention prune complete", **counts)
+    return {**context_counts, **counts}
+
+
+async def _prune_context(storage: Storage, settings: StorageSettings, log) -> dict[str, int]:
+    """Expire market-context rows (§7.18): events, sentiment, news, cards. Fail-soft."""
+    days = getattr(settings, "context_retention_days", 0)
+    if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
+        return {}
+    try:
+        counts = await storage.prune_context(days)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("context prune failed (continuing)", error=str(exc))
+        return {}
+    if any(counts.values()):
+        log.info("context prune complete", **counts)
     return counts
 
 

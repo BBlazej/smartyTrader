@@ -267,3 +267,86 @@ class DbIdentityRow(Base):
     agent: Mapped[str] = mapped_column(String(20))
     mode: Mapped[str] = mapped_column(String(10))  # paper | demo | real
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+# ── Market context (§7.18, CHANGE.md §4.4 / §4.6) ─────────────
+
+
+class MarketEventRow(Base):
+    """A dated external event (macro release, earnings, venue delisting notice).
+
+    Calendar data, never LLM text: the deterministic event guard reads these rows.
+    ``asset`` NULL = market-wide (macro, identified by ``currency``). ``dedup_key``
+    (:meth:`MarketEvent.dedup_key`) makes refreshes idempotent. Agent-scoped (§7.39).
+    """
+
+    __tablename__ = "market_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(20))
+    asset: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    at: Mapped[datetime] = mapped_column(index=True)
+    importance: Mapped[str] = mapped_column(String(10), default="high")
+    title: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    dedup_key: Mapped[str] = mapped_column(String(32), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class SentimentReadingRow(Base):
+    """A market-wide sentiment reading (e.g. crypto Fear & Greed), one per source × as_of."""
+
+    __tablename__ = "sentiment_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(20))
+    value: Mapped[float] = mapped_column(Float)
+    label: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    as_of: Mapped[datetime] = mapped_column(index=True)
+    fetched_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class NewsItemRow(Base):
+    """An ingested news/filing item (§7.18). Its raw text only ever feeds the summarizer.
+
+    ``symbols_json`` lists the traded symbols the item was matched to at ingest;
+    ``content_hash`` (:meth:`NewsItem.content_hash`) dedups across feeds/refreshes.
+    """
+
+    __tablename__ = "news_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(40))
+    url: Mapped[str] = mapped_column(String(1000))
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    published_at: Mapped[datetime] = mapped_column(index=True)
+    symbols_json: Mapped[str] = mapped_column(Text, default="[]")
+    content_hash: Mapped[str] = mapped_column(String(32), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class ContextCardRow(Base):
+    """A validated per-symbol context card from the batch summarizer (§7.18).
+
+    ``card_json`` is the :class:`ContextCard` exactly as validated; ``expires_at``
+    is its TTL — the pipeline never shows an expired card. ``news_through`` is the
+    newest item's publish time the card covered, so the summarizer knows when a
+    symbol has fresh news to digest.
+    """
+
+    __tablename__ = "context_cards"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    card_json: Mapped[str] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    news_through: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    expires_at: Mapped[datetime] = mapped_column()

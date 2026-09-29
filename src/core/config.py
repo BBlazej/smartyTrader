@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ class Settings:
         self.xtb_execution = XTBExecutionSettings(**raw.get("xtb_execution", {}))
         self.saxo_execution = SaxoExecutionSettings(**raw.get("saxo_execution", {}))
         self.venue_orders = VenueOrderSettings(**raw.get("venue_orders", {}))
+        self.macro_calendar = MacroCalendarSettings(**(raw.get("macro_calendar") or {}))
         if self.xtb_execution.enabled and self.saxo_execution.enabled:
             raise ValueError("enable at most one stocks venue: xtb_execution or saxo_execution")
 
@@ -169,6 +171,9 @@ class AgentConfig:
         # §7.71: strategy sleeves (CHANGE.md P1) — several trading styles side by side
         # in this agent's process. Off by default: one implicit style, as before.
         sleeves: dict[str, Any] | None = None,
+        # §7.18: market context (sentiment, calendars, venue notices, news + LLM
+        # context cards) for the prompt and the event guard. Off by default.
+        context: dict[str, Any] | None = None,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -194,6 +199,7 @@ class AgentConfig:
         self.quote_currency = quote_currency.upper() if quote_currency else None
         self.watchlist = WatchlistSettings(**(watchlist or {}))
         self.sleeves = SleevesSettings(**(sleeves or {}))
+        self.context = ContextSettings(**(context or {}))
         if self.quote_currency:
             mismatched = pairs_not_quoted_in(self.pairs, self.quote_currency)
             if mismatched:
@@ -271,6 +277,286 @@ class WatchlistSettings:
         )
         self.max_candidates = int(max_candidates)
         self.exclude_symbols = [s.upper() for s in (exclude_symbols or [])]
+
+
+#: Event importance levels, lowest first (§7.18; mirrors ``models.EventImportance``).
+IMPORTANCE_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+
+#: LLM fields a summarizer may override (§7.18) — everything else is the main block's.
+_SUMMARIZER_LLM_FIELDS: frozenset[str] = frozenset(
+    {
+        "endpoint",
+        "model",
+        "timeout_seconds",
+        "max_retries",
+        "temperature",
+        "max_tokens",
+        "retry_backoff_base_seconds",
+        "seed",
+        "max_response_chars",
+    }
+)
+
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def _positive(name: str, value: float) -> float:
+    if float(value) <= 0:
+        raise ValueError(f"{name} must be > 0")
+    return float(value)
+
+
+class SentimentSettings:
+    """Market-wide sentiment feed (§7.18). Shipped source: crypto Fear & Greed."""
+
+    SOURCES: tuple[str, ...] = ("fear_greed",)
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        source: str = "fear_greed",
+        url: str = "https://api.alternative.me/fng/?limit=2",
+        # Older readings are not shown (the index updates daily).
+        max_age_hours: float = 36.0,
+    ) -> None:
+        if source not in self.SOURCES:
+            raise ValueError(f"context.sentiment.source must be one of {', '.join(self.SOURCES)}")
+        self.enabled = bool(enabled)
+        self.source = source
+        self.url = url
+        self.max_age_hours = _positive("context.sentiment.max_age_hours", max_age_hours)
+
+
+class MacroContextSettings:
+    """Which macro events (``macro_calendar``) this agent cares about (§7.18)."""
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        # Economies whose releases move this market (USD CPI/FOMC move crypto too).
+        currencies: list[str] | None = None,
+        # Events below this importance are not stored (nor shown, nor guarded).
+        min_importance: str = "high",
+    ) -> None:
+        currencies = [c.upper() for c in (currencies or ["USD", "EUR"])]
+        bad = [c for c in currencies if not _CURRENCY_RE.match(c)]
+        if bad:
+            raise ValueError(f"context.macro.currencies: not ISO currency codes: {bad}")
+        if min_importance not in IMPORTANCE_LEVELS:
+            raise ValueError(
+                f"context.macro.min_importance must be one of {', '.join(IMPORTANCE_LEVELS)}"
+            )
+        self.enabled = bool(enabled)
+        self.currencies = currencies
+        self.min_importance = min_importance
+
+
+class AnnouncementsSettings:
+    """Venue announcements (§7.18): OKX delisting notices, public API, no key."""
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        # OKX Europe's host (§7.64); the global site serves the same endpoint.
+        base_url: str = "https://eea.okx.com",
+        # How far back to keep matching a notice to a traded asset for the prompt.
+        max_age_days: int = 120,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.base_url = base_url.rstrip("/")
+        self.max_age_days = int(_positive("context.announcements.max_age_days", max_age_days))
+
+
+class EarningsSettings:
+    """Stock earnings dates via yfinance (§7.18; stocks agent)."""
+
+    def __init__(self, enabled: bool = False, lookahead_days: int = 45) -> None:
+        self.enabled = bool(enabled)
+        self.lookahead_days = int(_positive("context.earnings.lookahead_days", lookahead_days))
+
+
+class NewsFeedSpec:
+    """One RSS/Atom feed. ``symbols`` pins every item to those symbols (e.g. an
+    EDGAR per-company filings feed); otherwise items match by keyword aliases."""
+
+    def __init__(self, name: str, url: str, symbols: list[str] | None = None) -> None:
+        if not isinstance(name, str) or not name.strip() or len(name) > 40:
+            raise ValueError("context.news.feeds[].name must be a non-empty string (<= 40 chars)")
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            raise ValueError(f"context.news.feeds.{name}.url must be an http(s) URL")
+        self.name = name.strip()
+        self.url = url
+        self.symbols = list(symbols or [])
+
+
+class NewsSettings:
+    """RSS/Atom news + filings ingest (§7.18). Raw text feeds only the summarizer."""
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        feeds: list[dict[str, Any]] | None = None,
+        # Extra keywords per symbol (case-insensitive, whole word). The base asset /
+        # ticker itself always matches, e.g. {"BTC/EUR": ["bitcoin"]}.
+        aliases: dict[str, list[str]] | None = None,
+        max_items_per_feed: int = 30,
+        max_item_chars: int = 2000,
+        # Older items are ignored at ingest.
+        max_age_hours: float = 48.0,
+        # Response size cap per feed download.
+        max_feed_bytes: int = 2_000_000,
+    ) -> None:
+        specs: list[NewsFeedSpec] = []
+        for body in feeds or []:
+            if not isinstance(body, dict):
+                raise ValueError("context.news.feeds entries must be mappings")  # noqa: TRY004
+            specs.append(NewsFeedSpec(**body))
+        if enabled and not specs:
+            raise ValueError("context.news.enabled needs at least one entry under feeds")
+        clean_aliases: dict[str, list[str]] = {}
+        for symbol, words in (aliases or {}).items():
+            if not isinstance(words, list) or not all(isinstance(w, str) and w for w in words):
+                raise ValueError(f"context.news.aliases.{symbol} must be a list of strings")
+            clean_aliases[symbol] = [w.lower() for w in words]
+        self.enabled = bool(enabled)
+        self.feeds = specs
+        self.aliases = clean_aliases
+        self.max_items_per_feed = int(
+            _positive("context.news.max_items_per_feed", max_items_per_feed)
+        )
+        self.max_item_chars = int(_positive("context.news.max_item_chars", max_item_chars))
+        self.max_age_hours = _positive("context.news.max_age_hours", max_age_hours)
+        self.max_feed_bytes = int(_positive("context.news.max_feed_bytes", max_feed_bytes))
+
+
+class SummarizerSettings:
+    """Batch LLM summarizer → per-symbol context cards (§7.18, CHANGE.md §4.4).
+
+    Runs off the trade path on its own cadence and shares one in-process lock with
+    the trading LLM client, so the local server never serves both at once. ``llm``
+    overrides fields of the top-level ``llm:`` block (e.g. a smaller ``model`` —
+    CHANGE.md Q7); unset → the trading model.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        refresh_minutes: int = 240,
+        card_ttl_hours: float = 12.0,
+        # News window a card digests, and how many items it may read.
+        lookback_hours: float = 24.0,
+        max_items_per_card: int = 8,
+        # At most this many symbols are summarized per pass (LLM budget, CHANGE.md §4.7).
+        max_symbols_per_run: int = 5,
+        llm: dict[str, Any] | None = None,
+    ) -> None:
+        llm = dict(llm or {})
+        bad = set(llm) - _SUMMARIZER_LLM_FIELDS
+        if bad:
+            raise ValueError(f"context.summarizer.llm: unknown or forbidden fields {sorted(bad)}")
+        self.enabled = bool(enabled)
+        self.refresh_minutes = int(_positive("context.summarizer.refresh_minutes", refresh_minutes))
+        self.card_ttl_hours = _positive("context.summarizer.card_ttl_hours", card_ttl_hours)
+        self.lookback_hours = _positive("context.summarizer.lookback_hours", lookback_hours)
+        self.max_items_per_card = int(
+            _positive("context.summarizer.max_items_per_card", max_items_per_card)
+        )
+        self.max_symbols_per_run = int(
+            _positive("context.summarizer.max_symbols_per_run", max_symbols_per_run)
+        )
+        self.llm_overrides: dict[str, Any] = llm
+
+
+class ContextSettings:
+    """Market context for one agent (§7.18, CHANGE.md P5). Opt-in: ``enabled: false``.
+
+    With it off nothing is fetched, nothing is added to the prompt and the event
+    guard has nothing to check — behavior is exactly as before. Every source has its
+    own switch; all refreshes are fail-soft background jobs off the trade path.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        refresh_minutes: int = 60,
+        # Upcoming events within this horizon are shown in the prompt.
+        lookahead_hours: float = 48.0,
+        # Sent with every context HTTP request (SEC EDGAR rejects anonymous clients).
+        http_user_agent: str = "trading-agent/0.1 (paper-trading research)",
+        http_timeout_seconds: float = 15.0,
+        sentiment: dict[str, Any] | None = None,
+        macro: dict[str, Any] | None = None,
+        announcements: dict[str, Any] | None = None,
+        earnings: dict[str, Any] | None = None,
+        news: dict[str, Any] | None = None,
+        summarizer: dict[str, Any] | None = None,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.refresh_minutes = int(_positive("context.refresh_minutes", refresh_minutes))
+        self.lookahead_hours = _positive("context.lookahead_hours", lookahead_hours)
+        self.http_user_agent = str(http_user_agent)
+        self.http_timeout_seconds = _positive("context.http_timeout_seconds", http_timeout_seconds)
+        self.sentiment = SentimentSettings(**(sentiment or {}))
+        self.macro = MacroContextSettings(**(macro or {}))
+        self.announcements = AnnouncementsSettings(**(announcements or {}))
+        self.earnings = EarningsSettings(**(earnings or {}))
+        self.news = NewsSettings(**(news or {}))
+        self.summarizer = SummarizerSettings(**(summarizer or {}))
+        if self.summarizer.enabled and not self.news.enabled:
+            raise ValueError("context.summarizer needs context.news (it digests news items)")
+
+
+class MacroCalendarSettings:
+    """Scheduled macro events shared by both agents (§7.18, option (c)).
+
+    ``events`` is the reliable base — an operator-maintained list (FOMC, CPI, NFP,
+    ECB …, times in UTC) that works offline. ``feed_url`` adds the ForexFactory weekly
+    JSON on top when reachable (unofficial; "" disables it). Each agent picks the
+    currencies/importance it cares about in ``<agent>.context.macro``.
+    """
+
+    def __init__(
+        self,
+        feed_url: str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        events: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.feed_url = feed_url or ""
+        parsed: list[dict[str, Any]] = []
+        for body in events or []:
+            if not isinstance(body, dict):
+                raise ValueError("macro_calendar.events entries must be mappings")  # noqa: TRY004
+            unknown = set(body) - {"at", "title", "currency", "importance"}
+            if unknown:
+                raise ValueError(f"macro_calendar.events: unknown keys {sorted(unknown)}")
+            at = body.get("at")
+            if isinstance(at, str):
+                try:
+                    at = datetime.fromisoformat(at)
+                except ValueError as exc:
+                    raise ValueError(f"macro_calendar.events: bad 'at' {body.get('at')!r}") from exc
+            if not isinstance(at, datetime) or at.tzinfo is None:
+                raise ValueError(
+                    f"macro_calendar.events: 'at' must be an ISO time with a zone "
+                    f"(e.g. 2026-10-28T18:00:00Z), got {body.get('at')!r}"
+                )
+            title = body.get("title")
+            if not isinstance(title, str) or not title.strip() or len(title) > 200:
+                raise ValueError("macro_calendar.events: 'title' must be a string (<= 200 chars)")
+            currency = str(body.get("currency", "")).upper()
+            if not _CURRENCY_RE.match(currency):
+                raise ValueError(f"macro_calendar.events: bad currency {body.get('currency')!r}")
+            importance = body.get("importance", "high")
+            if importance not in IMPORTANCE_LEVELS:
+                raise ValueError(f"macro_calendar.events: bad importance {importance!r}")
+            parsed.append(
+                {
+                    "at": at.astimezone(UTC),
+                    "title": title.strip(),
+                    "currency": currency,
+                    "importance": importance,
+                }
+            )
+        self.events: list[dict[str, Any]] = parsed
 
 
 #: Prompt playbooks a sleeve may use (§7.71) — texts live in
@@ -410,7 +696,31 @@ class RiskSettings:
         # the pipeline closes a position as soon as its mark price breaches the
         # levels carried from the entry signal, without asking the LLM.
         enforce_exit_levels: bool = True,
+        # §7.18 deterministic event guard (entries only — exits are never gated):
+        # no new BUY in the window around a scheduled high-impact macro event, around
+        # the symbol's earnings, or after the venue announced its delisting. Needs
+        # ``<agent>.context.enabled`` — without context there are no events to check.
+        event_guard_enabled: bool = True,
+        event_blackout_before_minutes: int = 120,
+        event_blackout_after_minutes: int = 60,
+        event_guard_min_importance: str = "high",
+        earnings_blackout_days_before: int = 1,
+        earnings_blackout_hours_after: int = 24,
+        delisting_blackout_days: int = 90,
     ) -> None:
+        for name, value in (
+            ("event_blackout_before_minutes", event_blackout_before_minutes),
+            ("event_blackout_after_minutes", event_blackout_after_minutes),
+            ("earnings_blackout_days_before", earnings_blackout_days_before),
+            ("earnings_blackout_hours_after", earnings_blackout_hours_after),
+            ("delisting_blackout_days", delisting_blackout_days),
+        ):
+            if int(value) < 0:
+                raise ValueError(f"risk.{name} must be >= 0")
+        if event_guard_min_importance not in IMPORTANCE_LEVELS:
+            raise ValueError(
+                f"risk.event_guard_min_importance must be one of {', '.join(IMPORTANCE_LEVELS)}"
+            )
         self.max_position_pct = max_position_pct
         self.daily_loss_limit_pct = daily_loss_limit_pct
         self.max_drawdown_pct = max_drawdown_pct
@@ -421,6 +731,13 @@ class RiskSettings:
         self.max_stop_distance_pct = max_stop_distance_pct
         self.risk_per_trade_pct = risk_per_trade_pct
         self.enforce_exit_levels = enforce_exit_levels
+        self.event_guard_enabled = bool(event_guard_enabled)
+        self.event_blackout_before_minutes = int(event_blackout_before_minutes)
+        self.event_blackout_after_minutes = int(event_blackout_after_minutes)
+        self.event_guard_min_importance = event_guard_min_importance
+        self.earnings_blackout_days_before = int(earnings_blackout_days_before)
+        self.earnings_blackout_hours_after = int(earnings_blackout_hours_after)
+        self.delisting_blackout_days = int(delisting_blackout_days)
 
 
 class ExecutionSettings:
@@ -529,6 +846,9 @@ class StorageSettings:
         backup_dir: str = "",
         # How many backups to keep (oldest rotated out); 0 keeps everything.
         backup_keep: int = 0,
+        # Market-context rows (§7.18: events, sentiment, news, context cards) older
+        # than this are pruned; 0 keeps them forever.
+        context_retention_days: int = 30,
     ) -> None:
         self.database_path = database_path
         self.in_memory = database_path == ":memory:"
@@ -543,6 +863,9 @@ class StorageSettings:
         self.prune_interval_minutes = prune_interval_minutes
         self.backup_dir = backup_dir
         self.backup_keep = backup_keep
+        if int(context_retention_days) < 0:
+            raise ValueError("storage.context_retention_days must be >= 0")
+        self.context_retention_days = int(context_retention_days)
 
 
 class MonitoringSettings:
