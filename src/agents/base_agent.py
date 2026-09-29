@@ -126,6 +126,10 @@ class BaseTradingAgent:
         """Return a reason to skip the entire cycle, or ``None`` to proceed."""
         return None
 
+    def _skip_symbol_reason(self, symbol: str) -> str | None:
+        """Per-symbol skip hook (§7.66: that symbol's exchange is closed). None = run it."""
+        return None
+
     def _start_log_fields(self) -> dict[str, object]:
         """Extra fields attached to the *agent started* log line."""
         return {}
@@ -192,6 +196,12 @@ class BaseTradingAgent:
         results: list[PipelineResult] = []
         cycle_error: str | None = None
         for symbol in self._symbols:
+            symbol_skip = self._skip_symbol_reason(symbol)
+            if symbol_skip is not None:
+                self._logger.info(
+                    "symbol skipped (market closed)", symbol=symbol, reason=symbol_skip
+                )
+                continue
             for sleeve, pipeline, timeframe in self._runs():
                 label = f"{symbol} [{sleeve}]" if sleeve else symbol
                 try:

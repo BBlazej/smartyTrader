@@ -174,6 +174,11 @@ class AgentConfig:
         # §7.18: market context (sentiment, calendars, venue notices, news + LLM
         # context cards) for the prompt and the event guard. Off by default.
         context: dict[str, Any] | None = None,
+        # §7.66: per-exchange trading windows for a mixed US + EU stocks universe.
+        # ``symbol_exchanges`` maps a symbol to one of ``exchanges``; unmapped symbols
+        # use the agent-level market_hours/market_timezone/market_holidays above.
+        exchanges: dict[str, dict[str, Any]] | None = None,
+        symbol_exchanges: dict[str, str] | None = None,
     ) -> None:
         self.enabled = enabled
         self.exchange = exchange
@@ -200,6 +205,15 @@ class AgentConfig:
         self.watchlist = WatchlistSettings(**(watchlist or {}))
         self.sleeves = SleevesSettings(**(sleeves or {}))
         self.context = ContextSettings(**(context or {}))
+        self.exchanges: dict[str, ExchangeWindow] = {}
+        for code, body in (exchanges or {}).items():
+            if not isinstance(body, dict):
+                raise ValueError(f"exchanges.{code} must be a mapping")  # noqa: TRY004
+            self.exchanges[str(code)] = ExchangeWindow(name=str(code), **body)
+        self.symbol_exchanges: dict[str, str] = dict(symbol_exchanges or {})
+        unknown = sorted({v for v in self.symbol_exchanges.values() if v not in self.exchanges})
+        if unknown:
+            raise ValueError(f"symbol_exchanges names exchanges not configured: {unknown}")
         if self.watchlist.news_mentions.enabled and not (
             self.context.enabled and self.context.news.enabled
         ):
@@ -214,6 +228,38 @@ class AgentConfig:
                     f"pairs {mismatched} are not quoted in quote_currency "
                     f"'{self.quote_currency}' — cash and position sizing would be wrong"
                 )
+
+
+class ExchangeWindow:
+    """One exchange's trading window (§7.66): hours, zone and closures, validated eagerly."""
+
+    def __init__(
+        self,
+        name: str,
+        market_hours: str,
+        market_timezone: str,
+        market_holidays: list[str] | None = None,
+    ) -> None:
+        from datetime import date
+        from zoneinfo import ZoneInfo
+
+        if not re.match(r"^\d{1,2}:\d{2}-\d{1,2}:\d{2}$", str(market_hours).strip()):
+            raise ValueError(f"exchanges.{name}.market_hours must look like 'HH:MM-HH:MM'")
+        try:
+            ZoneInfo(market_timezone)
+        except Exception as exc:
+            raise ValueError(
+                f"exchanges.{name}.market_timezone {market_timezone!r} unknown"
+            ) from exc
+        for raw in market_holidays or []:
+            try:
+                date.fromisoformat(str(raw))
+            except ValueError as exc:
+                raise ValueError(f"exchanges.{name}.market_holidays: bad date {raw!r}") from exc
+        self.name = name
+        self.market_hours = str(market_hours).strip()
+        self.market_timezone = market_timezone
+        self.market_holidays = [str(d) for d in (market_holidays or [])]
 
 
 class WatchlistSettings:

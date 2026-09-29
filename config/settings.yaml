@@ -164,6 +164,17 @@ stocks_agent:
   symbols:
     - AAPL
     - MSFT
+  # §7.66 per-exchange windows for a mixed US + EU universe: symbols listed under
+  # symbol_exchanges trade in their exchange's window; all others use the
+  # market_hours/market_timezone/market_holidays above. A cycle is skipped only when
+  # every window in use is closed. Fill in each exchange's closure dates before use.
+  exchanges: {}
+  #   XETR:
+  #     market_hours: "09:00-17:30"
+  #     market_timezone: "Europe/Berlin"
+  #     market_holidays: []
+  symbol_exchanges: {}
+  #   SAP.DE: XETR
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
   decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)

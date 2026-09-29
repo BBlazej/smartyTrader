@@ -151,6 +151,7 @@ class StocksAgent(BaseTradingAgent):
         # against this constructor copy. Without it (tests, standalone use) the
         # constructor value is the source of truth.
         self._agent_settings = agent_settings
+        self._exchange_holidays: dict[str, set[date]] = {}
 
     # ── Market-hours guard ────────────────────────────────────
 
@@ -165,10 +166,60 @@ class StocksAgent(BaseTradingAgent):
         return {"market_hours": self._effective_market_hours}
 
     def _skip_cycle_reason(self) -> str | None:
-        """Weekend / holiday / outside-window reason, or ``None`` when tradable."""
-        return market_closed_reason(self._local_now(), self._effective_market_hours, self._holidays)
+        """Weekend / holiday / outside-window reason, or ``None`` when tradable.
 
-    def _local_now(self) -> datetime:
+        With per-exchange windows (§7.66) the whole cycle is skipped only when *every*
+        window a traded symbol uses is closed; otherwise :meth:`_skip_symbol_reason`
+        skips the closed ones symbol by symbol.
+        """
+        default_reason = market_closed_reason(
+            self._local_now(), self._effective_market_hours, self._holidays
+        )
+        exchanges = self._exchanges()
+        if not exchanges:
+            return default_reason
+        reasons: dict[str, str | None] = {}
+        for symbol in self._symbols:
+            code = self._symbol_exchange(symbol)
+            if (code or "") not in reasons:
+                reasons[code or ""] = (
+                    self._exchange_closed_reason(exchanges[code]) if code else default_reason
+                )
+        if reasons and all(reason is not None for reason in reasons.values()):
+            return "; ".join(f"{code or 'default'}: {reason}" for code, reason in reasons.items())
+        return None
+
+    def _skip_symbol_reason(self, symbol: str) -> str | None:
+        exchanges = self._exchanges()
+        if not exchanges:
+            return None  # one window: the cycle-level check already decided
+        code = self._symbol_exchange(symbol)
+        if code is None:
+            return market_closed_reason(
+                self._local_now(), self._effective_market_hours, self._holidays
+            )
+        reason = self._exchange_closed_reason(exchanges[code])
+        return f"{code}: {reason}" if reason is not None else None
+
+    # ── Per-exchange windows (§7.66) ──────────────────────────
+
+    def _exchanges(self) -> dict[str, Any]:
+        return dict(getattr(self._agent_settings, "exchanges", None) or {})
+
+    def _symbol_exchange(self, symbol: str) -> str | None:
+        mapping = getattr(self._agent_settings, "symbol_exchanges", None) or {}
+        code = mapping.get(symbol)
+        return code if code in self._exchanges() else None
+
+    def _exchange_closed_reason(self, window: Any) -> str | None:
+        holidays = self._exchange_holidays.get(window.name)
+        if holidays is None:
+            holidays = self._exchange_holidays[window.name] = parse_holidays(window.market_holidays)
+        return market_closed_reason(
+            self._local_now(window.market_timezone), window.market_hours, holidays
+        )
+
+    def _local_now(self, zone: str | None = None) -> datetime:
         """Current time in the market's local zone (falls back to UTC).
 
         The market-hours window is a local wall-clock range, so the guard must be
@@ -176,6 +227,6 @@ class StocksAgent(BaseTradingAgent):
         degrades gracefully to UTC rather than crashing the cycle.
         """
         try:
-            return datetime.now(UTC).astimezone(ZoneInfo(self._market_timezone))
+            return datetime.now(UTC).astimezone(ZoneInfo(zone or self._market_timezone))
         except Exception:  # noqa: BLE001
             return datetime.now(UTC)
