@@ -393,3 +393,6 @@ class SymbolContext(BaseModel):
     events: list[MarketEvent] = []  # macro + earnings in the reader's window, by time
     notices: list[MarketEvent] = []  # delisting notices for this asset
     card: ContextCard | None = None
+    # Set by the pipeline from the risk engine's event guard: why a BUY right now
+    # would be rejected, so the prompt can say so up front.
+    entry_blackout: str | None = None

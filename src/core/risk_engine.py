@@ -8,7 +8,17 @@ from typing import Final, Protocol
 import structlog
 
 from .config import RiskSettings
-from .models import Action, PortfolioState, PositionSide, RiskResult, RiskVerdict, TradeSignal
+from .models import (
+    Action,
+    EventImportance,
+    EventKind,
+    PortfolioState,
+    PositionSide,
+    RiskResult,
+    RiskVerdict,
+    SymbolContext,
+    TradeSignal,
+)
 
 # structlog like the rest of the codebase — safety-critical rejections must land
 # in the configured renderers, not bypass them via stdlib logging (§7.19).
@@ -295,6 +305,76 @@ class RiskEngine:
             logger.warning("risk_rejected", reason=reason)
             return RiskResult(verdict=RiskVerdict.REJECTED, reason=reason)
         return RiskResult(verdict=RiskVerdict.APPROVED)
+
+    def event_blackout_reason(self, context: SymbolContext | None) -> str | None:
+        """Why new entries are blocked right now by calendar data, or ``None`` (§7.18).
+
+        Deterministic rules over :class:`MarketEvent` rows — never over LLM text:
+
+        * a venue **delisting** notice for this asset, for ``delisting_blackout_days``;
+        * a scheduled **macro** event of at least ``event_guard_min_importance``, from
+          ``event_blackout_before_minutes`` before to ``event_blackout_after_minutes``
+          after it;
+        * this asset's **earnings**, from ``earnings_blackout_days_before`` days before
+          to ``earnings_blackout_hours_after`` hours after.
+        """
+        settings = self.settings
+        if context is None or not settings.event_guard_enabled:
+            return None
+        now = context.now
+        for notice in context.notices:
+            # A day of tolerance for a notice stamped slightly ahead of our clock.
+            window_start = notice.at - timedelta(days=1)
+            window_end = notice.at + timedelta(days=settings.delisting_blackout_days)
+            if notice.kind is EventKind.DELISTING and window_start <= now <= window_end:
+                return (
+                    f"Event guard: the venue announced a delisting of {notice.asset} on "
+                    f"{notice.at:%Y-%m-%d} — no new entries"
+                )
+        floor = EventImportance(settings.event_guard_min_importance).rank
+        before = timedelta(minutes=settings.event_blackout_before_minutes)
+        after = timedelta(minutes=settings.event_blackout_after_minutes)
+        for event in context.events:
+            if event.kind is EventKind.MACRO and event.importance.rank >= floor:
+                if event.at - before <= now <= event.at + after:
+                    return (
+                        f"Event guard: {event.currency} {event.title} "
+                        f"({event.importance.value} impact) at {event.at:%Y-%m-%d %H:%M} UTC — "
+                        f"no new entries from {settings.event_blackout_before_minutes} min "
+                        f"before to {settings.event_blackout_after_minutes} min after it"
+                    )
+            elif event.kind is EventKind.EARNINGS:
+                start = event.at - timedelta(days=settings.earnings_blackout_days_before)
+                end = event.at + timedelta(hours=settings.earnings_blackout_hours_after)
+                if start <= now <= end:
+                    return (
+                        f"Event guard: {event.asset} earnings at {event.at:%Y-%m-%d %H:%M} UTC "
+                        "— no new entries around the release"
+                    )
+        return None
+
+    def check_event_guard(
+        self,
+        signal: TradeSignal,
+        context: SymbolContext | None,
+        context_error: str | None = None,
+    ) -> RiskResult:
+        """Entry gate over market context (§7.18). Exits are never gated (§7.47).
+
+        Called by the pipeline only when context is enabled. An unreadable context
+        blocks entries (fail-closed, like an unreadable sleeve book): an unknown
+        calendar must not be read as an empty one.
+        """
+        if signal.action != Action.BUY or not self.settings.event_guard_enabled:
+            return RiskResult(verdict=RiskVerdict.APPROVED)
+        if context_error is not None:
+            reason = f"Event guard: market context unavailable ({context_error}) — no new entries"
+        else:
+            reason = self.event_blackout_reason(context)
+        if reason is None:
+            return RiskResult(verdict=RiskVerdict.APPROVED)
+        logger.warning("risk_rejected", symbol=signal.symbol, reason=reason)
+        return RiskResult(verdict=RiskVerdict.REJECTED, reason=reason)
 
     # ── Individual checks (each returns RiskResult) ───────────
 

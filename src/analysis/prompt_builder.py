@@ -186,6 +186,11 @@ def _render_context(ctx: SymbolContext) -> list[str]:
             "the price evidence above; event blackouts are enforced by the risk gate):"
         )
     ]
+    if ctx.entry_blackout:
+        lines.append(
+            f"  ENTRY BLACKOUT: {safe_label(ctx.entry_blackout, 200)}. A BUY now will be "
+            "rejected by the risk gate; HOLD or closing a held position remain possible."
+        )
     if ctx.sentiment is not None:
         reading = ctx.sentiment
         name = _SENTIMENT_NAMES.get(reading.source, safe_label(reading.source, 30))

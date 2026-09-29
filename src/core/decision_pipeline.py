@@ -371,7 +371,9 @@ class DecisionPipeline:
                 strategy=self.strategy,
             )
         prior_decisions = await self.get_recent_decisions(symbol)
-        symbol_context, _context_error = await self._read_context(symbol, snapshot)
+        symbol_context, context_error = await self._read_context(symbol, snapshot)
+        if symbol_context is not None:
+            symbol_context.entry_blackout = self.risk_engine.event_blackout_reason(symbol_context)
         user_prompt = build_user_prompt(
             snapshot,
             prior_decisions,
@@ -418,6 +420,13 @@ class DecisionPipeline:
         ):
             # The loose agent-wide breaker over all sleeves (CHANGE.md §4.8).
             risk_result = self._sleeve_book.check_backstop(portfolio.total_value)
+        if (
+            self._context_reader is not None
+            and signal.action == Action.BUY
+            and risk_result.verdict == RiskVerdict.APPROVED
+        ):
+            # §7.18 event guard: calendar blackouts + delisting notices, entries only.
+            risk_result = self.risk_engine.check_event_guard(signal, symbol_context, context_error)
 
         # Persist the decision (+ market snapshot) right after the gate so every
         # outcome path — rejected, HOLD, or executed — records it, and an order
