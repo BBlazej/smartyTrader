@@ -298,7 +298,7 @@ Additional engine facts:
 - Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7). `_check_daily_loss` rolls the UTC day itself (§7.59 L3) — the post-processing rollover alone left the first check after midnight on yesterday's baseline.
 - The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
 - **Strategy sleeves (§7.71):** each sleeve has its own `RiskEngine` evaluating the **sleeve's book** (`SleeveBook.sleeve_equity`: `weight × base_equity` of the latest `strategy_allocations` row + the sleeve's realized PnL since + unrealized PnL of owned positions; cash = equity − owned market value), so all seven rules run per sleeve with the sleeve's limits (agent `risk:` block + sleeve `risk:` overrides; agent-wide safe-config tightening caps every sleeve). Sizing is additionally clamped to the agent's free cash. The agent engine keeps the portfolio-snapshot-seeded peak for one loose **backstop** (`check_backstop`, `sleeves.backstop_max_drawdown_pct`) on BUYs. Sleeve trackers rehydrate from `sleeve_snapshots` (peak since the allocation, today's first row) and tagged closing fills.
-- **Event guard (§7.18):** calendar data only (`MarketEvent` rows from the YAML list, ForexFactory, OKX notices, yfinance earnings) — never summarizer text. It gates entries only, like every other rule since §7.47; a sleeve applies its own settings (the fields are ordinary `RiskSettings`, overridable per sleeve). Decision replay (§7.14) has no historical events, so the guard does not run in backtests.
+- **Event guard (§7.18):** calendar data only (`MarketEvent` rows from the YAML list, ForexFactory, OKX notices, yfinance earnings) — never summarizer text. It gates entries only, like every other rule since §7.47; a sleeve applies its own settings (the fields are ordinary `RiskSettings`, overridable per sleeve). Decision replay (§7.14) applies the same guard over the book's stored `market_events` (§7.82): each replayed BUY sees the calendar around its own timestamp, but only from the first stored event on (`event_guard_since`) — before that the live agent had no guard; report fields `event_guard` / `event_guard_since` / `event_blocked`, CLI `--event-guard auto|on|off`.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
 
 ## Control plane (§7.15 P1/P2 — implemented)
@@ -564,7 +564,8 @@ Design (Week 6):
 3. **Re-simulate** each decision against the price path that followed, through the **same** risk engine + fee/slippage model as live, so the verdicts and PnL are comparable to paper results.
 4. **Report:** total return vs. buy-and-hold benchmark, win rate, avg win/loss, max drawdown, Sharpe, per-symbol breakdown.
 5. **Baselines (§7.73):** every report also carries `baselines_pct` — buy & hold, a 20/50 SMA crossover (decides on bar *i*'s close, earns *i → i+1*, pays the per-side cost on every switch and the final exit) and cash, equal-weighted over the symbols and net of the same fee + slippage + FX — plus `best_baseline` / `beats_best_baseline`, the eligibility test CHANGE.md §4.2 sets for more than a sleeve's floor weight.
-6. **Per sleeve (§7.73):** `--strategy NAME` replays only that sleeve's decisions on its timeframe, with its effective risk limits (`sleeve_risk_settings`) and `weight × initial_cash`.
+6. **Event guard (§7.82):** with stored market context (and `--event-guard auto` — context enabled in config), replayed BUYs pass `check_event_guard` over the calendar around each decision, from the first stored event on; blocked BUYs count in `risk_rejected` and `event_blocked`.
+7. **Per sleeve (§7.73):** `--strategy NAME` replays only that sleeve's decisions on its timeframe, with its effective risk limits (`sleeve_risk_settings`) and `weight × initial_cash`.
 
 > **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate, later experiment — non-deterministic and costly on the local 27B model.
 
@@ -868,4 +869,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **1254 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1263 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

@@ -10,6 +10,7 @@ Examples:
     python -m scripts.backtest --provider yfinance --symbols AAPL --days 90 --report out.json
     python -m scripts.backtest --strategy crypto_position --days 60   # one sleeve (§7.73)
     python -m scripts.backtest --mode demo                            # the demo book (§7.78)
+    python -m scripts.backtest --event-guard off                      # replay without §7.18's guard
 
 The stored decisions come from **one book** (``<data_dir>/<mode>_<agent>.db``, §7.78):
 ``--mode paper|demo|real`` (default ``paper``) picks it, and the agent follows the
@@ -19,6 +20,10 @@ candle source (ccxt → crypto, yfinance → stocks) unless ``--agent`` says oth
 decisions, its timeframe, its effective risk limits and ``weight × initial_cash``.
 Every report compares the replay with dumb baselines on the same symbols, period and
 cost model — buy & hold, a 20/50 MA crossover, cash (§7.73).
+
+``--event-guard auto|on|off`` (§7.82): replayed BUYs pass the §7.18 event guard over the
+book's stored ``market_events`` — ``auto`` (default) when the agent's context is enabled
+in the config and the book holds events, from the first stored event on.
 
 The candle source is fresh from the venue (the configured exchange's public data via CCXT, or yfinance):
 the agent does not run 24/7, so stored ``market_snapshots`` alone are too sparse.
@@ -38,7 +43,7 @@ import structlog
 from src.core.backtester import DecisionReplayBacktester, ReplayDecision
 from src.core.config import Settings, SleeveSpec
 from src.core.db_layout import MODES, db_path
-from src.core.models import OHLCV
+from src.core.models import OHLCV, MarketEvent
 from src.core.sleeves import sleeve_risk_settings
 from src.core.storage import Storage
 
@@ -66,6 +71,28 @@ def _build_history_provider(provider_kind: str, settings: Settings) -> tuple[Any
         raise SystemExit("crypto_agent.exchange is not set (e.g. 'myokx')")
     # Public data endpoint: no keys, no sandbox — the backtester never trades.
     return create_ccxt_provider(exchange_id=exchange, testnet=False), "1h"
+
+
+async def _event_calendar(
+    storage: Storage,
+    settings: Settings,
+    agent: str,
+    mode_flag: str,
+    start: datetime,
+    end: datetime,
+) -> tuple[list[MarketEvent] | None, datetime | None]:
+    """``(events, guard_since)`` for the replay's event guard (§7.82); ``None`` = off."""
+    if mode_flag == "off":
+        return None, None
+    agent_cfg = getattr(settings, f"{agent}_agent", None)
+    context_on = bool(getattr(getattr(agent_cfg, "context", None), "enabled", False))
+    since = await storage.get_first_event_fetch(agent=agent)
+    if mode_flag == "auto" and (not context_on or since is None):
+        return None, None
+    # Delisting notices stay in force for delisting_blackout_days after publication.
+    lookback = timedelta(days=max(settings.risk.delisting_blackout_days, 2))
+    events = await storage.get_market_events(start - lookback, end + timedelta(days=2), agent=agent)
+    return events, since
 
 
 def _sleeve_spec(settings: Settings, agent: str, name: str | None) -> SleeveSpec | None:
@@ -157,6 +184,15 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 settings.risk_baseline, settings.risk, sleeve.risk_overrides
             )
             initial_cash *= sleeve.weight or 1.0
+        events, guard_since = await _event_calendar(
+            storage, settings, agent, getattr(args, "event_guard", "auto"), start, end
+        )
+        setup.info(
+            "event guard",
+            applied=events is not None,
+            events=len(events) if events is not None else 0,
+            since=str(guard_since) if guard_since else None,
+        )
         backtester = DecisionReplayBacktester(
             risk_settings=risk_settings,
             initial_cash=initial_cash,
@@ -164,6 +200,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             slippage_pct=costs["paper_slippage_pct"],
             min_commission=costs["paper_min_commission"],
             fx_fee_pct=costs["paper_fx_fee_pct"],
+            events=events,
+            event_guard_since=guard_since,
         )
         report = await backtester.replay(decisions, candles_by_symbol, timeframe=timeframe)
 
@@ -212,6 +250,13 @@ def _print_summary(report: dict[str, Any]) -> None:
         f"auto exits      : {report['auto_exits']} | risk-rejected: {report['risk_rejected']} "
         f"| holds: {report['holds']}"
     )
+    if report.get("event_guard"):
+        since = report.get("event_guard_since") or "the start"
+        print(
+            f"event guard     : on from {since} — {report.get('event_blocked', 0)} BUY(s) blocked"
+        )
+    else:
+        print("event guard     : off (no stored market context, or --event-guard off)")
     for symbol, stats in report["per_symbol"].items():
         print(
             f"  {symbol:<12} trades={stats['trades']} wins={stats['wins']} "
@@ -268,6 +313,12 @@ def main() -> None:
         choices=list(MODES),
         default="paper",
         help="Book to replay decisions from: paper | demo | real (default paper, §7.78)",
+    )
+    parser.add_argument(
+        "--event-guard",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Replay the §7.18 event guard over stored market events (default auto, §7.82)",
     )
     args = parser.parse_args()
     asyncio.run(run(args))

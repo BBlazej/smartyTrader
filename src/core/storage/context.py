@@ -165,6 +165,18 @@ class ContextMixin:
             rows = (await session.execute(stmt.order_by(MarketEventRow.at))).scalars().all()
             return [_event_from_row(row) for row in rows]
 
+    async def get_first_event_fetch(self, agent: str | None = None) -> datetime | None:
+        """When this book first stored any market event (UTC) — the replay guard's start."""
+        from sqlalchemy import func
+
+        async with await self._session() as session:
+            stmt = select(func.min(MarketEventRow.fetched_at))
+            scoped = self._agent_scope(agent)
+            if scoped is not None:
+                stmt = stmt.where(MarketEventRow.agent == scoped)
+            first = (await session.execute(stmt)).scalar()
+            return _aware(first) if first is not None else None
+
     # ── Sentiment ─────────────────────────────────────────
 
     async def store_sentiment(

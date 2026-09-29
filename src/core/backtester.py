@@ -27,6 +27,12 @@ daily stock series land near ~252 trading periods instead of the nominal 365 tha
 overstates stock Sharpe relative to crypto; sparse/short curves fall back to the
 nominal timeframe table.
 
+**Event guard (§7.82):** given the stored market events (§7.18), replayed BUYs pass the
+same :meth:`RiskEngine.check_event_guard` as live — macro/earnings blackouts and
+delisting notices around each decision's own timestamp. It applies only from
+``event_guard_since`` on (the first time context data was stored): before that the
+live agent had no guard either, and an empty calendar must not read as a quiet one.
+
 Metrics: total return vs buy-and-hold benchmark, win rate, avg win/loss, max drawdown,
 Sharpe, per-symbol breakdown. The CLI lives in ``scripts/backtest.py``.
 """
@@ -35,18 +41,29 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
 import structlog
 
 from ..analysis.baselines import baseline_returns, best_baseline
 from ..analysis.candles import timeframe_delta
+from ..data.context.base import base_asset
 from ..execution.paper_executor import PaperExecutor
 from .config import RiskSettings
+from .context import EVENT_LOOKBACK
 from .costs import CostModel
 from .decision_pipeline import buy_cost_factor, calculate_quantity, exit_level_breach
-from .models import OHLCV, Action, OrderSide, PortfolioState, TradeSignal
+from .models import (
+    OHLCV,
+    Action,
+    EventKind,
+    MarketEvent,
+    OrderSide,
+    PortfolioState,
+    SymbolContext,
+    TradeSignal,
+)
 from .risk_engine import RiskEngine
 
 logger = structlog.get_logger()
@@ -132,6 +149,11 @@ class BacktestReport:
     baselines_pct: dict[str, float | None] = field(default_factory=dict)
     best_baseline: str | None = None
     beats_best_baseline: bool | None = None
+    # §7.82: whether replayed BUYs passed the event guard, from when, and how many it
+    # refused (also counted in ``risk_rejected``).
+    event_guard: bool = False
+    event_guard_since: str | None = None
+    event_blocked: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -149,6 +171,8 @@ class DecisionReplayBacktester:
         slippage_pct: float = 0.0,
         min_commission: float = 0.0,
         fx_fee_pct: float = 0.0,
+        events: list[MarketEvent] | None = None,
+        event_guard_since: datetime | None = None,
     ) -> None:
         # Fresh engine/executor per run: the replay must never observe live state, and
         # two runs must not share trackers. The engine's clock follows the replay
@@ -180,6 +204,14 @@ class DecisionReplayBacktester:
         # Latest candle close per symbol as the timeline walks — lets decisions price
         # symbols with no open position.
         self._last_close: dict[str, float] = {}
+        # §7.82 event guard: None = off (no calendar); a list — even empty — = on.
+        self._events = sorted(events, key=lambda e: e.at) if events is not None else None
+        self._guard_since = (
+            event_guard_since.replace(tzinfo=UTC)
+            if event_guard_since is not None and event_guard_since.tzinfo is None
+            else event_guard_since
+        )
+        self._event_blocked = 0
 
     # ── Public API ────────────────────────────────────────────
 
@@ -291,6 +323,13 @@ class DecisionReplayBacktester:
         if risk.verdict.value == "rejected":
             self._risk_rejected += 1
             return
+        guard_context = self._event_context(decision)
+        if guard_context is not None:
+            guard = self._risk_engine.check_event_guard(signal, guard_context)
+            if guard.verdict.value == "rejected":
+                self._risk_rejected += 1
+                self._event_blocked += 1
+                return
 
         order = await self._fill(signal, _order_side(signal.action), quantity, price)
         if order is not None and order.status != "filled":
@@ -299,6 +338,29 @@ class DecisionReplayBacktester:
             logger.debug(
                 "replay order rejected by executor", symbol=decision.symbol, reason=order.reason
             )
+
+    def _event_context(self, decision: ReplayDecision) -> SymbolContext | None:
+        """The calendar a live BUY at this moment would have seen (§7.82), or ``None``."""
+        if self._events is None or decision.action != Action.BUY.value:
+            return None
+        ts = decision.timestamp
+        ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+        if self._guard_since is not None and ts < self._guard_since:
+            return None  # decided before the live agent had any context
+        asset = base_asset(decision.symbol)
+        window_start, window_end = ts - EVENT_LOOKBACK, ts + EVENT_LOOKBACK
+        events = [
+            e
+            for e in self._events
+            if window_start <= e.at <= window_end
+            and (e.kind is EventKind.MACRO or (e.kind is EventKind.EARNINGS and e.asset == asset))
+        ]
+        notices = [
+            e
+            for e in self._events
+            if e.kind is EventKind.DELISTING and e.asset == asset and e.at <= ts + timedelta(days=1)
+        ]
+        return SymbolContext(symbol=decision.symbol, now=ts, events=events, notices=notices)
 
     async def _fill(self, signal: TradeSignal, side: OrderSide, quantity: float, price: float):
         order = await self._executor.place_order(
@@ -455,6 +517,9 @@ class DecisionReplayBacktester:
             },
             best_baseline=best[0] if best else None,
             beats_best_baseline=(total_return_pct > best[1] * 100.0) if best else None,
+            event_guard=self._events is not None,
+            event_guard_since=self._guard_since.isoformat() if self._guard_since else None,
+            event_blocked=self._event_blocked,
         )
 
 

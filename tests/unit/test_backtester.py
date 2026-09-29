@@ -61,6 +61,8 @@ def _backtester(**kwargs: object) -> DecisionReplayBacktester:
         slippage_pct=float(kwargs.pop("slippage_pct", 0.0)),
         min_commission=float(kwargs.pop("min_commission", 0.0)),
         fx_fee_pct=float(kwargs.pop("fx_fee_pct", 0.0)),
+        events=kwargs.pop("events", None),  # type: ignore[arg-type]
+        event_guard_since=kwargs.pop("event_guard_since", None),  # type: ignore[arg-type]
     )
 
 
@@ -307,3 +309,66 @@ class TestNoLookAhead:
         report = await _backtester().replay(decisions, candles, timeframe="1d")
         assert report.auto_exits == 1
         assert report.per_symbol["X"]["realized_pnl"] == pytest.approx(-100.0)  # 10 × (90−100)
+
+
+class TestReplayEventGuard:
+    """§7.82: replayed BUYs pass the §7.18 event guard over the stored calendar."""
+
+    @staticmethod
+    def _fomc(day: int, hour: int):
+        from src.core.models import EventKind, MarketEvent
+
+        return MarketEvent(
+            source="config", kind=EventKind.MACRO, at=_ts(day, hour), title="FOMC", currency="USD"
+        )
+
+    async def _run(self, decisions, **kwargs):
+        candles = {"X/EUR": _candles([100.0, 100.0, 100.0, 100.0])}
+        return await _backtester(**kwargs).replay(decisions, candles, timeframe="1d")
+
+    async def test_buy_inside_blackout_is_blocked(self) -> None:
+        buy = ReplayDecision(_ts(2, 12), "X/EUR", "buy", 0.8, stop_loss=90.0)
+        report = await self._run([buy], events=[self._fomc(2, 13)])
+        assert report.event_guard is True
+        assert report.event_blocked == 1 and report.risk_rejected == 1
+        assert report.final_equity == pytest.approx(10_000.0)
+
+    async def test_buy_outside_blackout_trades(self) -> None:
+        buy = ReplayDecision(_ts(2, 12), "X/EUR", "buy", 0.8, stop_loss=90.0)
+        report = await self._run([buy], events=[self._fomc(3, 13)])
+        assert report.event_blocked == 0 and report.risk_rejected == 0
+
+    async def test_decisions_before_guard_since_are_not_judged(self) -> None:
+        buy = ReplayDecision(_ts(2, 12), "X/EUR", "buy", 0.8, stop_loss=90.0)
+        report = await self._run([buy], events=[self._fomc(2, 13)], event_guard_since=_ts(3))
+        assert report.event_blocked == 0
+        assert report.event_guard_since == _ts(3).isoformat()
+
+    async def test_delisting_notice_blocks_that_asset_only(self) -> None:
+        from src.core.models import EventKind, MarketEvent
+
+        notice = MarketEvent(
+            source="okx", kind=EventKind.DELISTING, at=_ts(1), title="delist X", asset="X"
+        )
+        candles = {"X/EUR": _candles([100.0] * 4), "Y/EUR": _candles([100.0] * 4)}
+        decisions = [
+            ReplayDecision(_ts(2, 12), "X/EUR", "buy", 0.8, stop_loss=90.0),
+            ReplayDecision(_ts(2, 12), "Y/EUR", "buy", 0.8, stop_loss=90.0),
+        ]
+        report = await _backtester(events=[notice]).replay(decisions, candles, timeframe="1d")
+        assert report.event_blocked == 1
+        assert report.per_symbol == {}  # Y opened, nothing closed yet
+        assert report.final_equity == pytest.approx(10_000.0)
+
+    async def test_sells_are_never_blocked(self) -> None:
+        decisions = [
+            ReplayDecision(_ts(1, 12), "X/EUR", "buy", 0.8, stop_loss=90.0),
+            ReplayDecision(_ts(2, 12), "X/EUR", "sell", 0.8),
+        ]
+        report = await self._run(decisions, events=[self._fomc(2, 13)])
+        assert report.event_blocked == 0 and report.closed_trades == 1
+
+    async def test_no_calendar_means_guard_off(self) -> None:
+        buy = ReplayDecision(_ts(2, 12), "X/EUR", "buy", 0.8, stop_loss=90.0)
+        report = await self._run([buy])
+        assert report.event_guard is False and report.event_blocked == 0
