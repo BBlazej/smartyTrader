@@ -37,7 +37,7 @@ logger = structlog.get_logger()
 from ..analysis.candles import timeframe_delta
 from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
-from .config import Settings
+from .config import Settings, summarizer_llm_settings
 from .context import ContextReader, ContextRefresher
 from .control_config import parse_and_apply, risk_baseline
 from .db_layout import (
@@ -55,6 +55,7 @@ from .retention import prune_storage
 from .risk_engine import RiskEngine
 from .sleeves import SleeveBook, SleeveRun, sleeve_risk_settings
 from .storage import Storage
+from .summarizer import ContextSummarizer
 from .watchlist import WatchlistManager
 
 
@@ -272,7 +273,16 @@ async def run_agent(
         raise
     log.info("trading book opened", mode=mode, venue=venue, database=database)
 
-    llm_client = llm_client if llm_client is not None else LLMClient(settings.llm)
+    # Market context (§7.18, opt-in). With the summarizer on, the trading and the
+    # summarizer LLM clients share one lock: the local server generates one answer at
+    # a time, and a queued summary must never stretch a decision into its timeout.
+    context_cfg = getattr(getattr(settings, f"{component}_agent", None), "context", None)
+    context_enabled = getattr(context_cfg, "enabled", False) is True
+    summarizer_cfg = context_cfg.summarizer if context_enabled else None
+    if summarizer_cfg is not None and not summarizer_cfg.enabled:
+        summarizer_cfg = None
+    llm_lock = asyncio.Lock() if summarizer_cfg is not None else None
+    llm_client = llm_client if llm_client is not None else LLMClient(settings.llm, lock=llm_lock)
     risk_engine = RiskEngine(settings.risk)
 
     # Tag this run's order/portfolio rows with the executor's venue (§7.61), so a
@@ -298,14 +308,14 @@ async def run_agent(
     # stays hygienic — plus a scheduled pass while running (registered below).
     await prune_storage(storage, settings.storage, mode=mode)
 
-    # Market context (§7.18, opt-in): providers feed the context tables on their
-    # own cadence; every pipeline reads them per decision (prompt + event guard).
-    # Off → no reader, no providers, no HTTP client: behavior exactly as before.
-    context_cfg = getattr(getattr(settings, f"{component}_agent", None), "context", None)
+    # Providers feed the context tables on their own cadence; every pipeline reads
+    # them per decision (prompt + event guard). Off → no reader, no providers, no
+    # HTTP client, no summarizer: behavior exactly as before.
     context_reader: ContextReader | None = None
     context_refresher: ContextRefresher | None = None
     context_http = None
-    if getattr(context_cfg, "enabled", False) is True:
+    summarizer: ContextSummarizer | None = None
+    if context_enabled:
         from ..data.context import build_context_providers
 
         context_providers, context_http = build_context_providers(
@@ -315,6 +325,16 @@ async def run_agent(
         context_refresher = ContextRefresher(
             storage=storage, providers=context_providers, component=component
         )
+        if summarizer_cfg is not None:
+            summarizer = ContextSummarizer(
+                storage=storage,
+                llm_client=LLMClient(
+                    summarizer_llm_settings(settings.llm, summarizer_cfg.llm_overrides),
+                    lock=llm_lock,
+                ),
+                settings=summarizer_cfg,
+                component=component,
+            )
 
     pipeline = DecisionPipeline(
         provider=provider,
@@ -497,16 +517,32 @@ async def run_agent(
         # Before the first cycle (after the watchlist, so dynamic symbols get news).
         await _refresh_context()
 
-    async def _close_context() -> None:
-        if context_http is not None:
+    summarize = None
+    if summarizer is not None:
+
+        async def _summarize() -> None:
             try:
-                await context_http.aclose()
+                symbols = list(getattr(agent, "symbols", None) or _core_symbols())
+                await summarizer.run(symbols)
+            except Exception as exc:  # noqa: BLE001 - never halts trading (fail-soft job)
+                log.warning("context summarizer pass failed", error=str(exc))
+
+        summarize = _summarize
+
+    async def _close_context() -> None:
+        closers = [context_http.aclose] if context_http is not None else []
+        if summarizer is not None:
+            closers.append(summarizer.close)
+        for close in closers:
+            try:
+                await close()
             except Exception as exc:  # noqa: BLE001
-                log.warning("context HTTP client close failed", error=str(exc))
+                log.warning("context client close failed", error=str(exc))
 
     if run_once:
         # Explicit single-cycle mode: one full cycle, then a clean shutdown.
         # A failing cycle propagates so the operator sees a non-zero exit code.
+        # The summarizer is a background batch job — it has no place in one cycle.
         log.info("running a single cycle (--once) then exiting")
         try:
             await agent.run_cycle()
@@ -544,6 +580,11 @@ async def run_agent(
         manager.schedule_cycle(
             context_refresh, context_cfg.refresh_minutes, job_id="context_refresh"
         )
+    if summarize is not None:
+        manager.schedule_cycle(
+            summarize, summarizer_cfg.refresh_minutes, job_id="context_summarize"
+        )
+    summarize_task: asyncio.Task | None = None
 
     # Control API (§7.15 P2): in-process FastAPI server when explicitly enabled.
     # Fail-soft — a port clash must never take the trading loop down with it.
@@ -584,6 +625,10 @@ async def run_agent(
             await agent.run_cycle()
         except Exception as exc:  # noqa: BLE001
             log.warning("initial cycle failed; scheduled cycles will continue", error=str(exc))
+        if summarize is not None:
+            # First cards right after the first cycle, not one full interval later;
+            # the shared LLM lock keeps it from overlapping a decision.
+            summarize_task = asyncio.create_task(summarize())
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
@@ -596,6 +641,8 @@ async def run_agent(
             except (TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
                 control_task.cancel()
         manager.shutdown()
+        if summarize_task is not None and not summarize_task.done():
+            summarize_task.cancel()
         await agent.shutdown()
         await _close_context()
         # Release the data provider / execution adapter (the ccxt client owns an

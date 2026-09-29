@@ -6,8 +6,9 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 import structlog
@@ -19,6 +20,8 @@ from .models import TradeSignal
 # structlog like the rest of the codebase — safety-relevant LLM calls must land
 # in the configured renderers, not bypass them via stdlib logging (§7.19 nit).
 logger = structlog.get_logger()
+
+T = TypeVar("T")
 
 
 # JSON schema for the TradeSignal. Sent as the ``response_format`` so the LLM
@@ -65,8 +68,11 @@ class LLMClient:
     #: Metrics of the most recent ``ask_trade_signal`` call (§7.69).
     last_metrics: LLMCallMetrics | None = None
 
-    def __init__(self, settings: LLMSettings) -> None:
+    def __init__(self, settings: LLMSettings, lock: asyncio.Lock | None = None) -> None:
         self.settings = settings
+        # §7.18: one lock shared by every client of the same local server (trading +
+        # summarizer), so their generations never run concurrently in this process.
+        self._lock = lock
         # Resolve the chat-completions URL once instead of slicing the configured
         # endpoint per request: the old ``rsplit("/v1")`` + re-append dance worked
         # only for the shipped config shape (§7.19).
@@ -110,69 +116,9 @@ class LLMClient:
 
         for attempt in range(1, self.settings.max_retries + 1):
             try:
-                payload: dict[str, Any] = {
-                    "model": self.settings.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": self.settings.temperature,
-                    "max_tokens": self.settings.max_tokens,
-                }
-
-                # Optional determinism knob (§7.33) — omitted when unset so the
-                # provider default applies.
-                if self.settings.seed is not None:
-                    payload["seed"] = self.settings.seed
-
-                if effective_schema:
-                    payload["response_format"] = {
-                        "type": "json_schema",
-                        "json_schema": effective_schema,
-                    }
-
-                resp = await self._client.post(self._chat_url, json=payload)
-                resp.raise_for_status()
-
-                data = resp.json()
-                choice = data["choices"][0]
-                raw_content = choice["message"]["content"]
-                # Token usage of the winning completion (§7.69); LM Studio serves
-                # the OpenAI-compatible ``usage`` block, but older builds may not.
-                usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-                attempt_latency_ms = (time.perf_counter() - call_started) * 1000.0
-                if choice.get("finish_reason") == "length":
-                    # Cut off at max_tokens — usually a long reasoning block ate
-                    # the budget before the JSON (§7.57). Name it in the log so
-                    # the fix (raise max_tokens) is obvious.
-                    logger.warning(
-                        "llm_response_truncated",
-                        max_tokens=self.settings.max_tokens,
-                        attempt=attempt,
-                    )
-
-                # Size guard (§7.33): a runaway generation must fail the attempt
-                # (retry → eventual HOLD fallback), never reach the parser.
-                limit = self.settings.max_response_chars
-                if limit > 0 and len(raw_content) > limit:
-                    raise ValueError(
-                        f"LLM response too large: {len(raw_content)} chars > limit {limit}"
-                    )
-
-                # Audit trail (§3.3 / §7.8): the *full* prompt + response behind
-                # every live decision, not just the parsed action.
-                logger.info(
-                    "llm_exchange",
-                    model=self.settings.model,
-                    attempt=attempt,
-                    latency_ms=round(attempt_latency_ms, 1),
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    response=raw_content,
+                raw_content, usage, attempt_latency_ms = await self._chat(
+                    system_prompt, user_prompt, effective_schema, attempt, call_started
                 )
-
                 signal = _parse_signal(raw_content)
                 self.last_metrics = LLMCallMetrics(
                     latency_ms=attempt_latency_ms,
@@ -185,17 +131,7 @@ class LLMClient:
 
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-                logger.warning(
-                    "llm_attempt_failed",
-                    attempt=attempt,
-                    max_retries=self.settings.max_retries,
-                    error=str(exc),
-                )
-                # Exponential backoff between attempts — hammering a struggling
-                # local server on every retry helped nothing (§7.19).
-                if attempt < self.settings.max_retries and self.settings.retry_backoff_base_seconds:
-                    delay = self.settings.retry_backoff_base_seconds * (2 ** (attempt - 1))
-                    await asyncio.sleep(delay)
+                await self._after_failed_attempt(attempt, exc)
 
         # All retries exhausted — return safe HOLD fallback. Marked so it is
         # persisted for audit but never re-fed into later prompts (§7.8).
@@ -213,6 +149,131 @@ class LLMClient:
             reasoning=f"LLM unavailable after {self.settings.max_retries} retries: {last_error}",
             is_fallback=True,
         )
+
+    async def ask_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        parse: Callable[[str], T],
+        purpose: str = "json",
+    ) -> T | None:
+        """A non-trading JSON completion (§7.18 summarizer) parsed by ``parse``.
+
+        Same transport, retries, backoff, size guard and audit log as
+        :meth:`ask_trade_signal`; ``parse`` raising fails the attempt (retry). Returns
+        ``None`` once retries are exhausted — callers simply keep their old data.
+        Never touches :attr:`last_metrics` (that belongs to trade decisions).
+        """
+        call_started = time.perf_counter()
+        for attempt in range(1, self.settings.max_retries + 1):
+            try:
+                raw_content, _usage, _latency = await self._chat(
+                    system_prompt, user_prompt, None, attempt, call_started, purpose=purpose
+                )
+                return parse(raw_content)
+            except Exception as exc:  # noqa: BLE001
+                await self._after_failed_attempt(attempt, exc, purpose=purpose)
+        logger.error("llm_retries_exhausted", purpose=purpose)
+        return None
+
+    async def _chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any] | None,
+        attempt: int,
+        call_started: float,
+        purpose: str = "trade_signal",
+    ) -> tuple[str, dict[str, Any], float]:
+        """One chat-completions request → ``(raw content, usage, latency ms so far)``.
+
+        Serialized through the shared lock when one is set (§7.18): the local server
+        runs one generation at a time, so the summarizer queues behind a decision
+        instead of stretching it towards its timeout.
+        """
+        payload: dict[str, Any] = {
+            "model": self.settings.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": self.settings.temperature,
+            "max_tokens": self.settings.max_tokens,
+        }
+
+        # Optional determinism knob (§7.33) — omitted when unset so the
+        # provider default applies.
+        if self.settings.seed is not None:
+            payload["seed"] = self.settings.seed
+
+        if schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": schema,
+            }
+
+        if self._lock is not None:
+            async with self._lock:
+                resp = await self._client.post(self._chat_url, json=payload)
+        else:
+            resp = await self._client.post(self._chat_url, json=payload)
+        resp.raise_for_status()
+
+        data = resp.json()
+        choice = data["choices"][0]
+        raw_content = choice["message"]["content"]
+        # Token usage of the winning completion (§7.69); LM Studio serves
+        # the OpenAI-compatible ``usage`` block, but older builds may not.
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        attempt_latency_ms = (time.perf_counter() - call_started) * 1000.0
+        if choice.get("finish_reason") == "length":
+            # Cut off at max_tokens — usually a long reasoning block ate
+            # the budget before the JSON (§7.57). Name it in the log so
+            # the fix (raise max_tokens) is obvious.
+            logger.warning(
+                "llm_response_truncated",
+                max_tokens=self.settings.max_tokens,
+                attempt=attempt,
+                purpose=purpose,
+            )
+
+        # Size guard (§7.33): a runaway generation must fail the attempt
+        # (retry → eventual HOLD fallback), never reach the parser.
+        limit = self.settings.max_response_chars
+        if limit > 0 and len(raw_content) > limit:
+            raise ValueError(f"LLM response too large: {len(raw_content)} chars > limit {limit}")
+
+        # Audit trail (§3.3 / §7.8): the *full* prompt + response behind
+        # every live decision, not just the parsed action.
+        logger.info(
+            "llm_exchange",
+            model=self.settings.model,
+            purpose=purpose,
+            attempt=attempt,
+            latency_ms=round(attempt_latency_ms, 1),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response=raw_content,
+        )
+        return raw_content, usage, attempt_latency_ms
+
+    async def _after_failed_attempt(
+        self, attempt: int, exc: Exception, purpose: str = "trade_signal"
+    ) -> None:
+        logger.warning(
+            "llm_attempt_failed",
+            attempt=attempt,
+            max_retries=self.settings.max_retries,
+            purpose=purpose,
+            error=str(exc),
+        )
+        # Exponential backoff between attempts — hammering a struggling
+        # local server on every retry helped nothing (§7.19).
+        if attempt < self.settings.max_retries and self.settings.retry_backoff_base_seconds:
+            delay = self.settings.retry_backoff_base_seconds * (2 ** (attempt - 1))
+            await asyncio.sleep(delay)
 
 
 def _optional_int(value: Any) -> int | None:

@@ -467,6 +467,20 @@ class SummarizerSettings:
         self.llm_overrides: dict[str, Any] = llm
 
 
+def summarizer_llm_settings(base: LLMSettings, overrides: dict[str, Any]) -> LLMSettings:
+    """The summarizer's LLM settings: the trading block with ``overrides`` applied (§7.18).
+
+    A shallow copy, so the endpoint/API key resolved from the environment carry over
+    and nothing written here leaks back into the trading client.
+    """
+    import copy
+
+    derived = copy.copy(base)
+    for name, value in overrides.items():
+        setattr(derived, name, value)
+    return derived
+
+
 class ContextSettings:
     """Market context for one agent (§7.18, CHANGE.md P5). Opt-in: ``enabled: false``.
 
