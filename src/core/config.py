@@ -1116,6 +1116,9 @@ class SaxoExecutionSettings:
         fill_poll_delays: list[float] | None = None,
         # Share-quantity precision: 0 = whole shares.
         amount_decimals: int = 0,
+        # §7.66 step 4: OAuth app (authorization code + rotating refresh tokens) for
+        # unattended runs instead of the 24 h developer token.
+        oauth: dict[str, Any] | None = None,
     ) -> None:
         if environment not in ("sim", "live"):
             raise ValueError("saxo_execution.environment must be 'sim' or 'live'")
@@ -1138,6 +1141,40 @@ class SaxoExecutionSettings:
         self.request_timeout_seconds = float(request_timeout_seconds)
         self.fill_poll_delays: tuple[float, ...] = tuple(float(d) for d in delays)
         self.amount_decimals = int(amount_decimals)
+        self.oauth = SaxoOAuthSettings(**(oauth or {}))
+
+
+class SaxoOAuthSettings:
+    """Saxo OAuth app settings (§7.66 step 4). App key/secret come from the environment
+    (``SAXO_APP_KEY`` / ``SAXO_APP_SECRET``); the token pair lives in ``token_file``."""
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        # Must equal the app's registered redirect URL; scripts/saxo_login.py listens here.
+        redirect_uri: str = "http://localhost:8765/callback",
+        # None → sim.logonvalidation.net / live.logonvalidation.net by environment.
+        auth_base_url: str | None = None,
+        # None → <storage.data_dir>/saxo_<environment>.token.json (0600, gitignored).
+        token_file: str | None = None,
+        refresh_margin_seconds: float = 120.0,
+        # Rotate the pair this often while running — SIM refresh tokens live 40 min
+        # and the stocks agent makes no API calls outside market hours.
+        keepalive_minutes: float = 10.0,
+    ) -> None:
+        if not str(redirect_uri).startswith(("http://", "https://")):
+            raise ValueError("saxo_execution.oauth.redirect_uri must be an http(s) URL")
+        if float(refresh_margin_seconds) < 0 or float(keepalive_minutes) < 0:
+            raise ValueError("saxo_execution.oauth margins/intervals must be >= 0")
+        self.enabled = bool(enabled)
+        self.redirect_uri = str(redirect_uri)
+        self.auth_base_url = auth_base_url or None
+        self.token_file = token_file or None
+        self.refresh_margin_seconds = float(refresh_margin_seconds)
+        self.keepalive_minutes = float(keepalive_minutes)
+
+    def token_path(self, data_dir: str, environment: str) -> Path:
+        return Path(self.token_file or Path(data_dir) / f"saxo_{environment}.token.json")
 
 
 class DashboardSettings:

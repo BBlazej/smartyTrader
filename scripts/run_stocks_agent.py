@@ -8,9 +8,12 @@ wiring: yfinance data + executor selection (paper default, Saxo SIM opt-in).
 Saxo execution (§7.66)
 ----------------------
 :class:`src.execution.saxo_executor.SaxoExecutor` is wired when
-``saxo_execution.enabled`` **and** ``SAXO_ACCESS_TOKEN`` is set (for SIM, the 24 h
-developer token from the Saxo developer portal). ``environment: live`` additionally
-needs ``LIVE_TRADING_ACK`` (§7.41). Anything missing → paper, with a warning.
+``saxo_execution.enabled`` and credentials exist: with ``saxo_execution.oauth.enabled``
+the OAuth app (env ``SAXO_APP_KEY``/``SAXO_APP_SECRET`` + a login stored by
+``python -m scripts.saxo_login``; tokens refresh themselves), otherwise
+``SAXO_ACCESS_TOKEN`` (for SIM, the 24 h developer token from the Saxo developer
+portal). ``environment: live`` additionally needs ``LIVE_TRADING_ACK`` (§7.41).
+Anything missing → paper, with a warning.
 
 XTB demo execution (§7.16)
 --------------------------
@@ -46,6 +49,7 @@ from src.core.db_layout import DEMO, PAPER, REAL
 from src.core.runner import ModeMismatch, RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
 from src.data.xtb_provider import create_xtb_provider
 from src.execution.paper_executor import create_paper_executor
+from src.execution.saxo_auth import SaxoAuthError, SaxoOAuth, TokenStore
 from src.execution.saxo_client import SaxoClient
 from src.execution.saxo_executor import SaxoExecutor
 from src.execution.xtb_client import XApiClient
@@ -54,18 +58,66 @@ from src.monitoring import setup_logging
 
 #: Saxo OpenAPI bearer token (§7.66) — env only, never YAML, never logged.
 SAXO_TOKEN_ENV = "SAXO_ACCESS_TOKEN"
+#: Saxo OAuth app credentials (§7.66 step 4) — env only.
+SAXO_APP_KEY_ENV = "SAXO_APP_KEY"
+SAXO_APP_SECRET_ENV = "SAXO_APP_SECRET"
+
+
+def _saxo_client(settings: Settings, log: object) -> SaxoClient | None:
+    """An authenticated client (OAuth app or developer token), or ``None`` + why."""
+    cfg = settings.saxo_execution
+    if cfg.oauth.enabled:
+        app_key = os.getenv(SAXO_APP_KEY_ENV, "").strip()
+        app_secret = os.getenv(SAXO_APP_SECRET_ENV, "").strip()
+        if not app_key or not app_secret:
+            log.warning(  # type: ignore[attr-defined]
+                f"saxo_execution.oauth.enabled but {SAXO_APP_KEY_ENV}/{SAXO_APP_SECRET_ENV} "
+                "are unset — staying on the paper executor"
+            )
+            return None
+        store = TokenStore(cfg.oauth.token_path(settings.storage.data_dir, cfg.environment))
+        try:
+            stored = store.load()
+        except SaxoAuthError as exc:
+            log.warning(f"{exc} — staying on the paper executor")  # type: ignore[attr-defined]
+            return None
+        if stored is None:
+            log.warning(  # type: ignore[attr-defined]
+                f"no Saxo login stored at {store.path} — run `python -m scripts.saxo_login`; "
+                "staying on the paper executor"
+            )
+            return None
+        oauth = SaxoOAuth(
+            app_key,
+            app_secret,
+            cfg.oauth.redirect_uri,
+            store,
+            environment=cfg.environment,
+            auth_base_url=cfg.oauth.auth_base_url,
+            refresh_margin_seconds=cfg.oauth.refresh_margin_seconds,
+            keepalive_minutes=cfg.oauth.keepalive_minutes,
+            timeout_seconds=cfg.request_timeout_seconds,
+        )
+        return SaxoClient(
+            token_source=oauth,
+            environment=cfg.environment,
+            timeout_seconds=cfg.request_timeout_seconds,
+        )
+    token = os.getenv(SAXO_TOKEN_ENV, "").strip()
+    if not token:
+        log.warning(  # type: ignore[attr-defined]
+            f"saxo_execution.enabled but {SAXO_TOKEN_ENV} is unset — staying on the paper executor"
+        )
+        return None
+    return SaxoClient(
+        token, environment=cfg.environment, timeout_seconds=cfg.request_timeout_seconds
+    )
 
 
 def _saxo_executor(settings: Settings, log: object) -> SaxoExecutor | None:
     """The Saxo executor when fully configured, else ``None`` (stay on paper, say why)."""
     cfg = getattr(settings, "saxo_execution", None)
     if cfg is None or not cfg.enabled:
-        return None
-    token = os.getenv(SAXO_TOKEN_ENV, "").strip()
-    if not token:
-        log.warning(  # type: ignore[attr-defined]
-            f"saxo_execution.enabled but {SAXO_TOKEN_ENV} is unset — staying on the paper executor"
-        )
         return None
     if cfg.environment == "live" and not live_trading_acknowledged():
         log.warning(  # type: ignore[attr-defined]
@@ -74,10 +126,15 @@ def _saxo_executor(settings: Settings, log: object) -> SaxoExecutor | None:
             f"{LIVE_TRADING_ACK_ENV}={LIVE_TRADING_ACK_PHRASE} to trade the live account."
         )
         return None
-    client = SaxoClient(
-        token, environment=cfg.environment, timeout_seconds=cfg.request_timeout_seconds
+    client = _saxo_client(settings, log)
+    if client is None:
+        return None
+    log.info(  # type: ignore[attr-defined]
+        "using Saxo executor via OpenAPI",
+        environment=cfg.environment,
+        url=client.base_url,
+        auth="oauth" if cfg.oauth.enabled else "developer token",
     )
-    log.info("using Saxo executor via OpenAPI", environment=cfg.environment, url=client.base_url)  # type: ignore[attr-defined]
     return SaxoExecutor(
         client,
         venue=f"saxo-{cfg.environment}",

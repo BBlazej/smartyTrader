@@ -10,8 +10,9 @@ checked 2026-09-27):
 
 * Gateways: SIM ``https://gateway.saxobank.com/sim/openapi``, LIVE
   ``https://gateway.saxobank.com/openapi``. Auth is an OAuth bearer token in the
-  ``Authorization`` header — for SIM a 24 h developer token from the portal; unattended
-  runs need an OAuth app with refresh tokens (PLAN §7.66 follow-up).
+  ``Authorization`` header — for SIM a 24 h developer token from the portal, or (for
+  unattended runs) a :class:`~src.execution.saxo_auth.SaxoOAuth` token source whose
+  token is fetched per request, refreshed before expiry and retried once after a 401.
 * Accounts ``GET /port/v1/accounts/me`` → ``Data[]`` (``AccountKey``, ``AccountId``,
   ``ClientKey``, ``Currency``, ``Active``); balance ``GET /port/v1/balances``
   (``AccountKey`` + ``ClientKey``) → ``CashBalance``, ``Currency``, ``TotalValue``.
@@ -35,15 +36,27 @@ The token is never logged and never part of an error message.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import structlog
+
+from .saxo_auth import SaxoAuthError
 
 logger = structlog.get_logger()
 
 SIM_BASE_URL = "https://gateway.saxobank.com/sim/openapi"
 LIVE_BASE_URL = "https://gateway.saxobank.com/openapi"
+
+
+class TokenSource(Protocol):
+    """Supplies bearer tokens (``SaxoOAuth``): a valid one per call, and a 401 hook."""
+
+    async def access_token(self) -> str: ...
+
+    async def invalidate(self) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 class SaxoApiError(RuntimeError):
@@ -70,27 +83,58 @@ class SaxoClient:
 
     def __init__(
         self,
-        access_token: str,
+        access_token: str | None = None,
         *,
+        token_source: TokenSource | None = None,
         environment: str = "sim",
         timeout_seconds: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if environment not in ("sim", "live"):
             raise ValueError("Saxo environment must be 'sim' or 'live'")
-        if not access_token:
-            raise ValueError("a Saxo access token is required")
+        if not access_token and token_source is None:
+            raise ValueError("a Saxo access token or an OAuth token source is required")
         self.environment = environment
         self.base_url = SIM_BASE_URL if environment == "sim" else LIVE_BASE_URL
+        self._token_source = token_source
+        headers = {"Accept": "application/json"}
+        if token_source is None:
+            headers["Authorization"] = f"Bearer {access_token}"
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            headers=headers,
             timeout=timeout_seconds,
             transport=transport,
         )
 
     async def close(self) -> None:
         await self._http.aclose()
+        if self._token_source is not None:
+            await self._token_source.close()
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        json: dict[str, Any] | None,
+    ) -> httpx.Response:
+        """One request; with a token source, a 401 forces one refresh + retry."""
+        if self._token_source is None:
+            return await self._http.request(method, path, params=params, json=json)
+        for attempt in (1, 2):
+            token = await self._token_source.access_token()
+            response = await self._http.request(
+                method,
+                path,
+                params=params,
+                json=json,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if response.status_code != 401 or attempt == 2:
+                return response
+            await self._token_source.invalidate()
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def _request(
         self,
@@ -101,9 +145,11 @@ class SaxoClient:
         json: dict[str, Any] | None = None,
     ) -> Any:
         try:
-            response = await self._http.request(method, path, params=params, json=json)
+            response = await self._send(method, path, params, json)
         except httpx.HTTPError as exc:
             raise SaxoApiError(f"{method} {path} failed: {type(exc).__name__}: {exc}") from exc
+        except SaxoAuthError as exc:  # expired login etc. — the executor's usual error path
+            raise SaxoApiError(f"{method} {path} not authorized: {exc}") from exc
         payload: Any = None
         if response.content:
             try:

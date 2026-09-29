@@ -385,3 +385,14 @@ saxo_execution:
   symbol_map:
     AAPL: "AAPL:xnas"
     MSFT: "MSFT:xnas"
+  # OAuth app for unattended runs (§7.66 step 4) instead of the 24 h developer token:
+  # SAXO_APP_KEY / SAXO_APP_SECRET in .env, then `python -m scripts.saxo_login` once.
+  # The runner refreshes the rotating token pair itself (keep-alive every
+  # keepalive_minutes — SIM refresh tokens live 40 min). Token file: 0600, gitignored.
+  oauth:
+    enabled: false
+    redirect_uri: "http://localhost:8765/callback"   # = the app's registered redirect URL
+    auth_base_url: null           # null → sim/live.logonvalidation.net by environment
+    token_file: null              # null → data/saxo_<environment>.token.json
+    refresh_margin_seconds: 120
+    keepalive_minutes: 10

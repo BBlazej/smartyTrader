@@ -51,6 +51,8 @@ services:
       <<: *agent-env
       # The names the runner actually reads; empty → paper executor.
       SAXO_ACCESS_TOKEN: "${SAXO_ACCESS_TOKEN:-}"   # §7.66
+      SAXO_APP_KEY: "${SAXO_APP_KEY:-}"             # §7.66 OAuth (token pair on agent-data)
+      SAXO_APP_SECRET: "${SAXO_APP_SECRET:-}"
       XTB_ACCOUNT_ID: "${XTB_ACCOUNT_ID:-}"
       XTB_ACCOUNT_PASSWORD: "${XTB_ACCOUNT_PASSWORD:-}"
     volumes: *agent-volumes

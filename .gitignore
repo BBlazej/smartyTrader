@@ -30,3 +30,6 @@ data/*.sqlite
 data/backups/
 !data/.gitkeep
 data/*.runner.lock
+# Saxo OAuth token pairs (§7.66) — secrets
+data/*.token.json
+data/*.token.json.tmp
