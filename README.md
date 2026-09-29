@@ -53,7 +53,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1274 tests, no network needed (live smokes are opt-in:
+pytest                      # 1302 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -134,6 +134,7 @@ src/
 │   ├── ccxt_executor.py      # Keyed ccxt spot orders — OKX demo, live only with §7.41 ack
 │   ├── saxo_executor.py      # Saxo OpenAPI stock orders — SIM first; ledger-capped long-only (§7.66)
 │   ├── saxo_client.py        # Saxo OpenAPI REST client (accounts, instruments, orders, fill audit)
+│   ├── saxo_auth.py          # Saxo OAuth: code grant, rotating refresh tokens, keep-alive (§7.66)
 │   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
 │   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): unofficial ws.xapi.pro relay
 ├── agents/
@@ -162,6 +163,7 @@ scripts/
 ├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
 ├── rebaseline_drawdown.py    # Audited CLI drawdown peak re-baseline — the latch's only exit (§7.53)
 ├── backtest.py               # Decision replay vs fresh historical candles + net baselines; --strategy replays one sleeve (§7.73)
+├── saxo_login.py             # One-time Saxo OAuth login → token pair the stocks runner refreshes (§7.66)
 └── benchmark_llm.py          # LLM decision-latency benchmark on real prompts — p50/p95 + watchlist sizing (§7.69)
 
 config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
@@ -182,7 +184,7 @@ thresholds. Key sections:
 |---|---|
 | `llm` | LM Studio endpoint, model, `timeout_seconds` (whole non-streamed completion; 300), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap, 8192 — *not* the context window, which is set in LM Studio), `max_response_chars` (size guard, keep ≈ 4 × `max_tokens`) |
 | `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped; optional `news_mentions` priority for candidates named in recent news, §7.83), `sleeves` (§7.71: opt-in strategy sleeves — per-sleeve `timeframe`, `playbook` (`swing`/`position`) and `holding` time stop over the same pairs; a symbol is held by one sleeve at a time; each sleeve trades `weight` × allocated capital with its own `risk:` limits, plus an agent-wide `backstop_max_drawdown_pct`), `context` (§7.18: market context — `sentiment`, `macro`, `announcements`, `earnings`, `news` feeds + aliases, `summarizer` with optional `llm` overrides; shipped on for crypto, summarizer off) |
-| `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56), `context` (§7.18 — yfinance earnings + EDGAR feeds, prepared but off) |
+| `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56), `context` (§7.18 — yfinance earnings + EDGAR feeds), `exchanges` + `symbol_exchanges` (§7.66: per-exchange windows for a US + EU universe) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes), event guard (§7.18): `event_guard_enabled`, `event_blackout_before/after_minutes`, `event_guard_min_importance`, `earnings_blackout_days_before`/`_hours_after`, `delisting_blackout_days` |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`. Paper ignores it |
@@ -191,7 +193,7 @@ thresholds. Key sections:
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
-| `saxo_execution` | Saxo OpenAPI stocks execution (§7.66): `enabled` (default false → paper), `environment` (`sim`, or `live` + `LIVE_TRADING_ACK`), `account_key` / `account_currency` (one currency — US stocks from a USD account), `symbol_map` (data → Saxo symbol, e.g. `AAPL: "AAPL:xnas"`), `fill_poll_delays`, `amount_decimals` (0 = whole shares). At most one of `saxo_execution` / `xtb_execution` may be enabled |
+| `saxo_execution` | Saxo OpenAPI stocks execution (§7.66): `enabled` (default false → paper), `environment` (`sim`, or `live` + `LIVE_TRADING_ACK`), `account_key` / `account_currency` (one currency — US stocks from a USD account), `symbol_map` (data → Saxo symbol, e.g. `AAPL: "AAPL:xnas"`), `fill_poll_delays`, `amount_decimals` (0 = whole shares), `oauth` (§7.66: OAuth app instead of the 24 h token — `redirect_uri`, `token_file`, `keepalive_minutes`; login once with `python -m scripts.saxo_login`). At most one of `saxo_execution` / `xtb_execution` may be enabled |
 | `xtb_execution` | XTB **demo** execution via xAPI: `enabled` (default false → paper), `host`, `account_type` (demo|real, validated at startup), `request_timeout_seconds`, `symbol_map` (data → xAPI symbols, e.g. `AAPL: AAPL.US`; §7.59 L8); requires env creds `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` (§7.16) |
 
 ### Environment variables
@@ -204,6 +206,7 @@ thresholds. Key sections:
 | `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: a keyed exchange with `testnet: false` or `xtb_execution.account_type: real` (§7.41) |
 | `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
 | `SAXO_ACCESS_TOKEN` | Saxo OpenAPI bearer token (§7.66; SIM: the 24 h developer token) — used only when `saxo_execution.enabled`; env only, never logged |
+| `SAXO_APP_KEY` / `SAXO_APP_SECRET` | Saxo OAuth app credentials (§7.66 step 4, `saxo_execution.oauth.enabled`) — `scripts/saxo_login.py` stores the token pair, the runner refreshes it |
 | `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
 | `XTB_API_KEY` | *Deprecated* — the old placeholder for §7.16; no longer read by any code |
 
@@ -284,7 +287,7 @@ its API on 2025-03-14**, kept disabled as reference until the Saxo executor land
 notices and RSS news feed a sanitized MARKET CONTEXT prompt section and a deterministic
 entry event guard; an opt-in LLM summarizer writes validated context cards; the dashboard
 has a read-only `/context` page.
-**1274 tests passing at ~95% coverage.**
+**1302 tests passing at ~95% coverage.**
 
 Open work: see `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

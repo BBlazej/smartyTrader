@@ -145,13 +145,14 @@ src/
 │   │                         #  venue_orders policy: crossed BUY limit, market SELL, lot size, order TTL,
 │   │                         #  working_order_sides, dust write-off, fees in outcomes — §7.75)
 │   ├── saxo_executor.py      # Saxo OpenAPI stocks: ledger-capped long-only, whole shares, one currency, audit-log fills (§7.66)
-│   ├── saxo_client.py        # Saxo OpenAPI REST client over httpx (SIM/LIVE gateways, bearer token)
+│   ├── saxo_client.py        # Saxo OpenAPI REST client over httpx (SIM/LIVE gateways, bearer token or OAuth token source)
+│   ├── saxo_auth.py          # SaxoOAuth: authorization-code grant, 0600 token file, rotating refresh, keep-alive (§7.66)
 │   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
 │   └── xtb_client.py         # real xAPI WS client (§7.16) over the unofficial ws.xapi.pro relay; reference only
 ├── agents/
 │   ├── base_agent.py         # BaseTradingAgent: cycle loop, control-row handling, post-process, snapshots, alerts (§7.13)
 │   ├── crypto_agent.py       # thin subclass
-│   └── stocks_agent.py       # thin subclass + weekend/holiday/timezone-aware market-hours guard (§7.10)
+│   └── stocks_agent.py       # thin subclass + weekend/holiday/timezone-aware market-hours guard (§7.10), per-exchange windows (§7.66)
 ├── analysis/                 # feature engineering + prompt building (§7.17, extracted from core)
 │   ├── indicators.py         # compute_indicators + RSI/MACD/Bollinger/ATR helpers (pure)
 │   ├── screener.py           # deterministic universe screening: liquidity floor → daily metrics → volatility band → momentum rank (§7.70)
@@ -870,4 +871,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **1274 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1302 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

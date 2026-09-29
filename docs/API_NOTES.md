@@ -52,8 +52,15 @@ until a SIM run with a real token; verified against the developer portal and the
 - **Gateways:** SIM `https://gateway.saxobank.com/sim/openapi` (free simulation account,
   same API as live), LIVE `https://gateway.saxobank.com/openapi`.
 - **Auth:** `Authorization: Bearer <token>`. SIM developer tokens from the portal last
-  **24 h** — fine for `--once`/manual runs; unattended runs need an OAuth app
-  (authorization-code flow + refresh tokens) — PLAN §7.66 follow-up. Env: `SAXO_ACCESS_TOKEN`.
+  **24 h** — fine for `--once`/manual runs (env `SAXO_ACCESS_TOKEN`). Unattended runs use
+  an OAuth app (`saxo_execution.oauth`, `src/execution/saxo_auth.py`, checked against the
+  portal's "Authorization Code Grant" page 2026-09-29): `GET https://sim.logonvalidation.net/authorize?response_type=code&client_id=<AppKey>&redirect_uri=<AppUrl>&state=…`,
+  then `POST …/token` with HTTP Basic `AppKey:AppSecret` and
+  `grant_type=authorization_code&code=…&redirect_uri=…` → `access_token` (`expires_in`
+  1200), `refresh_token` (`refresh_token_expires_in` 2400 on SIM), `token_type: Bearer`;
+  refresh with `grant_type=refresh_token&refresh_token=…&redirect_uri=…` — the refresh
+  token **rotates**. The LIVE host (`live.logonvalidation.net`) is not shown in the docs'
+  examples, hence configurable (`oauth.auth_base_url`). Env: `SAXO_APP_KEY`/`SAXO_APP_SECRET`.
 - **Accounts/cash:** `GET /port/v1/accounts/me` → `Data[].AccountKey/ClientKey/Currency`;
   `GET /port/v1/balances?AccountKey=&ClientKey=` → `CashBalance`. The executor trades from
   exactly one account (explicit `account_key`, else the unique active one in
