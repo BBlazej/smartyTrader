@@ -8,7 +8,7 @@ This document describes **how the system is built**: module layout, data flow, s
 - **ARCHITECTURE.md** (this file) — architecture: components, data flow, schema, control plane, design decisions
 - [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
 - [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
-- [CHANGE.md](CHANGE.md) — design proposal under discussion (multi-strategy sleeves, allocator, research layer); not implemented
+- [CHANGE.md](CHANGE.md) — multi-strategy design (sleeves, allocator, research layer) — P1/P2/P4/P5 implemented, P3 allocator open
 - `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
 - `review.MD` / `review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
 
@@ -19,7 +19,7 @@ Two independent paper-trading agents sharing a common core:
 | | Crypto Agent | Stocks Agent |
 |---|---|---|
 | **Exchange** | OKX Europe — ccxt `myokx`, EUR pairs (public data; keyed = OKX demo or ack-gated live, §7.41/§7.64) | XTB (demo account; API closed 2025 → Saxo, §7.66) |
-| **Data** | CCXT (OHLCV); news/sentiment — *planned* | xAPI + yfinance (OHLCV); economic calendar — *planned* |
+| **Data** | CCXT (OHLCV); market context (§7.18): Fear & Greed, macro calendar, OKX delisting notices, RSS news | xAPI + yfinance (OHLCV); market context prepared (§7.18: macro calendar, yfinance earnings, EDGAR filings — off, mocked) |
 | **LLM** | LM Studio → Qwen 3.8 27B (`qwen/qwen3.8-27b`) | Same shared LLM client |
 
 Both agents use the same decision pipeline, risk engine, and storage layer — only the data sources and execution adapters differ.
@@ -47,12 +47,16 @@ flowchart TB
         CTRLCFG["control_config.py — safe-override whitelist"]
         BT["backtester.py — decision replay (§7.14)"]
         REHY["rehydration.py + retention.py — startup state & pruning"]
+        CTX["context.py — context refresh job + per-decision reader (§7.18)"]
+        SUMM["summarizer.py — batch news → context cards (§7.18)"]
     end
 
     subgraph data["src/data — providers"]
         CCXTP["ccxt_provider.py"]
         XTBP["xtb_provider.py"]
+        CTXP["context/ — sentiment, calendar, notices, earnings, news"]
     end
+    Feeds["Free context sources (alternative.me, ForexFactory, OKX announcements, RSS/EDGAR)"]
 
     subgraph execution["src/execution"]
         PAPER["paper_executor.py (default)"]
@@ -86,6 +90,12 @@ flowchart TB
     CTRLAPI --> STORE
     CTRLCFG --> CTRLAPI
     REHY --> STORE
+    CTX --> CTXP
+    CTXP --> Feeds
+    CTX --> STORE
+    SUMM --> STORE
+    SUMM --> LLMCLI
+    PIPE --> CTX
 ```
 
 - **Layering**: `agents/` are thin market-specific subclasses of `BaseTradingAgent`; all shared lifecycle lives in `core/runner.py::run_agent` + `agents/base_agent.py` (§7.13). Market quirks hook via `_skip_cycle_reason()`.
@@ -105,8 +115,10 @@ src/
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
 │   ├── watchlist.py          # WatchlistManager: capped/TTL dynamic symbols over the screener; held/core never dropped (§7.70)
 │   ├── sleeves.py            # Strategy sleeves: SleeveBook (ownership from FIFO lots' entry decisions), symbol lock, time stops, SleeveRun (§7.71)
+│   ├── context.py            # ContextRefresher (fail-soft provider job) + ContextReader (SymbolContext per decision) (§7.18)
+│   ├── summarizer.py         # ContextSummarizer: news items → strict ContextCards via LLMClient.ask_json (§7.18)
 │   ├── storage/              # SQLite via SQLAlchemy + aiosqlite (WAL) — package (§7.36):
-│   │                         # models/engine/snapshots/decisions/orders/control/pruning/watchlist mixins,
+│   │                         # models/engine/snapshots/decisions/orders/control/pruning/watchlist/sleeves/context mixins,
 │   │                         # Storage facade composed in storage.py, re-exported from __init__
 │   ├── decision_pipeline.py  # fetch → mark positions → exit-level check → indicators → prompt → LLM → risk gate → execute → persist
 │   │                         # + shared rule functions: exit_level_breach(), calculate_quantity() (§7.14 extraction)
@@ -120,7 +132,10 @@ src/
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (fetch_snapshot + paginated fetch_history + fetch_quote_volumes sweep, §7.70)
-│   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam) + fetch_history
+│   ├── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam) + fetch_history
+│   └── context/              # market-context providers → ContextBatch (§7.18): FearGreedProvider,
+│                             #  ConfigMacroProvider + ForexFactoryProvider, OkxAnnouncementsProvider,
+│                             #  EarningsProvider (yfinance), RssNewsProvider (RSS/Atom, EDGAR)
 ├── execution/
 │   ├── paper_executor.py     # simulated executor (default): fees, slippage, net PnL, update_price marking hook, load_portfolio_state
 │   ├── position_tracker.py   # shared FIFO cost-basis ledger → realized_pnl + closed_entries per entry decision (§7.8)
@@ -141,7 +156,9 @@ src/
 │   ├── indicators.py         # compute_indicators + RSI/MACD/Bollinger/ATR helpers (pure)
 │   ├── screener.py           # deterministic universe screening: liquidity floor → daily metrics → volatility band → momentum rank (§7.70)
 │   ├── baselines.py          # buy & hold / 20-50 MA crossover / cash baselines, net of cost, no look-ahead (§7.73)
-│   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT
+│   ├── context_cards.py      # summarizer prompt (items fenced as data) + parse_context_card (strict, injection checks) (§7.18)
+│   ├── sanitize.py           # safe_label — external strings reduced to plain bounded text before any prompt
+│   └── prompt_builder.py     # build_user_prompt (+ MARKET CONTEXT section, §7.18) + DEFAULT_SYSTEM_PROMPT
 └── monitoring/
     ├── logger.py             # structlog setup
     └── alerts.py             # AlertManager + sinks (logging sink; dedup window)
@@ -189,10 +206,12 @@ sequenceDiagram
     Note over PL: bar timing (§7.56): split off the forming bar; if decide_on_new_bar_only and the latest closed bar is already decided → end cycle (skip_reason), no LLM call
     PL->>PL: compute indicators on closed bars only (RSI, MACD, Bollinger, ATR — hand-rolled, simple averages)
     PL->>EX: read book once (positions + cash) — reused unchanged at the gate
-    PL->>LLM: prompt = market data + YOUR BOOK (symbol position, cash, limit headroom) + last-N decisions with honest outcomes
+    PL->>ST: read market context (§7.18, if enabled): sentiment, events, delisting notices, active card
+    PL->>LLM: prompt = market data + YOUR BOOK (symbol position, cash, limit headroom) + MARKET CONTEXT + last-N decisions with honest outcomes
     LLM-->>PL: TradeSignal JSON (exhausted-retries HOLD flagged is_fallback, never forgeable)
     PL->>ST: persist decision immediately after risk gate (decision_id exists before any fill)
     PL->>RE: evaluate(signal, portfolio, planned_notional = quantity × price)
+    PL->>RE: BUY only — check_event_guard(signal, context) (§7.18; unreadable context → reject)
     alt approved
         PL->>EX: place_order(quantity, stop_loss/take_profit levels, decision_id)
         EX-->>PL: OrderResult (+ realized_pnl / closed_entries on closing fills via PositionTracker)
@@ -216,6 +235,7 @@ Notes:
 - **The pipeline prices, the venue executor executes** (§7.75): the pipeline hands every order a *reference* price (the last close) — exactly what paper fills at. `CcxtExecutor` turns it into a venue order via `venue_orders`: BUY = limit crossed by `entry_offset_pct` (sizing reserves it through `buy_price_factor` → `sizing_cost_model`), SELL = market (an exit must fill; a limit at the bare close rested unfilled on the OKX demo), amounts floored to the lot size, sub-minimum orders never sent. Working orders are aged: past `order_ttl_seconds` reconciliation cancels them, and until then `working_order_sides` stops the pipeline from stacking a second same-side order (exits, close-all, entries). Fees the venue reports go into cost basis / realized PnL, so venue outcomes are net like paper's; a lot-size remainder is written off the ledger, never a position.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
 - **Strategy sleeves** (§7.71, opt-in): the agent runs one `DecisionPipeline` per sleeve (own timeframe, playbook system prompt, `strategy` tag) per symbol, in config order. Right after marking, the pipeline resolves the symbol's owner via `SleeveBook` (open FIFO lots → entry decisions → `llm_decisions.strategy`; unknown → first sleeve). Exit levels still run first and tag the close with the owner; then the owner's **time stop** (`holding.max_hours/max_days`, clock = the oldest lot's decision time) closes like an exit level; a symbol owned by another sleeve ends the run with `skip_reason` (symbol lock — no LLM call). Bar timing and prompt history filter on the sleeve's own rows; the YOUR BOOK section adds the sleeve and its time stop.
+- **Market context** (§7.18, opt-in per agent): after the book read the pipeline asks `ContextReader.for_symbol` for a `SymbolContext` and renders it as the prompt's MARKET CONTEXT section; the risk engine's `event_blackout_reason` is computed first and shown as `ENTRY BLACKOUT` so the model knows a BUY would be refused. After `evaluate` (and the sleeve backstop), an approved BUY passes `check_event_guard`; an unreadable context rejects it. See *Market context* below.
 - Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
 
 ## Key models (`src/core/models.py`)
@@ -268,6 +288,7 @@ Hard-coded, non-negotiable gates in `risk_engine.py` (built Week 2 ✅). `RiskEn
 | Max drawdown | -5% below the **peak-equity** high-water mark (seeded from persisted portfolio snapshots) | Yes | `_check_drawdown` ✅ (§7.5) |
 | Consecutive-losses cooldown | 3 losses → 60-min pause | Yes | `_check_cooldown` |
 | Stop-loss required | Entries (BUY) must include a stop-loss; closes are exempt since §7.9 | No | `_check_stop_loss` |
+| Event guard (§7.18) | No BUY within 120 min before / 60 min after a high-impact macro event, from 1 day before to 24 h after the asset's earnings, or for 90 days after a venue delisting notice; context unreadable → no BUY | Yes (`risk.event_*`, `earnings_*`, `delisting_blackout_days`) | `check_event_guard` (after `evaluate`; pipeline calls it only when context is enabled) |
 
 > The earlier "-5% drawdown → halt for 24h" phrasing is not how the code behaves: there is no time-based halt. The 24-hour-scale protection is the **consecutive-losses cooldown** (3 losses → 60 min; both the streak and the pause are configurable via `consecutive_losses_threshold` / `consecutive_losses_cooldown_minutes`, §7.19).
 
@@ -277,6 +298,7 @@ Additional engine facts:
 - Daily-loss baseline and losing-streak/cooldown are rehydrated from persisted rows by `core/rehydration.py` (§7.7). `_check_daily_loss` rolls the UTC day itself (§7.59 L3) — the post-processing rollover alone left the first check after midnight on yesterday's baseline.
 - The size cap is per **position** (§7.42): `long_exposure(portfolio, symbol)` is added to a BUY's planned notional at the gate, and `calculate_quantity` sizes BUYs to the remaining headroom — repeated entries cannot pyramid past the cap.
 - **Strategy sleeves (§7.71):** each sleeve has its own `RiskEngine` evaluating the **sleeve's book** (`SleeveBook.sleeve_equity`: `weight × base_equity` of the latest `strategy_allocations` row + the sleeve's realized PnL since + unrealized PnL of owned positions; cash = equity − owned market value), so all seven rules run per sleeve with the sleeve's limits (agent `risk:` block + sleeve `risk:` overrides; agent-wide safe-config tightening caps every sleeve). Sizing is additionally clamped to the agent's free cash. The agent engine keeps the portfolio-snapshot-seeded peak for one loose **backstop** (`check_backstop`, `sleeves.backstop_max_drawdown_pct`) on BUYs. Sleeve trackers rehydrate from `sleeve_snapshots` (peak since the allocation, today's first row) and tagged closing fills.
+- **Event guard (§7.18):** calendar data only (`MarketEvent` rows from the YAML list, ForexFactory, OKX notices, yfinance earnings) — never summarizer text. It gates entries only, like every other rule since §7.47; a sleeve applies its own settings (the fields are ordinary `RiskSettings`, overridable per sleeve). Decision replay (§7.14) has no historical events, so the guard does not run in backtests.
 - Sizing + exit-level rules are *shared functions* (`calculate_quantity`, `exit_level_breach` in `decision_pipeline.py`) so live, paper and replay can never drift (§7.14).
 
 ## Control plane (§7.15 P1/P2 — implemented)
@@ -331,6 +353,7 @@ stateDiagram-v2
 
 - **One SQLite file per agent × trading mode (§7.78):** `<storage.data_dir>/<mode>_<agent>.db` (`data/paper_crypto.db`, `data/demo_crypto.db`, `data/real_crypto.db`, …), each run in **WAL mode** so the dashboard can read while its agent writes. The mode is **derived from the executor's venue tag** (`core/db_layout.py`: `paper` → paper; `*-sandbox`/`saxo-sim`/`xtb-demo` → demo; `*-live`/`saxo-live`/`xtb-real` → real; anything else raises `UnknownVenueError`) — never configured, so a typo can't point real trading at a paper file. Every file records `(agent, mode)` in a **`db_identity`** meta table at creation and `Storage` refuses a foreign or unsplit legacy file (`DatabaseIdentityError`). Control-API ports are offset per mode (paper +0 / demo +10 / real +20); `real_*.db` never prunes decisions/orders. `storage.database_path` is the pre-§7.78 shared file, kept only as `scripts/split_database.py`'s source.
 - Trade tables: `market_snapshots`, `llm_decisions`, `orders`, `portfolio_snapshots`; plus `drawdown_resets` (one audited peak re-baseline row per agent — baseline value + timestamp, §7.53), `strategy_allocations` (audited sleeve capital split: agent, venue, cost-basis `base_equity`, `weights_json`, reason — a row per weights change, §7.71), `sleeve_snapshots` (per-cycle sleeve equity/cash/realized/unrealized/open positions — never pruned; seeds each sleeve's peak + daily baseline, §7.71), `sleeve_drawdown_resets` (audited per-sleeve peak re-baseline, PK agent+strategy, §7.71) and `watchlist_entries` (agent-scoped dynamic symbols added by the screener: symbol, source, added_at, expires_at TTL, ranking meta_json; self-expiring, §7.70).
+- **Market-context tables (§7.18, agent-scoped, additive):** `market_events` (source, kind `macro`/`earnings`/`delisting`, asset or NULL = market-wide, currency, `at`, importance, title, url, `dedup_key`), `sentiment_readings` (source, value, label, as_of), `news_items` (feed, url, title, plain-text `body` — summarizer input only, `symbols_json`, `content_hash`) and `context_cards` (validated `card_json`, model, `news_through`, `expires_at` TTL). Writes are idempotent (dedup keys); calendar feeds re-sync their published window so moved/cancelled events stop blocking. Pruned after `storage.context_retention_days` (default 30) by the regular retention pass.
 - **Strategy tag (§7.71):** `llm_decisions.strategy` and `orders.strategy` (nullable, migrated at startup; NULL = no sleeves / legacy) name the sleeve that decided / placed the order (a close is tagged with the *owning* sleeve). Ownership itself is not stored — it is derived from the executor ledger's open lots and these decision rows, so it is exactly as restart-safe as the ledger.
 - **Agent scoping (§7.39, second layer after §7.78):** within one file, `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. Pre-§7.39 rows are backfilled once at migration (decisions/orders by symbol shape — `BASE/QUOTE` → crypto; snapshots by their positions, empty books → crypto). `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
 - **New table — `agent_control`** (control plane, dashboard read/write):
@@ -503,6 +526,33 @@ docker compose up -d --build            # crypto agent + dashboard; backtester: 
 - Secrets enter only via compose environment substitution (`${EXCHANGE_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. The host's LLM server (LM Studio, Unsloth desktop, …) is reached via `host.docker.internal:host-gateway` (override with `LOCAL_LLM_ENDPOINT`).
 - No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
 
+## Market context (§7.18 — CHANGE.md P5, implemented)
+
+```mermaid
+flowchart LR
+    subgraph job["context_refresh job (refresh_minutes, + once before the first cycle)"]
+        P1["FearGreedProvider"]
+        P2["ConfigMacroProvider + ForexFactoryProvider"]
+        P3["OkxAnnouncementsProvider"]
+        P4["EarningsProvider"]
+        P5["RssNewsProvider"]
+    end
+    job -->|ContextBatch, fail-soft per source| DB[("market_events · sentiment_readings · news_items")]
+    DB -->|news items| SUM["ContextSummarizer (context_summarize job, LLM, shared lock)"]
+    SUM -->|strict ContextCard + TTL| CARDS[("context_cards")]
+    DB --> READER["ContextReader.for_symbol"]
+    CARDS --> READER
+    READER -->|SymbolContext| PROMPT["MARKET CONTEXT prompt section (sanitized)"]
+    READER -->|SymbolContext| GUARD["RiskEngine.check_event_guard (BUY only)"]
+```
+
+- **Sources are free and key-less:** alternative.me Fear & Greed (crypto sentiment, daily), the `macro_calendar.events` YAML list (FOMC + ECB decisions, UTC — the reliable base) plus the unofficial ForexFactory weekly JSON (CPI/NFP/… — option (c)), OKX Europe's `announcements-delistings` feed (tickers named in a *delist* title → one `delisting` event per asset), yfinance earnings dates (stocks; mocked only so far) and RSS/Atom feeds (CoinDesk, Cointelegraph, The Block; EDGAR 8-K per-company Atom for stocks). Every source has its own switch under `<agent>.context`.
+- **Fail-soft, off the trade path:** `ContextRefresher` isolates each provider (a dead feed only means older data) and never blocks a cycle; the summarizer is its own scheduled job (skipped under `--once`; first pass right after the first scheduled cycle).
+- **Deterministic matching, bounded input:** news items are matched to traded symbols by the upper-case base asset or configured aliases (whole words), feeds pinned to symbols (EDGAR) skip matching; downloads are byte-capped, XML with a DTD is refused, text is reduced to plain, capped strings.
+- **Prompt-injection defenses (CHANGE.md §7):** raw news text reaches only the summarizer, fenced as untrusted data with markers the text cannot forge. The reply must validate as a `ContextCard` (`extra="forbid"`, bounded lists/strings, `symbol` must match, `as_of` set by us, `sources` must be fed URLs, instruction-shaped catalysts reject the card). The trading prompt renders only card fields, again through `safe_label`, under a header saying context never overrides price evidence. Cards cannot create or gate orders — the guard reads calendar rows only.
+- **One local LLM, one lock:** with the summarizer on, the trading and summarizer `LLMClient`s share an `asyncio.Lock` around the HTTP call, so a digest never runs concurrently with a decision (it may use a smaller `model` via `context.summarizer.llm` — CHANGE.md Q7).
+- **Dashboard:** read-only `/context` page per book — upcoming events, the current market-wide blackout, delisting notices, sentiment, per-source freshness, active cards and recent news.
+
 ## Backtesting (§7.14 — implemented)
 
 Design (Week 6):
@@ -536,7 +586,7 @@ Metrics (CLI summary + `--report` JSON):
 
 - Structured logs for every decision (timestamp, symbol, signal, reasoning, risk verdict, execution result) ✅ `monitoring/logger.py` — console lines render as `[YYYY-MM-DD HH:MM:SS][level] message key=value …` (local wall clock; whitespace-bearing values quoted, tracebacks appended raw), so agent terminal output and `data/agent_*.out.log` stay grep-able
 - Alert dispatch on trades, risk rejections, errors and **LLM outages** ✅ `monitoring/alerts.py` — structlog log sink always; `WebhookAlertSink` (JSON for Slack/Discord/generic or ntfy) when `ALERT_WEBHOOK_URL` is set (§7.51). A fallback HOLD is also the cycle's `last_error`, and the dashboard health card shows the recent LLM-fallback count.
-- LLM audit trail ✅ — full `llm_exchange` structlog event (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
+- LLM audit trail ✅ — full `llm_exchange` structlog event (tagged `purpose=trade_signal|context_card`) (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
 - Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker/compose packaging ✅ (`Dockerfile` + `docker-compose.yml` — §7.15 P5)
 
 ## LM Studio Integration Details
@@ -672,6 +722,20 @@ risk:
   # mark price breaches the levels carried from its entry signal, the pipeline
   # closes it on the next cycle without asking the LLM or the risk gate.
   enforce_exit_levels: true
+  # Event guard (§7.18) — needs <agent>.context.enabled; gates new BUYs, never exits.
+  event_guard_enabled: true
+  event_blackout_before_minutes: 120
+  event_blackout_after_minutes: 60
+  event_guard_min_importance: high
+  earnings_blackout_days_before: 1
+  earnings_blackout_hours_after: 24
+  delisting_blackout_days: 90
+
+# Market context (§7.18) — abridged; see config/settings.yaml for the full blocks.
+# crypto_agent.context: enabled, refresh_minutes 60, lookahead_hours 48, sentiment,
+#   macro (USD, EUR, high), announcements, news (CoinDesk/Cointelegraph/The Block +
+#   aliases), summarizer (off; llm overrides). stocks_agent.context: earnings + EDGAR,
+#   off. macro_calendar: feed_url (ForexFactory) + curated FOMC/ECB events (UTC).
 
 # Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
 # fees/slippage (§7.65). The flat fields are the generic default schedule; a
@@ -804,4 +868,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **797 tests passing at ~94% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1254 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

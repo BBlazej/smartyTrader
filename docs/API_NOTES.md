@@ -107,6 +107,17 @@ until a SIM run with a real token; verified against the developer portal and the
 - **Trading hours:** Warsaw Stock Exchange schedule (09:00–16:30) — already gated
   by the stocks agent's market-hours guard (§7.10).
 
+## Market-context sources (§7.18) — all free, no key
+
+Probed read-only on 2026-09-29; shapes pinned in `tests/unit/test_context_providers.py`, live smokes in `tests/integration/test_context_live.py` (`pytest -m network`).
+
+- **Fear & Greed (alternative.me):** `GET https://api.alternative.me/fng/?limit=2` → `{"data": [{"value": "73", "value_classification": "Greed", "timestamp": "<unix s>"}], "metadata": {"error": null}}`. Updates once a day (00:00 UTC).
+- **ForexFactory weekly calendar (unofficial):** `GET https://nfs.faireconomy.media/ff_calendar_thisweek.json` → list of `{"title", "country" (currency code), "date" (ISO with offset, US Eastern), "impact": High|Medium|Low|Holiday|Non-Economic, "forecast", "previous"}`. Current week only; no guarantee of stability — the YAML `macro_calendar.events` list is the base.
+- **OKX announcements:** `GET https://eea.okx.com/api/v5/support/announcements?annType=announcements-delistings` (types: `/api/v5/support/announcement-types`) → `{"code": "0", "data": [{"details": [{"title", "url", "pTime" (ms), "businessPTime"}], "totalPage"}]}`. The delisting type also carries "crypto migration" notices — only titles containing *delist* count.
+- **RSS:** CoinDesk `https://www.coindesk.com/arc/outboundfeeds/rss/`, Cointelegraph `https://cointelegraph.com/rss`, The Block `https://www.theblock.co/rss.xml` (RSS 2.0, descriptions HTML-escaped).
+- **SEC EDGAR:** per-company Atom `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=<ticker>&type=8-K&count=10&output=atom` — SEC requires a descriptive User-Agent with a contact (`context.http_user_agent`).
+- **Official calendars used for the YAML list:** federalreserve.gov/monetarypolicy/fomccalendars.htm (decision 14:00 ET, day two) and ecb.europa.eu Governing Council calendar (decision 14:15 CET/CEST). bls.gov (CPI/NFP schedules) returns 403 to scripted clients.
+
 ## CCXT general
 
 - All exchange calls go through `ccxt.async_support` (imported lazily in the

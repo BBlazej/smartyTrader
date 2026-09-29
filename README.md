@@ -11,8 +11,8 @@ deterministic risk engine, and one storage layer.
 ## How it works
 
 ```
-fetch data → compute indicators → build prompt (market data + own book + track record) → call LLM
-        → parse TradeSignal → risk check (RiskResult)
+fetch data → compute indicators → build prompt (market data + own book + market context
+        + track record) → call LLM → parse TradeSignal → risk check (RiskResult + event guard)
         → execute if approved → persist (decision / order / portfolio)
 ```
 
@@ -30,6 +30,13 @@ rejected with a reason and nothing is sent to the exchange.
   minimum commission plus FX fee for stocks (§7.65) — so realized PnL (and the
   win/loss the risk engine tracks) is net-of-fee and comparable to the "win rate >
   50% after fees" live-readiness gate.
+- **Knows what is on the calendar (§7.18).** A background job pulls free, key-less
+  context — the crypto Fear & Greed index, scheduled macro events (a curated FOMC/ECB
+  list plus the ForexFactory weekly feed), OKX delisting notices, RSS news — into the
+  DB. The prompt gets a sanitized MARKET CONTEXT section, and a deterministic **event
+  guard** blocks new entries around high-impact events and after a delisting notice
+  (exits are never gated). An optional LLM summarizer turns news into strict,
+  bounded context cards; raw news text never reaches the trading prompt.
 - **Two markets, one core.** The crypto and stocks agents differ only in data
   source and execution adapter; the pipeline, risk engine, storage, and alerts
   are shared.
@@ -46,7 +53,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1086 tests, no network needed (live smokes are opt-in:
+pytest                      # 1254 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -112,10 +119,15 @@ src/
 │   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
 │   ├── watchlist.py          # Capped TTL watchlist manager over the screener (§7.70)
 │   ├── sleeves.py            # Strategy sleeves: ledger-derived ownership, symbol lock, time stops (§7.71)
+│   ├── context.py            # Market context: fail-soft refresh job + per-decision reader (§7.18)
+│   ├── summarizer.py         # Batch LLM news summarizer → validated context cards (§7.18)
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
-│   └── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam)
+│   ├── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam)
+│   └── context/              # Market-context providers (§7.18): Fear & Greed, macro calendar
+│                             #   (YAML + ForexFactory), OKX delisting notices, yfinance
+│                             #   earnings, RSS/Atom news + EDGAR filings
 ├── execution/
 │   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
 │   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
@@ -132,14 +144,16 @@ src/
 │   ├── indicators.py         # compute_indicators: RSI/MACD/Bollinger/ATR (pure, moved from core)
 │   ├── screener.py           # Deterministic universe screening: liquidity/vol/momentum (§7.70)
 │   ├── baselines.py          # Dumb baselines a strategy must beat: buy & hold, 20/50 MA crossover, cash (§7.73)
-│   └── prompt_builder.py     # build_user_prompt + DEFAULT_SYSTEM_PROMPT (moved from core)
+│   ├── context_cards.py      # Summarizer prompt + strict card parser (injection defenses, §7.18)
+│   ├── sanitize.py           # safe_label: plain bounded text for external strings in prompts
+│   └── prompt_builder.py     # build_user_prompt (+ MARKET CONTEXT section) + DEFAULT_SYSTEM_PROMPT
 ├── monitoring/
 │   ├── logger.py             # structlog setup
 │   └── alerts.py             # AlertManager + sinks (Noop)
 └── dashboard/                # Web UI (§7.15 P3/P4): FastAPI + Jinja2/HTMX, reads the WAL DB
     ├── app.py                # Pages + HTMX control endpoints (latch writes; SafeConfigOverrides form)
     ├── views.py              # Pure view-models: win-rate/confidence stats, uPlot shaping, positions
-    └── templates/            # base / overview / decisions / positions / config / _health
+    └── templates/            # base / overview / decisions / positions / context / config / _health
 
 scripts/
 ├── run_crypto_agent.py       # Entry point — crypto-specific factories + shared runner
@@ -167,12 +181,13 @@ thresholds. Key sections:
 | Section | What it controls |
 |---|---|
 | `llm` | LM Studio endpoint, model, `timeout_seconds` (whole non-streamed completion; 300), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap, 8192 — *not* the context window, which is set in LM Studio), `max_response_chars` (size guard, keep ≈ 4 × `max_tokens`) |
-| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped), `sleeves` (§7.71: opt-in strategy sleeves — per-sleeve `timeframe`, `playbook` (`swing`/`position`) and `holding` time stop over the same pairs; a symbol is held by one sleeve at a time; each sleeve trades `weight` × allocated capital with its own `risk:` limits, plus an agent-wide `backstop_max_drawdown_pct`) |
-| `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56) |
-| `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes) |
+| `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped), `sleeves` (§7.71: opt-in strategy sleeves — per-sleeve `timeframe`, `playbook` (`swing`/`position`) and `holding` time stop over the same pairs; a symbol is held by one sleeve at a time; each sleeve trades `weight` × allocated capital with its own `risk:` limits, plus an agent-wide `backstop_max_drawdown_pct`), `context` (§7.18: market context — `sentiment`, `macro`, `announcements`, `earnings`, `news` feeds + aliases, `summarizer` with optional `llm` overrides; shipped on for crypto, summarizer off) |
+| `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56), `context` (§7.18 — yfinance earnings + EDGAR feeds, prepared but off) |
+| `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes), event guard (§7.18): `event_guard_enabled`, `event_blackout_before/after_minutes`, `event_guard_min_importance`, `earnings_blackout_days_before`/`_hours_after`, `delisting_blackout_days` |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
 | `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`. Paper ignores it |
-| `storage` | One SQLite file per agent × trading mode (§7.78): `data_dir/<mode>_<agent>.db`, the mode derived from the executor's venue and guarded by a `(agent, mode)` identity table; WAL mode — concurrent reads while the agent writes. Retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever; `real_*` books never prune), `prune_interval_minutes` |
+| `storage` | One SQLite file per agent × trading mode (§7.78): `data_dir/<mode>_<agent>.db`, the mode derived from the executor's venue and guarded by a `(agent, mode)` identity table; WAL mode — concurrent reads while the agent writes. Retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever; `real_*` books never prune), `prune_interval_minutes`, `context_retention_days` (market-context rows, §7.18) |
+| `macro_calendar` | Scheduled macro events shared by both agents (§7.18): `events` (curated, UTC — FOMC + ECB decisions through 2027) and `feed_url` (ForexFactory weekly JSON; `""` disables) |
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
 | `control_api` | agent-side control API: `enabled` (default false), `host` (loopback), per-agent ports (§7.15) |
 | `dashboard` | web dashboard bind (`host`/`port`, loopback defaults), HTMX `refresh_seconds`, `agents` shown/controlled (§7.15 P3/P4) |
@@ -265,9 +280,13 @@ agent × mode keeps its own file, book, drawdown peak and history; §7.15 P5, §
 execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
 its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
 (PLAN §7.66). Paper stays the default everywhere.
-**1137 tests passing at ~94% coverage.**
+**Market context (§7.18, CHANGE.md P5):** sentiment, macro calendar, venue delisting
+notices and RSS news feed a sanitized MARKET CONTEXT prompt section and a deterministic
+entry event guard; an opt-in LLM summarizer writes validated context cards; the dashboard
+has a read-only `/context` page.
+**1254 tests passing at ~95% coverage.**
 
-Not yet built: news/sentiment + economic-calendar feeds. See `PLAN.md` §7 (Gaps & Next Steps)
+Open work: see `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with
@@ -283,6 +302,6 @@ for the full list — reordered after the full-codebase reviews; detailed findin
 | `ARCHITECTURE.md` | architecture: components, data flow, storage schema, control plane, design decisions (Mermaid diagrams) |
 | `HISTORY.md` | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
 | `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
-| `CHANGE.md` | design proposal under discussion: multi-strategy sleeves, capital allocator, research layer (news/screener) |
+| `CHANGE.md` | multi-strategy design: sleeves, capital allocator, research layer (P1/P2/P4/P5 implemented; P3 allocator open) |
 | `AGENTS.md` | agent-facing facts & rules for coding agents |
 | `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase architecture & code reviews |
