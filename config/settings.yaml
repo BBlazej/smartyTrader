@@ -86,6 +86,47 @@ crypto_agent:
         holding: {max_days: 28}
         weight: 0.5
         risk: {max_position_pct: 0.10, daily_loss_limit_pct: 0.04, max_drawdown_pct: 0.15, max_stop_distance_pct: 0.20}
+  # Market context (§7.18, CHANGE.md P5). A background job (refresh_minutes) pulls
+  # free, key-less sources into the DB; every decision's prompt gets a MARKET CONTEXT
+  # section, and the risk engine's event guard (risk.event_* below) blocks new BUYs
+  # around high-impact macro events and after a venue delisting notice. Exits are
+  # never gated. Raw news text never reaches the trading prompt — only the
+  # summarizer's validated, bounded context cards do.
+  context:
+    enabled: true
+    refresh_minutes: 60
+    lookahead_hours: 48           # upcoming events shown in the prompt
+    sentiment: {enabled: true}    # crypto Fear & Greed (alternative.me), daily
+    macro:                        # events from `macro_calendar` below
+      enabled: true
+      currencies: [USD, EUR]      # FOMC/CPI/NFP and ECB move crypto too
+      min_importance: high
+    announcements: {enabled: true}   # OKX Europe delisting notices
+    news:
+      enabled: true               # RSS ingest — stored for the summarizer only
+      feeds:
+        - {name: coindesk, url: "https://www.coindesk.com/arc/outboundfeeds/rss/"}
+        - {name: cointelegraph, url: "https://cointelegraph.com/rss"}
+        - {name: theblock, url: "https://www.theblock.co/rss.xml"}
+      # The base asset (BTC, ETH, …) always matches as an upper-case word; these
+      # add case-insensitive names.
+      aliases:
+        BTC/EUR: [bitcoin]
+        ETH/EUR: [ethereum, ether]
+        SOL/EUR: [solana]
+        NEAR/EUR: [near protocol]
+    # LLM digest of each symbol's news → context cards (TTL'd, validated). Off until
+    # the second-model question is settled (CHANGE.md Q7): with it on, the summarizer
+    # shares the local server with trading decisions (one lock — never concurrent).
+    # `llm:` may override model/max_tokens/timeout_seconds/… of the llm block above.
+    summarizer:
+      enabled: false
+      refresh_minutes: 240
+      card_ttl_hours: 12
+      lookback_hours: 24
+      max_items_per_card: 8
+      max_symbols_per_run: 5
+      llm: {max_tokens: 4096}
 
 stocks_agent:
   enabled: false
@@ -122,6 +163,23 @@ stocks_agent:
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
   decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)
+  # Market context (§7.18) — prepared for when stocks trade (Saxo, §7.66); tested
+  # with mocks only so far. Earnings dates via yfinance drive the earnings blackout;
+  # SEC EDGAR 8-K filings (per-company Atom feeds) feed the summarizer.
+  context:
+    enabled: false
+    macro: {enabled: true, currencies: [USD], min_importance: high}
+    earnings: {enabled: true, lookahead_days: 45}
+    news:
+      enabled: true
+      feeds:
+        - name: edgar_aapl
+          url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=AAPL&type=8-K&count=10&output=atom"
+          symbols: [AAPL]
+        - name: edgar_msft
+          url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=MSFT&type=8-K&count=10&output=atom"
+          symbols: [MSFT]
+    summarizer: {enabled: false}
 
 risk:
   max_position_pct: 0.10
@@ -142,6 +200,15 @@ risk:
   # mark price breaches the levels carried from its entry signal, the pipeline
   # closes it on the next cycle without asking the LLM or the risk gate.
   enforce_exit_levels: true
+  # Event guard (§7.18) — needs <agent>.context.enabled. Deterministic, calendar data
+  # only; gates new BUYs, never exits. Sleeves may override these in their risk block.
+  event_guard_enabled: true
+  event_blackout_before_minutes: 120   # no entry this long before a macro event…
+  event_blackout_after_minutes: 60     # …or this long after it
+  event_guard_min_importance: high     # low | medium | high
+  earnings_blackout_days_before: 1     # stocks: no entry the day before earnings…
+  earnings_blackout_hours_after: 24    # …until a day after the release
+  delisting_blackout_days: 90          # no entry after the venue announced a delisting
 
 # Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
 # fees/slippage (§7.65). The flat fields are the generic default schedule; a
@@ -168,6 +235,38 @@ execution:
       paper_fee_pct: 0.0008
       paper_min_commission: 1.0
       paper_fx_fee_pct: 0.0025
+
+# Scheduled macro events for the market context + event guard (§7.18), shared by
+# both agents (each picks currencies in <agent>.context.macro). `events` is the
+# reliable base, maintained here (times in UTC, taken from the official calendars
+# on 2026-09-29: federalreserve.gov FOMC calendar — decision 14:00 ET on day two;
+# ecb.europa.eu Governing Council calendar — decision 14:15 CET/CEST). CPI and
+# payrolls come from the ForexFactory weekly feed (`feed_url`, unofficial; "" turns
+# it off) — add them here too if you want them independent of that feed. Extend
+# the list before it runs out (the last entries are December 2027).
+macro_calendar:
+  feed_url: "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+  events:
+    - {at: "2026-10-28T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2026-12-09T19:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-01-27T19:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-03-17T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-04-28T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-06-09T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-07-28T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-09-15T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-10-27T18:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2027-12-08T19:00:00Z", title: "FOMC rate decision", currency: USD}
+    - {at: "2026-10-29T13:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2026-12-17T13:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-02-04T13:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-03-18T13:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-04-29T12:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-06-10T12:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-07-22T12:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-09-09T12:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-10-28T12:15:00Z", title: "ECB monetary policy decision", currency: EUR}
+    - {at: "2027-12-16T13:15:00Z", title: "ECB monetary policy decision", currency: EUR}
 
 # Keyed crypto venue orders (§7.75) — how CcxtExecutor turns the pipeline's reference
 # price (the last close) into a venue order. Paper execution ignores this block.
@@ -198,6 +297,9 @@ storage:
   # Set backup_dir to "" to disable; backup_keep rotates old backups (0 = keep all).
   backup_dir: "data/backups"
   backup_keep: 14
+  # Market-context rows (§7.18: events, sentiment, news, context cards) older than
+  # this are pruned with the other retention passes; 0 keeps them.
+  context_retention_days: 30
 
 monitoring:
   log_level: INFO

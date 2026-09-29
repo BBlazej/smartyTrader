@@ -230,3 +230,25 @@ class TestWatchlistConfig:
 
         with pytest.raises(ValueError):
             AgentConfig(enabled=True, watchlist=bad)
+
+
+class TestShippedMarketContext:
+    """§7.18: crypto ships with market context on, the summarizer off, the guard on."""
+
+    def test_crypto_context(self, config_path: str) -> None:
+        s = Settings(config_path=config_path)
+        ctx = s.crypto_agent.context
+        assert ctx.enabled is True
+        assert ctx.sentiment.enabled and ctx.macro.enabled and ctx.announcements.enabled
+        assert ctx.news.enabled and ctx.news.feeds
+        assert ctx.summarizer.enabled is False  # CHANGE.md Q7 still open
+        assert s.risk.event_guard_enabled is True
+        assert s.stocks_agent.context.enabled is False  # stocks: mocked only so far
+
+    def test_macro_calendar_is_utc_and_sorted_per_currency(self, config_path: str) -> None:
+        events = Settings(config_path=config_path).macro_calendar.events
+        assert events
+        for currency in {e["currency"] for e in events}:
+            times = [e["at"] for e in events if e["currency"] == currency]
+            assert times == sorted(times)
+        assert all(e["at"].utcoffset().total_seconds() == 0 for e in events)

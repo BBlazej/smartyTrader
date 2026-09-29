@@ -33,7 +33,7 @@ Safety invariants (inherited from §7.15):
 from __future__ import annotations
 
 import json as _json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -52,7 +52,9 @@ from ..core.control_config import (
     strip_noop_overrides,
     validate_overrides_payload,
 )
+from ..core.models import EventKind, SymbolContext
 from ..core.performance import sleeve_performance
+from ..core.risk_engine import RiskEngine
 from ..core.storage import Storage
 from ..core.web_security import (
     CSRF_FIELD,
@@ -110,15 +112,18 @@ def _rel(dt_value: Any) -> str:
         return str(dt_value)
     delta = datetime.now(UTC) - then
     secs = int(delta.total_seconds())
-    if secs < 0:
+    if -60 < secs < 0:
         return "just now"
+    # Future timestamps (upcoming events, card expiry — §7.18) read "in …".
+    fmt = "in {}" if secs < 0 else "{} ago"
+    secs = abs(secs)
     if secs < 60:
-        return f"{secs}s ago"
+        return fmt.format(f"{secs}s")
     if secs < 3600:
-        return f"{secs // 60}m ago"
+        return fmt.format(f"{secs // 60}m")
     if secs < 86_400:
-        return f"{secs // 3600}h ago"
-    return f"{secs // 86_400}d ago"
+        return fmt.format(f"{secs // 3600}h")
+    return fmt.format(f"{secs // 86_400}d")
 
 
 def _short(dt_value: Any) -> str:
@@ -427,6 +432,68 @@ def create_dashboard_app(
                 sleeves=sleeves,
                 owners=owners,
             ),
+        )
+
+    # ── Market context (§7.18), read-only ───────────────────────────────
+
+    @app.get("/context", response_class=HTMLResponse)
+    async def context_page(
+        request: Request, book: str | None = None, agent: str | None = None
+    ) -> HTMLResponse:
+        selected = _require_book(book, agent)
+        store = selected.storage
+        now = datetime.now(UTC)
+        agent_cfg = getattr(settings, f"{selected.agent}_agent", None)
+        context_cfg = getattr(agent_cfg, "context", None)
+        view: dict[str, Any] = {
+            "enabled": bool(getattr(context_cfg, "enabled", False)),
+            "events": [],
+            "notices": [],
+            "sentiment": None,
+            "cards": [],
+            "news": [],
+            "freshness": {},
+            "blackout": None,
+            "error": None,
+        }
+        try:
+            view["events"] = await store.get_market_events(
+                now - timedelta(days=1),
+                now + timedelta(days=7),
+                kinds=[EventKind.MACRO, EventKind.EARNINGS],
+                agent=selected.agent,
+            )
+            view["notices"] = await store.get_market_events(
+                now - timedelta(days=120),
+                now + timedelta(days=1),
+                kinds=[EventKind.DELISTING],
+                agent=selected.agent,
+            )
+            sentiment_source = getattr(getattr(context_cfg, "sentiment", None), "source", None)
+            if sentiment_source:
+                view["sentiment"] = await store.get_latest_sentiment(
+                    sentiment_source, agent=selected.agent
+                )
+            view["cards"] = await store.get_active_context_cards(now, agent=selected.agent)
+            view["news"] = await store.get_recent_news(
+                now - timedelta(hours=24), limit=30, agent=selected.agent
+            )
+            view["freshness"] = await store.get_context_freshness(agent=selected.agent)
+            # Market-wide blackout right now, by the agent's own guard settings.
+            view["blackout"] = RiskEngine(settings.risk).event_blackout_reason(
+                SymbolContext(
+                    symbol="*",
+                    now=now,
+                    events=[e for e in view["events"] if e.kind is EventKind.MACRO],
+                )
+            )
+        except Exception:  # the page must render even over a pre-§7.18 file
+            logger.warning("context view unavailable", book=selected.key, exc_info=True)
+            view["error"] = "market context tables unreadable — see the dashboard log"
+        return templates.TemplateResponse(
+            request,
+            "context.html",
+            _ctx(request, active="context", selected_key=selected.key, now=now, **view),
         )
 
     # ── Agent logs (tail of data/agent_<book>.out.log, §7.24 launches) ───

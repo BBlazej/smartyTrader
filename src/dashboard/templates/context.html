@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Market context · Trading Agents{% endblock %}
+{% block content %}
+  <h1>Market context — {{ selected_key }}</h1>
+  {% include "_agent_tabs.html" %}
+  <p class="muted">External data the agent sees (§7.18): scheduled events, venue notices,
+    sentiment and the summarizer's news digests. The event guard blocks new entries around
+    events and after a delisting notice — never exits.</p>
+
+  {% if not enabled %}
+    <div class="card"><span class="badge b-off">context off</span>
+      <span class="muted">This agent runs without market context (<code>context.enabled: false</code>).</span></div>
+  {% endif %}
+  {% if error %}<div class="card neg">{{ error }}</div>{% endif %}
+  {% if blackout %}
+    <div class="card"><span class="badge b-rejected">entry blackout</span> {{ blackout }}</div>
+  {% endif %}
+
+  <div class="cards">
+    <div class="card"><div class="muted">Sentiment</div>
+      {% if sentiment %}
+        <div class="stat">{{ '%.0f' | format(sentiment.value) }}</div>
+        <div class="muted">{{ sentiment.label or '' }} · {{ sentiment.source }} · {{ sentiment.as_of | rel }}</div>
+      {% else %}<div class="stat">—</div>{% endif %}
+    </div>
+    <div class="card"><div class="muted">Sources (last fetched)</div>
+      {% for source, at in freshness | dictsort %}
+        <div>{{ source }} <span class="muted">{{ at | rel }}</span></div>
+      {% else %}<div class="muted">nothing fetched yet</div>{% endfor %}
+    </div>
+  </div>
+
+  <h2>Scheduled events (last 24 h · next 7 days)</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Time (UTC)</th><th>When</th><th>Kind</th><th>What</th><th>Impact</th><th>Source</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+        <tr>
+          <td class="muted" style="white-space:nowrap;">{{ e.at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="muted">{{ e.at | rel }}</td>
+          <td>{{ e.kind.value }}</td>
+          <td>{{ e.currency or e.asset or '' }} {{ e.title }}</td>
+          <td>{{ e.importance.value }}</td>
+          <td class="muted">{{ e.source }}</td>
+        </tr>
+      {% else %}<tr><td colspan="6" class="muted">none on record</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+
+  <h2>Venue delisting notices (last 120 days)</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Published</th><th>Asset</th><th>Notice</th></tr></thead>
+    <tbody>
+      {% for n in notices | reverse %}
+        <tr>
+          <td class="muted">{{ n.at.strftime('%Y-%m-%d') }}</td>
+          <td>{{ n.asset }}</td>
+          <td>{% if n.url %}<a href="{{ n.url }}" rel="noopener noreferrer" target="_blank">{{ n.title }}</a>{% else %}{{ n.title }}{% endif %}</td>
+        </tr>
+      {% else %}<tr><td colspan="3" class="muted">none</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+
+  <h2>News digests (active context cards)</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Symbol</th><th>News sentiment</th><th>Catalysts</th><th>Upcoming</th><th>Confidence</th><th>Sources</th><th>Expires</th><th>Model</th></tr></thead>
+    <tbody>
+      {% for card, row in cards %}
+        <tr>
+          <td>{{ card.symbol }}</td>
+          <td class="{{ 'pos' if card.sentiment > 0 else ('neg' if card.sentiment < 0) }}">{{ '%+.2f' | format(card.sentiment) }}</td>
+          <td>{% for c in card.catalysts %}<div>{{ c }}</div>{% endfor %}</td>
+          <td class="muted">{% for e in card.event_risk %}<div>{{ e.type }} {{ e.date }}</div>{% endfor %}</td>
+          <td>{{ '%.2f' | format(card.confidence) }}</td>
+          <td class="muted">{{ card.sources | length }}</td>
+          <td class="muted">{{ row.expires_at | rel }}</td>
+          <td class="muted">{{ row.model or '—' }}</td>
+        </tr>
+      {% else %}<tr><td colspan="8" class="muted">no active cards (summarizer off, or no recent news)</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+
+  <h2>News ingested (last 24 h)</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Published</th><th>Feed</th><th>Symbols</th><th>Title</th></tr></thead>
+    <tbody>
+      {% for n in news %}
+        <tr>
+          <td class="muted" style="white-space:nowrap;">{{ n.published_at | rel }}</td>
+          <td class="muted">{{ n.source }}</td>
+          <td>{{ n.symbols | join(', ') }}</td>
+          <td><a href="{{ n.url }}" rel="noopener noreferrer" target="_blank">{{ n.title }}</a></td>
+        </tr>
+      {% else %}<tr><td colspan="4" class="muted">none</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+{% endblock %}

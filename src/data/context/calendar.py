@@ -17,9 +17,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import structlog
 
 from ...core.models import EventImportance, EventKind, MarketEvent
 from .base import ContextBatch, safe_label
+
+logger = structlog.get_logger()
 
 CONFIG_SOURCE = "config"
 FOREXFACTORY_SOURCE = "forexfactory"
@@ -63,6 +66,11 @@ class ConfigMacroProvider:
                 self._floor,
             )
         ]
+        if self._events and all(entry["at"] < now for entry in self._events):
+            # The operator list ran out: only the (unofficial) feed guards from here.
+            logger.warning(
+                "macro_calendar.events has no future entries — extend the list in settings.yaml"
+            )
         # Future rows follow the YAML exactly; past ones stay as history.
         return ContextBatch(source=CONFIG_SOURCE, events=events, sync_window=(now, None))
 

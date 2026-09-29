@@ -308,6 +308,58 @@ class ContextMixin:
             return None
         return ContextCard.model_validate_json(row.card_json)
 
+    # ── Dashboard reads ───────────────────────────────────
+
+    async def get_recent_news(
+        self, since: datetime, limit: int = 50, agent: str | None = None
+    ) -> list[NewsItem]:
+        """Every stored item published after ``since``, newest first."""
+        async with await self._session() as session:
+            stmt = select(NewsItemRow).where(NewsItemRow.published_at > _as_naive_utc(since))
+            scoped = self._agent_scope(agent)
+            if scoped is not None:
+                stmt = stmt.where(NewsItemRow.agent == scoped)
+            stmt = stmt.order_by(NewsItemRow.published_at.desc()).limit(max(0, limit))
+            return [_news_from_row(row) for row in (await session.execute(stmt)).scalars()]
+
+    async def get_active_context_cards(
+        self, now: datetime | None = None, agent: str | None = None
+    ) -> list[tuple[ContextCard, ContextCardRow]]:
+        """The newest unexpired card per symbol (symbol order)."""
+        moment = _as_naive_utc(now or datetime.now(UTC))
+        async with await self._session() as session:
+            stmt = select(ContextCardRow).where(ContextCardRow.expires_at > moment)
+            scoped = self._agent_scope(agent)
+            if scoped is not None:
+                stmt = stmt.where(ContextCardRow.agent == scoped)
+            rows = (await session.execute(stmt.order_by(ContextCardRow.id.desc()))).scalars()
+            latest: dict[str, ContextCardRow] = {}
+            for row in rows:
+                latest.setdefault(row.symbol, row)
+        return [
+            (ContextCard.model_validate_json(row.card_json), row)
+            for _, row in sorted(latest.items())
+        ]
+
+    async def get_context_freshness(self, agent: str | None = None) -> dict[str, datetime]:
+        """``{source: last fetched_at}`` across events, sentiment and news (UTC-aware)."""
+        from sqlalchemy import func
+
+        scoped = self._agent_scope(agent)
+        freshness: dict[str, datetime] = {}
+        async with await self._session() as session:
+            for table in (MarketEventRow, SentimentReadingRow, NewsItemRow):
+                stmt = select(table.source, func.max(table.fetched_at)).group_by(table.source)
+                if scoped is not None:
+                    stmt = stmt.where(table.agent == scoped)
+                for source, fetched in (await session.execute(stmt)).all():
+                    if fetched is None:
+                        continue
+                    stamp = _aware(fetched)
+                    if source not in freshness or stamp > freshness[source]:
+                        freshness[source] = stamp
+        return freshness
+
     # ── Retention ─────────────────────────────────────────
 
     async def prune_context(self, days: int, now: datetime | None = None) -> dict[str, int]:
