@@ -881,21 +881,21 @@ class TestVenueTagging:
             await storage.save_portfolio_snapshot(
                 cash=100.0, positions_json="[]", total_value=100.0
             )
-            storage.bind_venue("kraken-live")
+            storage.bind_venue("myokx-live")
             await storage.save_order("K-1", "BTC/USDT", "buy", 1.0, 1.0, "filled")
             await storage.save_order("K-2", "BTC/USDT", "buy", 1.0, 1.0, "pending")
             await storage.save_portfolio_snapshot(cash=7.0, positions_json="[]", total_value=7.0)
 
             ids = lambda rows: [r.order_id for r in rows]
             assert ids(await storage.get_filled_orders(venue="paper")) == ["legacy", "paper-1"]
-            assert ids(await storage.get_filled_orders(venue="kraken-live")) == ["legacy", "K-1"]
+            assert ids(await storage.get_filled_orders(venue="myokx-live")) == ["legacy", "K-1"]
             assert ids(await storage.get_filled_orders()) == ["legacy", "paper-1", "K-1"]
             assert ids(await storage.get_pending_orders(venue="paper")) == []
-            assert ids(await storage.get_pending_orders(venue="kraken-live")) == ["K-2"]
+            assert ids(await storage.get_pending_orders(venue="myokx-live")) == ["K-2"]
 
             assert (await storage.get_latest_portfolio_snapshot(venue="paper")).cash == 100.0
             assert (await storage.get_latest_portfolio_snapshot()).cash == 7.0
-            assert (await storage.get_latest_portfolio_snapshot()).venue == "kraken-live"
+            assert (await storage.get_latest_portfolio_snapshot()).venue == "myokx-live"
         finally:
             await storage.close()
 

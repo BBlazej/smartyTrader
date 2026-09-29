@@ -90,6 +90,46 @@ class TestSettingsLoad:
         assert "127.0.0.1" in s.llm.endpoint
 
 
+class TestLegacyAgentKeys:
+    def test_obsolete_broker_demo_are_tolerated(self) -> None:
+        from src.core.config import AgentConfig
+
+        cfg = AgentConfig(enabled=False, broker="xtb", demo=True)
+        assert not hasattr(cfg, "broker") and not hasattr(cfg, "demo")
+
+    def test_other_unknown_keys_still_fail(self) -> None:
+        from src.core.config import AgentConfig
+
+        with pytest.raises(TypeError, match="unexpected"):
+            AgentConfig(enabled=False, brokr="saxo")
+
+
+class TestJsonSchemaEnv:
+    """``LOCAL_LLM_USE_JSON_SCHEMA`` (renamed from ``LM_STUDIO_USE_JSON_SCHEMA``)."""
+
+    @pytest.mark.parametrize(
+        ("new", "legacy", "expected"),
+        [("1", None, True), (None, "true", True), ("0", "1", False), (None, None, False)],
+    )
+    def test_names(
+        self,
+        config_path: str,
+        monkeypatch: pytest.MonkeyPatch,
+        new: str | None,
+        legacy: str | None,
+        expected: bool,
+    ) -> None:
+        for name, value in (
+            ("LOCAL_LLM_USE_JSON_SCHEMA", new),
+            ("LM_STUDIO_USE_JSON_SCHEMA", legacy),
+        ):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        assert Settings(config_path=config_path).llm.use_json_schema is expected
+
+
 class TestExecutionSettings:
     def test_execution_settings_loaded_from_yaml(self, config_path: str) -> None:
         s = Settings(config_path=config_path)

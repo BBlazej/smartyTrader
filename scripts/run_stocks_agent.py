@@ -47,7 +47,7 @@ from src.core.config import (
 )
 from src.core.db_layout import DEMO, PAPER, REAL
 from src.core.runner import ModeMismatch, RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
-from src.data.xtb_provider import create_xtb_provider
+from src.data.stocks_provider import create_stocks_provider
 from src.execution.paper_executor import create_paper_executor
 from src.execution.saxo_auth import SaxoAuthError, SaxoOAuth, TokenStore
 from src.execution.saxo_client import SaxoClient
@@ -147,15 +147,15 @@ def _saxo_executor(settings: Settings, log: object) -> SaxoExecutor | None:
 
 
 def _make_components(settings: Settings) -> tuple[object, object]:
-    """Build the yfinance provider + executor (paper default; XTB demo opt-in).
+    """Build the yfinance provider + executor (paper default; Saxo SIM opt-in; XTB legacy).
 
-    ``create_xtb_provider`` checks for yfinance eagerly; if it is missing, fail
+    ``create_stocks_provider`` checks for yfinance eagerly; if it is missing, fail
     fast with an actionable message rather than surfacing a per-cycle fetch
     error (mirrors the ccxt hint in the crypto runner).
     """
     log = structlog.get_logger().bind(component="runner")
     try:
-        provider = create_xtb_provider()
+        provider = create_stocks_provider()
     except ImportError as exc:
         raise SystemExit(
             "The stocks agent needs the `yfinance` package to fetch market data. "

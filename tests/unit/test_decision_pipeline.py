@@ -616,7 +616,7 @@ class TestPositionMarking:
     async def test_executor_without_marking_hook_is_skipped(
         self, risk_settings: RiskSettings
     ) -> None:
-        # Real-venue executors (Kraken/XTB) report live prices and implement no
+        # Real-venue executors (ccxt/Saxo/XTB) report live prices and implement no
         # update_price hook — the pipeline must run unaffected.
         venue = AsyncMock(spec=Executor)
         venue.get_positions.return_value = []

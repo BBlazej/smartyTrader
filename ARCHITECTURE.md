@@ -18,9 +18,9 @@ Two independent paper-trading agents sharing a common core:
 
 | | Crypto Agent | Stocks Agent |
 |---|---|---|
-| **Exchange** | OKX Europe — ccxt `myokx`, EUR pairs (public data; keyed = OKX demo or ack-gated live, §7.41/§7.64) | XTB (demo account; API closed 2025 → Saxo, §7.66) |
-| **Data** | CCXT (OHLCV); market context (§7.18): Fear & Greed, macro calendar, OKX delisting notices, RSS news | xAPI + yfinance (OHLCV); market context prepared (§7.18: macro calendar, yfinance earnings, EDGAR filings — off, mocked) |
-| **LLM** | LM Studio → Qwen 3.8 27B (`qwen/qwen3.8-27b`) | Same shared LLM client |
+| **Exchange** | OKX Europe — ccxt `myokx`, EUR pairs (public data; keyed = OKX demo or ack-gated live, §7.41/§7.64) | Saxo OpenAPI (SIM, opt-in; paper by default — XTB's API closed 2025-03-14, §7.66) |
+| **Data** | CCXT (OHLCV); market context (§7.18): Fear & Greed, macro calendar, OKX delisting notices, RSS news | yfinance (OHLCV, `stocks_provider.py`); market context (§7.18: macro calendar, yfinance earnings, EDGAR filings — live-checked, on) |
+| **LLM** | local OpenAI-compatible server (LM Studio / Unsloth desktop) → Qwen 3.8 27B | Same shared LLM client |
 
 Both agents use the same decision pipeline, risk engine, and storage layer — only the data sources and execution adapters differ.
 
@@ -53,7 +53,7 @@ flowchart TB
 
     subgraph data["src/data — providers"]
         CCXTP["ccxt_provider.py"]
-        XTBP["xtb_provider.py"]
+        XTBP["stocks_provider.py"]
         CTXP["context/ — sentiment, calendar, notices, earnings, news"]
     end
     Feeds["Free context sources (alternative.me, ForexFactory, OKX announcements, RSS/EDGAR)"]
@@ -132,7 +132,7 @@ src/
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (fetch_snapshot + paginated fetch_history + fetch_quote_volumes sweep, §7.70)
-│   ├── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam) + fetch_history
+│   ├── stocks_provider.py    # StocksProvider: stocks OHLCV (yfinance source behind StockDataSource) + fetch_history
 │   └── context/              # market-context providers → ContextBatch (§7.18): FearGreedProvider,
 │                             #  ConfigMacroProvider + ForexFactoryProvider, OkxAnnouncementsProvider,
 │                             #  EarningsProvider (yfinance), RssNewsProvider (RSS/Atom, EDGAR)
@@ -871,4 +871,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **1302 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1308 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

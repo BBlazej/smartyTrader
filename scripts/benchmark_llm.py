@@ -48,9 +48,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
     provider_kind = args.provider
     if provider_kind == "yfinance":
-        from src.data.xtb_provider import create_xtb_provider
+        from src.data.stocks_provider import create_stocks_provider
 
-        provider = create_xtb_provider()
+        provider = create_stocks_provider()
         timeframe = args.timeframe or settings.stocks_agent.timeframe or "1d"
         symbols = args.symbols or list(settings.stocks_agent.symbols)
     else:

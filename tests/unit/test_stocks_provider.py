@@ -1,4 +1,4 @@
-"""Unit tests for the XTB/yfinance market-data provider."""
+"""Unit tests for the stocks market-data provider (yfinance source, §7.11/§7.67)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.models import OHLCV, MarketSnapshot
-from src.data.xtb_provider import XTBProvider, YFinanceSource
+from src.data.stocks_provider import StocksProvider, YFinanceSource
 
 
 @pytest.fixture()
@@ -17,14 +17,14 @@ def mock_source() -> AsyncMock:
 
 
 @pytest.fixture()
-def provider(mock_source: AsyncMock) -> XTBProvider:
-    return XTBProvider(mock_source, candles_limit=50)
+def provider(mock_source: AsyncMock) -> StocksProvider:
+    return StocksProvider(mock_source, candles_limit=50)
 
 
 class TestFetchSnapshot:
     @pytest.mark.asyncio
     async def test_returns_snapshot_with_candles(
-        self, provider: XTBProvider, mock_source: AsyncMock
+        self, provider: StocksProvider, mock_source: AsyncMock
     ) -> None:
         mock_source.fetch_ohlcv.return_value = [
             [1700000000000, 100.0, 102.0, 99.0, 101.0, 500.0],
@@ -41,7 +41,7 @@ class TestFetchSnapshot:
 
     @pytest.mark.asyncio
     async def test_passes_candles_limit(
-        self, provider: XTBProvider, mock_source: AsyncMock
+        self, provider: StocksProvider, mock_source: AsyncMock
     ) -> None:
         mock_source.fetch_ohlcv.return_value = []
         await provider.fetch_snapshot("MSFT", "1w")
@@ -49,7 +49,7 @@ class TestFetchSnapshot:
 
     @pytest.mark.asyncio
     async def test_none_response_returns_empty_candles(
-        self, provider: XTBProvider, mock_source: AsyncMock
+        self, provider: StocksProvider, mock_source: AsyncMock
     ) -> None:
         mock_source.fetch_ohlcv.return_value = None
         snapshot = await provider.fetch_snapshot("AAPL", "1d")
@@ -57,7 +57,7 @@ class TestFetchSnapshot:
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_empty_candles(
-        self, provider: XTBProvider, mock_source: AsyncMock
+        self, provider: StocksProvider, mock_source: AsyncMock
     ) -> None:
         mock_source.fetch_ohlcv.return_value = []
         snapshot = await provider.fetch_snapshot("AAPL", "1d")
@@ -68,7 +68,7 @@ class TestToCandle:
     def test_converts_row(self) -> None:
         ts_ms = 1700000000000
         row = [ts_ms, 100.0, 105.0, 95.0, 103.0, 1000.0]
-        candle = XTBProvider._to_candle(row)
+        candle = StocksProvider._to_candle(row)
 
         assert candle.timestamp == datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
         assert candle.open == 100.0
@@ -79,20 +79,20 @@ class TestToCandle:
 
     def test_none_timestamp(self) -> None:
         row = [None, 1.0, 2.0, 0.5, 1.5, 10.0]
-        candle = XTBProvider._to_candle(row)
+        candle = StocksProvider._to_candle(row)
         assert candle.timestamp is None
 
     def test_numeric_coercion(self) -> None:
         # Sources may return string numbers
         row = [1700000000000, "100.5", "101.0", "99.0", "100.75", "1000"]
-        candle = XTBProvider._to_candle(row)
+        candle = StocksProvider._to_candle(row)
         assert candle.open == 100.5
         assert candle.close == 100.75
         assert candle.volume == 1000.0
 
 
 class TestSourceAccess:
-    def test_source_property(self, provider: XTBProvider, mock_source: AsyncMock) -> None:
+    def test_source_property(self, provider: StocksProvider, mock_source: AsyncMock) -> None:
         assert provider.source is mock_source
 
 
@@ -100,13 +100,13 @@ class TestClose:
     """close() keeps the provider interface uniform with :class:`CCXTProvider."""
 
     @pytest.mark.asyncio
-    async def test_closes_source(self, provider: XTBProvider, mock_source: AsyncMock) -> None:
+    async def test_closes_source(self, provider: StocksProvider, mock_source: AsyncMock) -> None:
         await provider.close()
         mock_source.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_close_without_close_method_is_noop(self) -> None:
-        provider = XTBProvider(AsyncMock(spec=["fetch_ohlcv"]), candles_limit=10)
+        provider = StocksProvider(AsyncMock(spec=["fetch_ohlcv"]), candles_limit=10)
         await provider.close()  # must not raise
 
 
@@ -115,7 +115,7 @@ class TestFetchHistoryRange:
 
     @pytest.mark.asyncio
     async def test_raises_when_source_lacks_range_support(self) -> None:
-        provider = XTBProvider(AsyncMock(spec=["fetch_ohlcv"]))
+        provider = StocksProvider(AsyncMock(spec=["fetch_ohlcv"]))
         with pytest.raises(TypeError, match="does not support historical ranges"):
             await provider.fetch_history(
                 "AAPL", "1d", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 5, tzinfo=UTC)
@@ -126,7 +126,7 @@ class TestFetchHistoryRange:
         source = AsyncMock()
         ts_ms = int(datetime(2026, 1, 2, tzinfo=UTC).timestamp() * 1000)
         source.fetch_history.return_value = [[ts_ms, 100.0, 101.0, 99.0, 100.5, 10.0]]
-        provider = XTBProvider(source)
+        provider = StocksProvider(source)
 
         start = datetime(2026, 1, 1, tzinfo=UTC)
         end = datetime(2026, 1, 5, tzinfo=UTC)
@@ -299,12 +299,12 @@ class TestShallowDepthWarning:
         return [[base + i * 3_600_000, 10.0, 11.0, 9.0, 10.5, 100.0] for i in range(n)]
 
     async def test_shallow_book_warns_once_per_symbol_timeframe(
-        self, mock_source: AsyncMock, provider: XTBProvider
+        self, mock_source: AsyncMock, provider: StocksProvider
     ) -> None:
         from unittest.mock import patch as _patch
 
         mock_source.fetch_ohlcv.return_value = self._rows(10)  # < 26 → MACD absent
-        with _patch("src.data.xtb_provider.logger") as log:
+        with _patch("src.data.stocks_provider.logger") as log:
             await provider.fetch_snapshot("AAPL", "1h")
             await provider.fetch_snapshot("AAPL", "1h")  # deduped
 
@@ -317,11 +317,11 @@ class TestShallowDepthWarning:
         assert kwargs["candles"] == 10
 
     async def test_deep_book_stays_silent(
-        self, mock_source: AsyncMock, provider: XTBProvider
+        self, mock_source: AsyncMock, provider: StocksProvider
     ) -> None:
         from unittest.mock import patch as _patch
 
         mock_source.fetch_ohlcv.return_value = self._rows(30)
-        with _patch("src.data.xtb_provider.logger") as log:
+        with _patch("src.data.stocks_provider.logger") as log:
             await provider.fetch_snapshot("AAPL", "1d")
         assert not [c for c in log.warning.call_args_list if "MACD" in str(c)]

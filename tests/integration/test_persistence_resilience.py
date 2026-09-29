@@ -136,7 +136,7 @@ class TestReconciliationIsLossless:
     """A reconciled venue fill is confirmed to the executor only once persisted."""
 
     @staticmethod
-    async def _pending_kraken(storage: Storage, decision_id: int | None = None) -> CcxtExecutor:
+    async def _pending_venue(storage: Storage, decision_id: int | None = None) -> CcxtExecutor:
         client = AsyncMock()
         client.create_order.return_value = {"id": "V-1", "status": "open"}
         client.fetch_free_balance.return_value = {"USDT": {"free": 1_000.0}}
@@ -162,7 +162,7 @@ class TestReconciliationIsLossless:
 
     async def test_failed_status_write_is_redelivered_next_cycle(self, storage: Storage) -> None:
         await storage.save_order("V-1", "BTC/USDT", "buy", 1.0, 100.0, "pending")
-        executor = await self._pending_kraken(storage)
+        executor = await self._pending_venue(storage)
         agent = _agent(storage, executor, [])
 
         real_update = storage.update_order_status
@@ -190,7 +190,7 @@ class TestReconciliationIsLossless:
             risk_reason=None,
         )
         # No stored order row at all — its write failed when the order was placed.
-        executor = await self._pending_kraken(storage, decision_id=decision_id)
+        executor = await self._pending_venue(storage, decision_id=decision_id)
         agent = _agent(storage, executor, [])
 
         await agent._reconcile_orders()

@@ -9,7 +9,7 @@ orders and portfolio snapshots persist. Without this module every restart silent
 * zeroed the daily-loss baseline and the losing-streak/cooldown state —
   weakening every stateful guard exactly when it matters.
 
-Venue executors (ccxt spot/XTB) get their local FIFO ledger, exit levels and pending
+Venue executors (ccxt spot/Saxo/XTB) get their local FIFO ledger, exit levels and pending
 orders back the same way (§7.58).
 
 The runners call :func:`rehydrate_from_storage` once, after storage is
@@ -53,7 +53,7 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
     """Restore a paper executor's cash + positions from the latest snapshot.
 
     Returns whether state was applied. Executors that report live venue books
-    (ccxt spot/XTB) have no ``load_portfolio_state`` hook and are skipped.
+    (ccxt spot/Saxo/XTB) have no ``load_portfolio_state`` hook and are skipped.
     """
     load = getattr(executor, "load_portfolio_state", None)
     if not callable(load):

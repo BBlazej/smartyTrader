@@ -1,7 +1,8 @@
 # Autonomous Trading Agent
 
-Paper-trading agents powered by a local LLM (LM Studio). Two agents — **crypto**
-(OKX Europe) and **stocks** (XTB demo — API closed, moving to Saxo, PLAN §7.66) — share one decision pipeline, one
+Paper-trading agents powered by a local LLM (any OpenAI-compatible server, e.g. LM Studio).
+Two agents — **crypto** (OKX Europe) and **stocks** (yfinance data; Saxo OpenAPI SIM
+execution opt-in, PLAN §7.66 — the XTB path is dead) — share one decision pipeline, one
 deterministic risk engine, and one storage layer.
 
 > **Safety-first:** the paper executor is the default and nothing executes
@@ -53,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1302 tests, no network needed (live smokes are opt-in:
+pytest                      # 1308 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -124,7 +125,7 @@ src/
 │   └── scheduler.py          # APScheduler wrapper
 ├── data/
 │   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
-│   ├── xtb_provider.py       # Stocks OHLCV (yfinance source; xAPI is the seam)
+│   ├── stocks_provider.py    # Stocks OHLCV (yfinance source behind a StockDataSource seam)
 │   └── context/              # Market-context providers (§7.18): Fear & Greed, macro calendar
 │                             #   (YAML + ForexFactory), OKX delisting notices, yfinance
 │                             #   earnings, RSS/Atom news + EDGAR filings
@@ -204,7 +205,7 @@ thresholds. Key sections:
 | `LLM_API_KEY` | Bearer key for LLM servers that require one (Unsloth desktop, llama-server `--api-key`); unset → no `Authorization` header (LM Studio) |
 | `EXCHANGE_API_KEY` / `EXCHANGE_API_SECRET` / `EXCHANGE_API_PASSPHRASE` | Keyed crypto execution (OKX needs all three): demo keys with `testnet: true`; live only with §7.41's ack; public data needs no key |
 | `LIVE_TRADING_ACK` | Must be exactly `I_ACCEPT_REAL_MONEY_RISK` for any real-money path: a keyed exchange with `testnet: false` or `xtb_execution.account_type: real` (§7.41) |
-| `LM_STUDIO_USE_JSON_SCHEMA` | Opt-in strict JSON response mode |
+| `LOCAL_LLM_USE_JSON_SCHEMA` | Opt-in strict JSON response mode (formerly `LM_STUDIO_USE_JSON_SCHEMA`, still read with a deprecation warning) |
 | `SAXO_ACCESS_TOKEN` | Saxo OpenAPI bearer token (§7.66; SIM: the 24 h developer token) — used only when `saxo_execution.enabled`; env only, never logged |
 | `SAXO_APP_KEY` / `SAXO_APP_SECRET` | Saxo OAuth app credentials (§7.66 step 4, `saxo_execution.oauth.enabled`) — `scripts/saxo_login.py` stores the token pair, the runner refreshes it |
 | `XTB_ACCOUNT_ID` / `XTB_ACCOUNT_PASSWORD` | XTB **demo** execution (§7.16): account id + xAPI verification code from xStation; used only when `xtb_execution.enabled: true`, else paper stays |
@@ -287,7 +288,7 @@ its API on 2025-03-14**, kept disabled as reference until the Saxo executor land
 notices and RSS news feed a sanitized MARKET CONTEXT prompt section and a deterministic
 entry event guard; an opt-in LLM summarizer writes validated context cards; the dashboard
 has a read-only `/context` page.
-**1302 tests passing at ~95% coverage.**
+**1308 tests passing at ~95% coverage.**
 
 Open work: see `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.

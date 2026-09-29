@@ -52,15 +52,13 @@ def app_settings(tmp_db_path: str, _tmp_path: Path) -> Settings:
         },
         "crypto_agent": {
             "enabled": True,
-            "exchange": "kraken",
+            "exchange": "myokx",
             "testnet": True,
             "interval_minutes": 5,
-            "pairs": ["BTC/USDT"],
+            "pairs": ["BTC/EUR"],
         },
         "stocks_agent": {
             "enabled": False,
-            "broker": "xtb",
-            "demo": True,
             "interval_minutes": 15,
             "symbols": [],
         },

@@ -6,7 +6,7 @@ calls** (the LLM replay variant is a separate, later experiment).
 
 Examples:
     python -m scripts.backtest --start 2026-08-01 --end 2026-09-15
-    python -m scripts.backtest --days 30 --symbols BTC/USDT ETH/USDT --timeframe 1h
+    python -m scripts.backtest --days 30 --symbols BTC/EUR ETH/EUR --timeframe 1h
     python -m scripts.backtest --provider yfinance --symbols AAPL --days 90 --report out.json
     python -m scripts.backtest --strategy crypto_position --days 60   # one sleeve (§7.73)
     python -m scripts.backtest --mode demo                            # the demo book (§7.78)
@@ -61,9 +61,9 @@ def _parse_dt(value: str, *, end_of_day: bool = False) -> datetime:
 def _build_history_provider(provider_kind: str, settings: Settings) -> tuple[Any, Any]:
     """Return ``(provider, default_timeframe)`` for the chosen candle source."""
     if provider_kind == "yfinance":
-        from src.data.xtb_provider import create_xtb_provider
+        from src.data.stocks_provider import create_stocks_provider
 
-        return create_xtb_provider(), "1d"
+        return create_stocks_provider(), "1d"
     from src.data.ccxt_provider import create_ccxt_provider
 
     exchange = settings.crypto_agent.exchange

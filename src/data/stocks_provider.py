@@ -2,15 +2,14 @@
 
 Mirrors :class:`src.data.ccxt_provider.CCXTProvider`: the data source is injected
 behind a :class:`StockDataSource` protocol so the provider is testable without a
-network connection or a real xAPI / yfinance instance.
+network connection or a real yfinance instance. (Formerly ``xtb_provider.py`` /
+``XTBProvider``; renamed 2026-09-29 — it never talked to XTB, and XTB closed its API.)
 
 Data source
 -----------
-The default source (built by :func:`create_xtb_provider`) is backed by **yfinance**
-for historical OHLCV candles. Real-time quotes from XTB's **xAPI** are a documented
-extension point: implement :class:`StockDataSource` against the xAPI REST surface and
-inject it to layer a live bid/ask onto the last candle. xAPI access is the external
-blocker tracked in ``PLAN.md`` (OAuth2 + an approved demo account).
+The default source (built by :func:`create_stocks_provider`) is backed by **yfinance**
+for OHLCV candles. Another feed — e.g. Saxo's own prices once the SIM comparison is done
+(CHANGE.md Q8, PLAN §7.66) — plugs in by implementing :class:`StockDataSource`.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ class StockDataSource(Protocol):
     """Minimal async surface the provider depends on.
 
     A source yields OHLCV rows shaped like ``[ts_ms, open, high, low, close, volume]``
-    (oldest → newest). This keeps the provider decoupled from yfinance / xAPI.
+    (oldest → newest). This keeps the provider decoupled from yfinance.
     """
 
     async def fetch_ohlcv(
@@ -43,11 +42,11 @@ class StockDataSource(Protocol):
     ) -> list[list[Any]]: ...
 
 
-class XTBProvider:
+class StocksProvider:
     """Fetches OHLCV candles from a :class:`StockDataSource` and wraps them in a ``MarketSnapshot``.
 
     The data source is injected so the provider is testable without a network
-    connection or a real yfinance / xAPI instance.
+    connection or a real yfinance instance.
     """
 
     #: MACD's minimum close count (mirrors ``indicators._compute_macd``); shallower
@@ -259,15 +258,15 @@ def _f(value: Any) -> float:
     return float(value)
 
 
-def create_xtb_provider(candles_limit: int = 100) -> XTBProvider:
+def create_stocks_provider(candles_limit: int = 100) -> StocksProvider:
     """Build a provider backed by a yfinance data source.
 
     The ``yfinance`` import here is *eager on purpose*: this factory is
     yfinance-specific, so a missing dependency surfaces at build time (where the
     runner turns it into an actionable install hint) instead of re-raising as a
-    fetch error every cycle. :class:`XTBProvider` itself stays decoupled — inject
+    fetch error every cycle. :class:`StocksProvider` itself stays decoupled — inject
     any :class:`StockDataSource` to run without yfinance.
     """
     import yfinance  # noqa: F401 — eager availability check, used by YFinanceSource
 
-    return XTBProvider(YFinanceSource(), candles_limit=candles_limit)
+    return StocksProvider(YFinanceSource(), candles_limit=candles_limit)

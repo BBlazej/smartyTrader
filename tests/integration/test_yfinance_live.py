@@ -23,9 +23,9 @@ pytestmark = [pytest.mark.network]
 
 @pytest.fixture(scope="module")
 def provider():
-    from src.data.xtb_provider import create_xtb_provider
+    from src.data.stocks_provider import create_stocks_provider
 
-    p = create_xtb_provider()
+    p = create_stocks_provider()
     yield p
     # close is sync/no-op for yfinance but keep the protocol honest.
     import asyncio

@@ -22,6 +22,10 @@ LIVE_TRADING_ACK_ENV = "LIVE_TRADING_ACK"
 #: former name, still honored (with a warning) so an old ``.env`` keeps working.
 LLM_ENDPOINT_ENV = "LOCAL_LLM_ENDPOINT"
 LEGACY_LLM_ENDPOINT_ENV = "LM_STUDIO_ENDPOINT"
+#: Env opt-in for strict JSON ``response_format``; ``LM_STUDIO_USE_JSON_SCHEMA`` is its
+#: deprecated former name (still honored, with a warning) — same rename as the endpoint.
+LLM_JSON_SCHEMA_ENV = "LOCAL_LLM_USE_JSON_SCHEMA"
+LEGACY_LLM_JSON_SCHEMA_ENV = "LM_STUDIO_USE_JSON_SCHEMA"
 LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 
 
@@ -131,9 +135,20 @@ class LLMSettings:
         # Opt-in: request a strict JSON response schema. Enable once you've
         # confirmed the local model supports ``response_format`` — some setups
         # reject it, which would otherwise force the safe HOLD fallback every cycle.
-        self.use_json_schema = use_json_schema or os.getenv(
-            "LM_STUDIO_USE_JSON_SCHEMA", ""
-        ).lower() in ("1", "true", "yes")
+        env_schema = os.getenv(LLM_JSON_SCHEMA_ENV, "").strip()
+        legacy_schema = os.getenv(LEGACY_LLM_JSON_SCHEMA_ENV, "").strip()
+        if not env_schema and legacy_schema:
+            import structlog
+
+            structlog.get_logger().warning(
+                f"{LEGACY_LLM_JSON_SCHEMA_ENV} is deprecated — rename it to {LLM_JSON_SCHEMA_ENV}"
+            )
+            env_schema = legacy_schema
+        self.use_json_schema = use_json_schema or env_schema.lower() in ("1", "true", "yes")
+
+
+#: Removed agent keys still tolerated in old configs (warned, ignored).
+_LEGACY_AGENT_KEYS: frozenset[str] = frozenset({"broker", "demo"})
 
 
 class AgentConfig:
@@ -141,9 +156,7 @@ class AgentConfig:
         self,
         enabled: bool,
         exchange: str | None = None,
-        broker: str | None = None,
         testnet: bool = True,
-        demo: bool = True,
         interval_minutes: int = 5,
         pairs: list[str] | None = None,
         symbols: list[str] | None = None,
@@ -179,17 +192,29 @@ class AgentConfig:
         # use the agent-level market_hours/market_timezone/market_holidays above.
         exchanges: dict[str, dict[str, Any]] | None = None,
         symbol_exchanges: dict[str, str] | None = None,
+        **legacy: Any,
     ) -> None:
+        # ``broker``/``demo`` were XTB-era stocks keys nothing ever read (the venue is
+        # chosen by saxo_execution / xtb_execution). Tolerated with a warning so an old
+        # settings.yaml still loads; any other unknown key is still a config error.
+        unknown = set(legacy) - _LEGACY_AGENT_KEYS
+        if unknown:
+            raise TypeError(f"unexpected agent config keys: {sorted(unknown)}")
+        if legacy:
+            import structlog
+
+            structlog.get_logger().warning(
+                "ignoring obsolete agent config keys — remove them from settings.yaml",
+                keys=sorted(legacy),
+            )
         self.enabled = enabled
         self.exchange = exchange
-        self.broker = broker
         self.testnet = testnet
-        self.demo = demo
         self.interval_minutes = interval_minutes
         self.pairs = pairs or []
         self.symbols = symbols or []
         self.market_hours = market_hours
-        # IANA zone for the market-hours guard (e.g. "Europe/Warsaw"). The window
+        # IANA zone for the market-hours guard (e.g. "America/New_York"). The window
         # is a local wall-clock range, so ``now`` is rendered in this zone before
         # comparison — a UTC host otherwise runs the guard 1–2h off. Falls back
         # to the agent's default zone when unset.

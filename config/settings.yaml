@@ -134,8 +134,6 @@ crypto_agent:
 
 stocks_agent:
   enabled: false
-  broker: xtb
-  demo: true
   interval_minutes: 15
   # §7.68: the window must match the exchange of the symbols actually traded —
   # these are US stocks (NYSE), not the Warsaw session the block inherited from

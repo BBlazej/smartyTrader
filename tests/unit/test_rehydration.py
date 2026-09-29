@@ -417,12 +417,12 @@ class TestLiveOutcomeCoverage:
         assert engine._loss_tracker.consecutive_losses == 1
 
 
-# ── §7.58: venue executors (Kraken/XTB) ────────────────────────
+# ── §7.58: venue executors (ccxt spot/XTB) ────────────────────────
 
 
-def _spot_kraken() -> tuple[CcxtExecutor, AsyncMock]:
+def _spot_venue() -> tuple[CcxtExecutor, AsyncMock]:
     client = AsyncMock()
-    client.fetch_positions.side_effect = Exception("kraken fetchPositions() not supported")
+    client.fetch_positions.side_effect = Exception("fetchPositions() not supported for spot")
     client.fetch_balance.return_value = {"total": {"BTC": 10.0, "ETH": 10.0}}
     return CcxtExecutor(client, quote_currency="EUR", venue="test"), client
 
@@ -464,7 +464,7 @@ async def _fill(
 class TestVenueRehydration:
     """§7.58: FIFO ledger, exit levels and pending orders survive a venue restart."""
 
-    async def test_kraken_spot_book_levels_and_attribution_survive(self, tmp_db_path: str) -> None:
+    async def test_spot_venue_book_levels_and_attribution_survive(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
         try:
@@ -476,7 +476,7 @@ class TestVenueRehydration:
             # A paper-era fill of the same agent never happened at the venue.
             await _fill(storage, "paper-abc", "BTC/USDT", "buy", 5.0, 1.0, d1)
 
-            executor, client = _spot_kraken()
+            executor, client = _spot_venue()
             await rehydrate_from_storage(RiskEngine(RiskSettings()), executor, storage)
 
             (pos,) = await executor.get_positions()
@@ -507,7 +507,7 @@ class TestVenueRehydration:
             await _fill(storage, "E1", "ETH/USDT", "buy", 2.0, 10.0, d1)
             await _fill(storage, "E2", "ETH/USDT", "sell", 2.0, 12.0)
 
-            executor, _ = _spot_kraken()
+            executor, _ = _spot_venue()
             await rehydrate_venue_executor(executor, storage)
             assert await executor.get_positions() == []
             assert executor._exit_levels == {}
@@ -523,7 +523,7 @@ class TestVenueRehydration:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
         try:
-            executor, _ = _spot_kraken()
+            executor, _ = _spot_venue()
             await rehydrate_venue_executor(executor, storage)
             assert await executor.get_positions() == []
         finally:
@@ -536,7 +536,7 @@ class TestVenueRehydration:
             d1 = await _entry_decision(storage, "BTC/USDT", 90.0, 150.0)
             await _fill(storage, "OPEN-1", "BTC/USDT", "buy", 1.0, 100.0, d1, status="pending")
 
-            executor, client = _spot_kraken()
+            executor, client = _spot_venue()
             await rehydrate_venue_executor(executor, storage)
 
             client.fetch_order.return_value = {
@@ -588,7 +588,7 @@ class TestVenueRehydration:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
         try:
-            executor, _ = _spot_kraken()
+            executor, _ = _spot_venue()
             with (
                 patch.object(storage, "get_filled_orders", side_effect=RuntimeError("db gone")),
                 patch.object(storage, "get_pending_orders", side_effect=RuntimeError("db gone")),
@@ -625,7 +625,7 @@ class TestVenueSwitches:
             await storage.save_portfolio_snapshot(
                 cash=900.0, positions_json=_positions_json(held), total_value=1_000.0
             )
-            storage.bind_venue("kraken-live")
+            storage.bind_venue("myokx-live")
             await _fill(storage, "K-1", "ETH/USDT", "buy", 3.0, 10.0)
             await storage.save_portfolio_snapshot(cash=12.0, positions_json="[]", total_value=42.0)
 

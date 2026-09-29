@@ -1,4 +1,5 @@
-"""LM Studio HTTP client for structured LLM calls."""
+"""HTTP client for the local LLM — any OpenAI-compatible server (LM Studio, Unsloth
+desktop, llama-server, Ollama) — for structured trade signals and JSON digests."""
 
 from __future__ import annotations
 
@@ -63,7 +64,7 @@ class LLMCallMetrics:
 
 
 class LLMClient:
-    """Thin async client over LM Studio's OpenAI-compatible endpoint."""
+    """Thin async client over a local OpenAI-compatible chat-completions endpoint."""
 
     #: Metrics of the most recent ``ask_trade_signal`` call (§7.69).
     last_metrics: LLMCallMetrics | None = None

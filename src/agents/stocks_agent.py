@@ -1,8 +1,9 @@
 """Stocks agent — orchestrates the full decision cycle for configured symbols.
 
 Shares everything with :class:`BaseTradingAgent` (§7.13); this subclass adds the one
-genuinely market-specific concern: the **market-hours guard** (WSE 09:00–16:30 by
-default, timezone-local, weekend/holiday aware, wrap-around windows supported). A cycle
+genuinely market-specific concern: the **market-hours guard** (NYSE 09:30–16:00
+America/New_York by default — the shipped universe is US stocks, §7.68 — timezone-local,
+weekend/holiday aware, wrap-around windows supported, per-exchange windows §7.66). A cycle
 requested while the exchange is closed is skipped (logged with the reason, no decision
 recorded) rather than trading on stale off-hours data.
 """
@@ -21,12 +22,13 @@ from ..core.storage import Storage
 from ..monitoring.alerts import AlertManager
 from .base_agent import BaseTradingAgent
 
-# Default Warsaw Stock Exchange trading hours (local wall-clock).
-DEFAULT_MARKET_HOURS = "09:00-16:30"
+# Default NYSE regular trading hours (local wall-clock) — the shipped universe is US
+# stocks (§7.68); the pre-§7.68 default was the Warsaw exchange's 09:00-16:30.
+DEFAULT_MARKET_HOURS = "09:30-16:00"
 # The exchange the default hours assume. The market-hours window is a *local*
 # wall-clock range, so ``now`` must be rendered in this zone before comparison —
-# otherwise a UTC host runs the guard 1–2h off (CET/CEST).
-DEFAULT_MARKET_TIMEZONE = "Europe/Warsaw"
+# otherwise a UTC host runs the guard hours off.
+DEFAULT_MARKET_TIMEZONE = "America/New_York"
 
 
 def parse_market_hours(spec: str) -> tuple[time, time]:
@@ -70,7 +72,7 @@ def market_closed_reason(
     """Return why the market is closed at ``now``, or ``None`` when it is open.
 
     Three checks, all on the **local wall clock** of ``now`` (the configured window
-    is expected to be in the exchange's zone — for the WSE that is Europe/Warsaw):
+    is expected to be in the exchange's zone — for the NYSE that is America/New_York):
 
     1. **Weekend:** Saturday/Sunday are always closed when a real window is
        configured — time-of-day alone used to let a Saturday 10:00 tick run on
@@ -112,7 +114,7 @@ class StocksAgent(BaseTradingAgent):
     If the exchange is closed — weekend, configured holiday, or outside the trading
     window — the cycle is skipped (no decision recorded) rather than trading on stale
     data. The guard evaluates in the market's local zone (see :meth:`_local_now`), so
-    a UTC host runs the WSE window at the correct local hours.
+    a UTC host runs the exchange window at the correct local hours.
     """
 
     def __init__(
