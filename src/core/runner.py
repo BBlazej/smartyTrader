@@ -38,7 +38,7 @@ from ..analysis.candles import timeframe_delta
 from ..analysis.prompt_builder import system_prompt_for
 from ..monitoring.alerts import AlertManager, AlertSink, NoopAlertSink, WebhookAlertSink
 from .config import Settings, summarizer_llm_settings
-from .context import ContextReader, ContextRefresher
+from .context import ContextReader, ContextRefresher, NewsMentionCounter
 from .control_config import parse_and_apply, risk_baseline
 from .db_layout import (
     CONTROL_PORT_OFFSET,
@@ -318,8 +318,14 @@ async def run_agent(
     if context_enabled:
         from ..data.context import build_context_providers
 
+        watchlist_mentions = getattr(
+            getattr(getattr(settings, f"{component}_agent", None), "watchlist", None),
+            "news_mentions",
+            None,
+        )
+        mentions_on = bool(getattr(watchlist_mentions, "enabled", False))
         context_providers, context_http = build_context_providers(
-            context_cfg, settings.macro_calendar
+            context_cfg, settings.macro_calendar, keep_unmatched_news=mentions_on
         )
         context_reader = ContextReader(storage, context_cfg)
         context_refresher = ContextRefresher(
@@ -475,6 +481,16 @@ async def run_agent(
             tradable_symbols=(
                 executor.tradable_symbols
                 if inspect.iscoroutinefunction(getattr(executor, "tradable_symbols", None))
+                else None
+            ),
+            # §7.83: news mentions reorder candidates (validated: needs context.news).
+            mention_counter=(
+                NewsMentionCounter(
+                    storage,
+                    live_agent_settings.context.news.aliases,
+                    watchlist_cfg.news_mentions.lookback_hours,
+                )
+                if watchlist_cfg.news_mentions.enabled and context_enabled
                 else None
             ),
         )

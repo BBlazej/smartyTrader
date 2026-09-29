@@ -139,8 +139,12 @@ class RssNewsProvider:
         max_item_chars: int,
         max_age_hours: float,
         max_feed_bytes: int,
+        keep_unmatched: bool = False,
     ) -> None:
         self._client = client
+        # §7.83: keep items naming no traded symbol too (``symbols=[]``) — the
+        # watchlist counts mentions of *candidates* over them.
+        self._keep_unmatched = keep_unmatched
         self._feeds = feeds
         self._aliases = aliases
         self._max_items = max_items_per_feed
@@ -173,7 +177,7 @@ class RssNewsProvider:
                     matched = [s for s in feed.symbols if s in traded]
                 else:
                     matched = matcher.match(f"{title}\n{text}")
-                if not matched:
+                if not matched and not self._keep_unmatched:
                     continue
                 items.append(
                     NewsItem(

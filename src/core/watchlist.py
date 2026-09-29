@@ -33,6 +33,7 @@ from ..analysis.screener import (
     ScreenedSymbol,
     compute_screen_metrics,
     filter_by_liquidity,
+    prioritize_mentioned,
     rank_candidates,
 )
 from .config import WatchlistSettings
@@ -75,6 +76,7 @@ class WatchlistManager:
         component: str,
         quote_currency: str | None = None,
         tradable_symbols: Callable[[], Awaitable[set[str]]] | None = None,
+        mention_counter: Callable[[list[str], datetime], Awaitable[dict[str, int]]] | None = None,
     ) -> None:
         self._provider = provider
         self._storage = storage
@@ -86,6 +88,9 @@ class WatchlistManager:
         # fewer pairs (OKX EEA demo: 29 EUR spot vs 243 live). ``None`` = no limit
         # (paper can trade anything with data). A failing lookup fails the refresh.
         self._tradable_symbols = tradable_symbols
+        # §7.83: recent news mentions reorder the screened candidates (mentioned
+        # first). ``None`` = screener order only.
+        self._mention_counter = mention_counter
 
     async def refresh(
         self,
@@ -124,6 +129,7 @@ class WatchlistManager:
             raise WatchlistRefreshFailed(f"screener pass failed: {exc}") from exc
 
         evaluated = len(ranked)
+        ranked = await self._prioritize_mentioned(ranked, moment)
         slots = self._config.max_dynamic_symbols - len(dynamic)
         if slots > 0 and ranked:
             expires_at = moment + timedelta(hours=self._config.ttl_hours)
@@ -144,6 +150,7 @@ class WatchlistManager:
                             "momentum": candidate.metrics.momentum,
                             "daily_volatility": candidate.metrics.daily_volatility,
                             "volume_spike": candidate.metrics.volume_spike,
+                            "news_mentions": candidate.news_mentions,
                         },
                     )
                     dynamic.append(candidate.symbol)
@@ -171,6 +178,23 @@ class WatchlistManager:
             symbols=symbols,
         )
         return result
+
+    async def _prioritize_mentioned(
+        self, ranked: list[ScreenedSymbol], now: datetime
+    ) -> list[ScreenedSymbol]:
+        """Mentioned candidates first (§7.83); a counting failure keeps screener order."""
+        if self._mention_counter is None or not ranked:
+            return ranked
+        try:
+            mentions = await self._mention_counter([c.symbol for c in ranked], now)
+        except Exception as exc:  # noqa: BLE001 - a tie-breaker never fails the refresh
+            logger.warning(
+                "news mention count failed; screener order kept",
+                component=self._component,
+                error=str(exc),
+            )
+            return ranked
+        return prioritize_mentioned(ranked, mentions, self._config.news_mentions.min_mentions)
 
     # ── Screener pass ────────────────────────────────────────
 

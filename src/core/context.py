@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 
 from ..data.context.base import ContextProvider, base_asset
+from ..data.context.news import SymbolMatcher
 from .config import ContextSettings
 from .models import EventKind, SymbolContext
 
@@ -96,6 +97,36 @@ class ContextRefresher:
         if batch.news:
             stored["news"] = await storage.store_news_items(batch.news)  # type: ignore[attr-defined]
         return stored
+
+
+class NewsMentionCounter:
+    """How many recent news items name each symbol (§7.83 watchlist priority).
+
+    Counted at watchlist refresh over *all* stored items (the provider keeps
+    unmatched ones when mentions are on), with the ingest matcher — upper-case base
+    asset or configured aliases, whole words. Deterministic; no model involved.
+    """
+
+    #: Upper bound on items scanned per refresh.
+    MAX_ITEMS = 1000
+
+    def __init__(
+        self, storage: object, aliases: dict[str, list[str]], lookback_hours: float
+    ) -> None:
+        self._storage = storage
+        self._aliases = aliases
+        self._lookback = timedelta(hours=lookback_hours)
+
+    async def __call__(self, symbols: list[str], now: datetime) -> dict[str, int]:
+        items = await self._storage.get_recent_news(  # type: ignore[attr-defined]
+            _aware(now) - self._lookback, limit=self.MAX_ITEMS
+        )
+        matcher = SymbolMatcher(symbols, self._aliases)
+        counts = dict.fromkeys(symbols, 0)
+        for item in items:
+            for symbol in matcher.match(f"{item.title}\n{item.text}"):
+                counts[symbol] += 1
+        return counts
 
 
 class ContextReader:

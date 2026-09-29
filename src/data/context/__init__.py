@@ -24,11 +24,14 @@ __all__ = [
 
 
 def build_context_providers(
-    context: ContextSettings, macro_calendar: MacroCalendarSettings
+    context: ContextSettings,
+    macro_calendar: MacroCalendarSettings,
+    keep_unmatched_news: bool = False,
 ) -> tuple[list[ContextProvider], httpx.AsyncClient]:
     """The enabled providers (in refresh order) and their shared HTTP client.
 
-    The caller owns the client and must close it. Nothing is fetched here.
+    ``keep_unmatched_news`` stores news naming no traded symbol too (§7.83 watchlist
+    mentions). The caller owns the client and must close it. Nothing is fetched here.
     """
     client = httpx.AsyncClient(
         timeout=context.http_timeout_seconds,
@@ -72,6 +75,7 @@ def build_context_providers(
                 max_item_chars=news.max_item_chars,
                 max_age_hours=news.max_age_hours,
                 max_feed_bytes=news.max_feed_bytes,
+                keep_unmatched=keep_unmatched_news,
             )
         )
     return providers, client

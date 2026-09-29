@@ -200,6 +200,13 @@ class AgentConfig:
         self.watchlist = WatchlistSettings(**(watchlist or {}))
         self.sleeves = SleevesSettings(**(sleeves or {}))
         self.context = ContextSettings(**(context or {}))
+        if self.watchlist.news_mentions.enabled and not (
+            self.context.enabled and self.context.news.enabled
+        ):
+            raise ValueError(
+                "watchlist.news_mentions needs context.enabled and context.news.enabled "
+                "(mentions are counted over ingested news)"
+            )
         if self.quote_currency:
             mismatched = pairs_not_quoted_in(self.pairs, self.quote_currency)
             if mismatched:
@@ -242,6 +249,9 @@ class WatchlistSettings:
         max_candidates: int = 20,
         # Symbols the manager must never add (stables, wrapped/leveraged tokens…).
         exclude_symbols: list[str] | None = None,
+        # §7.83: candidates named in recent news move ahead of unmentioned ones
+        # (after every filter). Needs <agent>.context.news.
+        news_mentions: dict[str, Any] | None = None,
     ) -> None:
         if refresh_minutes < 1:
             raise ValueError("watchlist.refresh_minutes must be >= 1")
@@ -277,6 +287,22 @@ class WatchlistSettings:
         )
         self.max_candidates = int(max_candidates)
         self.exclude_symbols = [s.upper() for s in (exclude_symbols or [])]
+        self.news_mentions = NewsMentionSettings(**(news_mentions or {}))
+
+
+class NewsMentionSettings:
+    """News mentions as a watchlist priority (§7.83, CHANGE.md §4.4). Off by default."""
+
+    def __init__(
+        self, enabled: bool = False, lookback_hours: float = 48.0, min_mentions: int = 2
+    ) -> None:
+        if float(lookback_hours) <= 0:
+            raise ValueError("watchlist.news_mentions.lookback_hours must be > 0")
+        if int(min_mentions) < 1:
+            raise ValueError("watchlist.news_mentions.min_mentions must be >= 1")
+        self.enabled = bool(enabled)
+        self.lookback_hours = float(lookback_hours)
+        self.min_mentions = int(min_mentions)
 
 
 #: Event importance levels, lowest first (§7.18; mirrors ``models.EventImportance``).

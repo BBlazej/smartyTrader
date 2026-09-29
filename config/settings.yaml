@@ -57,6 +57,10 @@ crypto_agent:
     max_daily_volatility: 0.25    # above this it is a blow-up risk — skip
     max_candidates: 20            # candle fetches per refresh (best liquidity first)
     exclude_symbols: []           # never add these, e.g. ["USDC/EUR", "WBTC/EUR"]
+    # §7.83: candidates named in >= min_mentions recent news items (context.news, incl.
+    # items naming no traded pair) move ahead of unmentioned ones — after every filter,
+    # screener order kept within each group. Off by default.
+    news_mentions: {enabled: false, lookback_hours: 48, min_mentions: 2}
   # Strategy sleeves (§7.71, CHANGE.md P1). Off by default — with it off the agent
   # runs one implicit style on `timeframe` above. When on, each sleeve decides on
   # its own candle timeframe with its own prompt playbook over the same pairs;

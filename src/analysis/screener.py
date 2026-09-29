@@ -39,6 +39,7 @@ class ScreenedSymbol(BaseModel):
     quote_volume_24h: float
     metrics: ScreenMetrics
     rank: int = 0  # 1 = best momentum, assigned by :func:`rank_candidates`
+    news_mentions: int = 0  # recent news items naming it (§7.83), when counted
 
 
 def filter_by_liquidity(
@@ -102,6 +103,21 @@ def compute_screen_metrics(
         daily_volatility=daily_volatility,
         volume_spike=volume_spike,
     )
+
+
+def prioritize_mentioned(
+    ranked: list[ScreenedSymbol], mentions: dict[str, int], min_mentions: int
+) -> list[ScreenedSymbol]:
+    """Move candidates with ``>= min_mentions`` recent news items ahead (§7.83).
+
+    CHANGE.md §4.4: "screener rank + news mentions". Mentions only *reorder* the
+    candidates that already passed every screener filter — a mentioned symbol never
+    bypasses the liquidity floor or volatility band — and screener order is kept
+    within each group (stable sort), so the result stays fully deterministic.
+    """
+    for screened in ranked:
+        screened.news_mentions = int(mentions.get(screened.symbol, 0))
+    return sorted(ranked, key=lambda c: c.news_mentions < min_mentions)
 
 
 def rank_candidates(

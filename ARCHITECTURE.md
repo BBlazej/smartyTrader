@@ -551,6 +551,7 @@ flowchart LR
 - **Deterministic matching, bounded input:** news items are matched to traded symbols by the upper-case base asset or configured aliases (whole words), feeds pinned to symbols (EDGAR) skip matching; downloads are byte-capped, XML with a DTD is refused, text is reduced to plain, capped strings.
 - **Prompt-injection defenses (CHANGE.md §7):** raw news text reaches only the summarizer, fenced as untrusted data with markers the text cannot forge. The reply must validate as a `ContextCard` (`extra="forbid"`, bounded lists/strings, `symbol` must match, `as_of` set by us, `sources` must be fed URLs, instruction-shaped catalysts reject the card). The trading prompt renders only card fields, again through `safe_label`, under a header saying context never overrides price evidence. Cards cannot create or gate orders — the guard reads calendar rows only.
 - **One local LLM, one lock:** with the summarizer on, the trading and summarizer `LLMClient`s share an `asyncio.Lock` around the HTTP call, so a digest never runs concurrently with a decision (it may use a smaller `model` via `context.summarizer.llm` — CHANGE.md Q7).
+- **Watchlist news mentions (§7.83, opt-in):** with `watchlist.news_mentions.enabled` the RSS provider also stores items naming no traded symbol (`symbols=[]`), and each watchlist refresh counts mentions per screened candidate (`NewsMentionCounter`, same matcher) — candidates with ≥ `min_mentions` move ahead after every screener filter (`prioritize_mentioned`, stable); counts go into `watchlist_entries.meta_json`.
 - **Dashboard:** read-only `/context` page per book — upcoming events, the current market-wide blackout, delisting notices, sentiment, per-source freshness, active cards and recent news.
 
 ## Backtesting (§7.14 — implemented)
@@ -869,4 +870,4 @@ dev = [
 - Realistic OHLCV fixtures from historical data
 - Edge cases: gap-ups, zero volume, extreme volatility periods
 
-Current numbers: **1263 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1274 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
