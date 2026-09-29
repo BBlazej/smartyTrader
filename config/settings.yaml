@@ -178,11 +178,12 @@ stocks_agent:
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
   decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)
-  # Market context (§7.18) — prepared for when stocks trade (Saxo, §7.66); tested
-  # with mocks only so far. Earnings dates via yfinance drive the earnings blackout;
-  # SEC EDGAR 8-K filings (per-company Atom feeds) feed the summarizer.
+  # Market context (§7.18; live-checked 2026-09-29, §7.66 step 6). Earnings dates via
+  # yfinance drive the earnings blackout; SEC EDGAR 8-K filings (per-company Atom
+  # feeds) feed the summarizer. SEC asks for a contact in the User-Agent — set
+  # context.http_user_agent to "<name> <email>" before running this unattended.
   context:
-    enabled: false
+    enabled: true
     macro: {enabled: true, currencies: [USD], min_importance: high}
     earnings: {enabled: true, lookahead_days: 45}
     news:

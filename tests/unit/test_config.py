@@ -243,7 +243,9 @@ class TestShippedMarketContext:
         assert ctx.news.enabled and ctx.news.feeds
         assert ctx.summarizer.enabled is False  # CHANGE.md Q7 still open
         assert s.risk.event_guard_enabled is True
-        assert s.stocks_agent.context.enabled is False  # stocks: mocked only so far
+        # Stocks context is on (live-checked, §7.66 step 6); the stocks agent itself is off.
+        assert s.stocks_agent.context.enabled is True
+        assert s.stocks_agent.enabled is False
 
     def test_macro_calendar_is_utc_and_sorted_per_currency(self, config_path: str) -> None:
         events = Settings(config_path=config_path).macro_calendar.events

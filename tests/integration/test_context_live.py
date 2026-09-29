@@ -50,3 +50,34 @@ async def test_okx_announcements_live(client: httpx.AsyncClient) -> None:
     provider = OkxAnnouncementsProvider(client, AnnouncementsSettings().base_url, 365)
     batch = await provider.fetch([], datetime.now(UTC))
     assert all(e.kind is EventKind.DELISTING and e.asset for e in batch.events)
+
+
+# ── Stocks context (§7.66 step 6) ──────────────────────────────
+
+
+async def test_yfinance_earnings_live() -> None:
+    pytest.importorskip("yfinance")
+    from src.data.context.earnings import EarningsProvider
+
+    batch = await EarningsProvider(120).fetch(["AAPL"], datetime.now(UTC))
+    assert batch.events, "no AAPL earnings date within ±120 days"
+    assert all(e.kind is EventKind.EARNINGS and e.asset == "AAPL" for e in batch.events)
+
+
+async def test_edgar_atom_live(client: httpx.AsyncClient) -> None:
+    from src.core.config import Settings
+    from src.data.context.news import RssNewsProvider
+
+    feeds = Settings().stocks_agent.context.news.feeds
+    provider = RssNewsProvider(
+        client,
+        feeds,
+        {},
+        max_items_per_feed=10,
+        max_item_chars=500,
+        # Filings are sparse — look back far enough to see at least one.
+        max_age_hours=24 * 365,
+        max_feed_bytes=2_000_000,
+    )
+    batch = await provider.fetch(["AAPL", "MSFT"], datetime.now(UTC))
+    assert batch.news and {s for n in batch.news for s in n.symbols} <= {"AAPL", "MSFT"}
