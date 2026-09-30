@@ -7,7 +7,7 @@ This document describes **how the system is built**: module layout, data flow, s
 - [README.md](README.md) — user-facing overview & quickstart
 - **ARCHITECTURE.md** (this file) — architecture: components, data flow, schema, control plane, design decisions
 - [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
-- [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
+- [PLAN.md](PLAN.md) — the single list of open work (§7.N identifiers are never renumbered)
 - [CHANGE.md](CHANGE.md) — multi-strategy design (sleeves, allocator, research layer) — P1/P2/P4/P5 implemented, P3 allocator open
 - `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
 - `docs/reviews/review.MD` / `docs/reviews/review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
@@ -530,7 +530,7 @@ docker compose up -d --build            # crypto agent + dashboard; backtester: 
 - **One shared `agent-data` volume** holds the SQLite DB (agent writes, dashboard/backtester read). WAL mode permits concurrent read/write.
 - **Deviation from the locked design:** `config/` is a **read-only bind mount**, not an `agent-config` named volume — nothing ever writes config files (safe overrides live in `agent_control` DB rows), so host edits stay authoritative on container restart instead of going stale inside a pre-seeded volume.
 - Secrets enter only via compose environment substitution (`${EXCHANGE_API_KEY:-}`, `${XTB_ACCOUNT_ID:-}`/`${XTB_ACCOUNT_PASSWORD:-}` etc. — empty keeps the paper executor); `.dockerignore` guarantees `.env` is never baked into an image. The host's LLM server (LM Studio, Unsloth desktop, …) is reached via `host.docker.internal:host-gateway` (override with `LOCAL_LLM_ENDPOINT`).
-- No Postgres in v1; revisit only if multi-writer contention shows up (WAL + single primary writer should not).
+- No Postgres in v1 (PLAN backlog: only if multi-writer contention ever shows up).
 
 ## Market context (§7.18 — CHANGE.md P5, implemented)
 
@@ -574,7 +574,7 @@ Design (Week 6):
 6. **Event guard (§7.82):** with stored market context (and `--event-guard auto` — context enabled in config), replayed BUYs pass `check_event_guard` over the calendar around each decision, from the first stored event on; blocked BUYs count in `risk_rejected` and `event_blocked`.
 7. **Per sleeve (§7.73):** `--strategy NAME` replays only that sleeve's decisions on its timeframe, with its effective risk limits (`sleeve_risk_settings`) and `weight × initial_cash`.
 
-> **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate, later experiment — non-deterministic and costly on the local 27B model.
+> **Why decision replay (not LLM replay):** it is deterministic, free, and tests the parts we control (risk engine, execution, fees) against real price paths. LLM replay (feeding history back to the model for *fresh* signals) is a separate experiment (PLAN backlog) — non-deterministic and costly on the local 27B model.
 
 Implementation status:
 

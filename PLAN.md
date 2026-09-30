@@ -1,126 +1,127 @@
-# Autonomous Trading Agent — Plan (Gaps, Todos & Next Steps)
+# Autonomous Trading Agent — Plan (open work)
 
-## Introduction
+The **single list of open work**: every todo, gap, open question and accepted limitation lives here — nowhere else. Delivered work is in [HISTORY.md](HISTORY.md), how the system is built in [ARCHITECTURE.md](ARCHITECTURE.md), the multi-strategy design rationale in [CHANGE.md](CHANGE.md).
 
-This document tracks **what remains to be done**: open gaps, todos and next steps (canonical list: §7 below), plus the still-open Phase 4 iteration work and the risk register. What has been delivered lives in [HISTORY.md](HISTORY.md); how the system is built lives in [ARCHITECTURE.md](ARCHITECTURE.md).
+**Numbering rule:** §7.N identifiers (§7.1–§7.86) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
 
-**Document map**
+**Current state (2026-09-30):** 1285 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
 
-| File | Purpose |
+---
+
+## Order of work
+
+| # | Item | Severity | Blocked on |
+|---|---|---|---|
+| 1 | §7.28 Multi-day OKX demo run | high | — |
+| 2 | §7.85 LLM latency benchmark on real prompts | medium | LM Studio up |
+| 3 | §7.86 Two-sleeve paper trial (≥ 2 weeks) | medium | — (runs alongside §7.28) |
+| 4 | §7.80 Summarizer live pass + model choice | medium | LM Studio up; after §7.85 |
+| 5 | §7.66 Saxo SIM run, then retire XTB | medium | a Saxo developer account |
+| 6 | §7.74 Deterministic allocator | medium | §7.86 data |
+| 7 | §7.84 `market_snapshots`: drop or give it a reader | low | a decision |
+| 8 | §7.34 Venue-side stop orders (OCO) | low | after §7.28 |
+| 9 | §7.81 Macro calendar upkeep | low | before 2027-12 / if the feed fails |
+| — | Live-readiness gate (below) | gate | §7.28, §7.86, §7.74 |
+
+---
+
+## Open items
+
+### §7.28 — Multi-day OKX demo run ⏳ [high; R1-H4, re-scoped by §7.41/§7.64]
+
+- **Done so far:** keys, reads, the overnight run, forced and agent-driven round trips on the OKX Europe demo — they found and fixed §7.75, §7.76, §7.77 and §7.79 (run log: HISTORY *§7.28 — keyed demo runs*). Fees are confirmed (taker 0.20 %, the paper profile matches).
+- **Next:** run the crypto agent on the demo for several days in a clean `data/demo_crypto.db` (`python -m scripts.run_crypto_agent --mode demo`, output redirected to a log). Check: LLM-driven entries and exits fill and reconcile, restarts rehydrate cleanly, heartbeat stays fresh, no errors/fallbacks, fees on the order rows. Expect `Event guard:` rejections around macro events — intended (§7.18).
+
+### §7.85 — LLM latency benchmark on real prompts ⏳ [medium; §7.69 follow-up, CHANGE Q5]
+
+- §7.69 built the tooling (`scripts/benchmark_llm.py`, per-decision latency/tokens, dashboard p50/p95) but the live pass never ran.
+- **Do:** with LM Studio up, run the benchmark on genuine prompts for the shipped model; record p50/p95 per call and the calls/hour budget. **Then decide** the watchlist size (`max_dynamic_symbols`) and whether the 5-minute cycle / hourly bars fit (CHANGE §4.7) — from these numbers, never from guesses.
+
+### §7.86 — Two-sleeve paper trial ⏳ [medium; CHANGE P1 "done when"]
+
+- Sleeves (§7.71–§7.73) are built but ship off, so they have no history.
+- **Do:** enable `crypto_agent.sleeves` on the **paper** book (swing 1 h + position 4 h) for at least two weeks. Done when results split cleanly per sleeve on the dashboard, with vs-baseline numbers (`scripts/backtest.py --strategy NAME`). The data feeds §7.74 and the live-readiness gate.
+
+### §7.80 — Summarizer live pass + model choice ⏳ [medium; CHANGE Q7]
+
+- The §7.18 summarizer is tested against mocked replies only and ships off.
+- **Do:** enable it on the paper book; check card quality and latency (`llm_exchange` lines with `purpose=context_card`), the injection filter's false-positive rate (`CardRejected … injection` warnings) and the decision-latency cost of the shared lock. Decide between the trading model with `llm: {max_tokens: 4096}` and a smaller second model (VRAM fit vs LM Studio model swapping — JIT load / idle-TTL unload / `lms` CLI — and what a swap costs).
+
+### §7.66 — Saxo SIM run, then retire XTB ⏳ [medium; broker decided 2026-09-26]
+
+- **Built (mocked tests only):** `SaxoClient`/`SaxoExecutor`, OAuth app + `scripts/saxo_login.py`, per-exchange trading windows, stocks market context (live-checked). Details: HISTORY *§7.66 — progress*.
+- **Next (needs a Saxo developer account — none configured):**
+  1. First SIM run: `--once` with a 24 h developer token (or `saxo_login` with an app); confirm account/instrument resolution, a buy + sell round trip, audit-log fill prices, net-position capping and the OAuth refresh/keep-alive against the real `/token` endpoint (the LIVE auth host `live.logonvalidation.net` is still unverified).
+  2. Compare Saxo SIM prices with yfinance and decide the stocks data source (CHANGE Q8).
+  3. Only after a successful SIM run: switch the shipped stocks config to Saxo and delete the XTB executor/client + tests/config (and the short-position support only XTB uses).
+  4. Before running stocks unattended: set `context.http_user_agent` to a name + contact (SEC's request); fill `market_holidays` for any EU exchange added under `exchanges`.
+- Scope stays **paper/SIM only** until the budget grows (the $1 minimum is ~1 %/side at €100 positions).
+
+### §7.74 — Deterministic allocator ⏳ [medium; CHANGE P3, §4.3]
+
+- Weekly job re-weighting sleeves for *new entries only* (never force-closes): score each sleeve on its trailing window (Sharpe-like on sleeve equity, net of fees; 0 unless it beats its best baseline — §7.73), shrink toward equal weights by sample size (`w = n/(n+k)·w_perf + k/(n+k)·w_equal`, k ≈ 30 closed trades), clamp to `[min_weight, max_weight]`, cap the change per rebalance (±10 pp), renormalize, and write an audited `strategy_allocations` row (inputs, scores, old → new; reason `rebalance`). A sleeve latched by its drawdown guard scores 0 until re-baselined.
+- The job fetches history for the baselines (the dashboard is DB-only), so it also persists each sleeve's baseline scores; the dashboard sleeve table then gains vs-baseline columns.
+- Operator pin (safe-config override, tighten-only spirit of §7.43) and `min_weight`/`max_weight` per sleeve (`sleeves.strategies.*.budget`).
+- Done when a replay over the §7.86 history produces sane, slow-moving weights and the operator can pin them.
+
+### §7.84 — `market_snapshots` is write-only ⏳ [low; found 2026-09-30]
+
+- Every decision stores the candle series + indicators, retention prunes them after `snapshot_retention_days`, and nothing reads them (the backtester fetches fresh candles; the full prompt is in the `llm_exchange` log). **Decide:** drop the table, the write and the setting — or give it a reader (e.g. replay the exact candles a decision saw).
+
+### §7.34 — Venue-side stop orders (OCO) ⏳ [low; §7.9 follow-up]
+
+- SL/TP are local checks: while the agent is down, nothing protects a venue position. Add venue-side OCO stop orders (OKX algo orders, later Saxo) — kept in sync with the local levels and cancelled on every other close path.
+
+### §7.81 — Macro calendar upkeep ⏳ [low; §7.18 follow-up]
+
+- `macro_calendar.events` holds FOMC + ECB decisions through 2027-12 (a warning fires when none is left); CPI/NFP/PCE come only from the unofficial ForexFactory feed (bls.gov blocks scripted fetches). Extend the list before it runs out; add the BLS dates by hand if the feed proves unreliable.
+
+---
+
+## Live-readiness gate (before any real money)
+
+Per sleeve (CHANGE P6), on forward paper/demo time — not replays alone. A sleeve that passes may get a small real allocation (opt-in, ack-gated as today, ≈ €1,000 budget).
+
+- [ ] Paper PnL positive for ≥ 4 weeks, net of fees, and beating the best dumb baseline (§7.73)
+- [ ] Win rate > 50 % after fees
+- [ ] Max drawdown within the sleeve's limits
+- [ ] LLM latency consistently below the timeout (§7.85); fallback HOLDs rare
+- [ ] Every circuit breaker exercised: daily loss, drawdown latch + CLI re-baseline, cooldown, event guard, close-all
+- [ ] Exchange rate limits understood and respected under the real cycle load
+- [ ] Recovery tested: network outage, venue downtime, PC restart mid-order (rehydration + reconciliation)
+
+---
+
+## Backlog (unscheduled ideas)
+
+Picked up only when they earn a §7 number and a place in the order.
+
+- **Decision review loop:** export decisions + outcomes after 2–4 weeks of paper trading, find the failure modes, refine prompts/playbooks; consider fine-tuning only if the local model supports it.
+- **Multi-timeframe context:** a daily/weekly trend summary in the position sleeve's prompt (CHANGE §4.5).
+- **More inputs:** order-book imbalance; VWAP / volume profile.
+- **Correlation-aware exposure:** cap concentrated risk across correlated assets (all-crypto books move together).
+- **Regime detection:** trending vs ranging → sleeve weighting or playbook choice.
+- **LLM replay backtests:** feed history to the model for fresh signals (non-deterministic and costly; decision replay stays the default).
+- **Postgres:** only if multi-writer contention ever shows up (WAL + one writer per book should not).
+
+## Accepted limitations (revisit if the trigger happens)
+
+- **Market-hours guard:** half-day early closes are not expressible (whole days only); a weekend closure wins over an overnight window that wraps into Saturday — revisit for a 24 h-adjacent venue (§7.10).
+- **Event guard is conservative:** a delisting notice naming `XYZ/USDT` also blocks `XYZ/EUR` (§7.18).
+- **Third-currency venue fees** (neither base nor quote) are logged, not booked (§7.75).
+- **Sharpe in replays** is coarse for gappy stock series (calendar-aware since §7.37, still approximate).
+
+## Risks & mitigations
+
+| Risk | Mitigation |
 |---|---|
-| [README.md](README.md) | project overview & quickstart |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | architecture: modules, data flow, schema, control plane, design decisions |
-| [HISTORY.md](HISTORY.md) | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
-| **PLAN.md** (this file) | gaps, todos & next steps (§7), Phase 4 iteration, risks |
-| `AGENTS.md` | agent-facing facts & rules for coding agents |
-| [CHANGE.md](CHANGE.md) | multi-strategy design: sleeves, allocator, research layer (P1/P2/P4/P5 done, P3 open) |
-| `docs/reviews/` | external full-codebase reviews (`[R-xx]` tags; `[R4-xx]` = `external_4.md`) |
-
-**Numbering rule:** §7.N identifiers (§7.1–§7.83) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. §7 lists only open work: completed items live in [HISTORY.md](HISTORY.md) under their original numbers.
-
-**Current state (2026-09-30):** 1285 tests passing at ~95% coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. §7.1–§7.83 are done except the items listed below; their write-ups live in [HISTORY.md](HISTORY.md). Open, in order of work: §7.28 (multi-day OKX demo run), §7.66 (Saxo SIM run — needs a developer account), §7.74 (allocator), then the low-severity items (§7.80, §7.81, §7.84, §7.34).
-
----
-
-## Phase 4 — Iteration & Improvement (Ongoing)
-
-### 4.1 LLM Fine-Tuning Loop
-
-1. Run paper trading for 2-4 weeks
-2. Export all decisions + outcomes to a dataset
-3. Identify patterns: when did the LLM make good calls vs. bad ones?
-4. Refine prompts based on failure modes
-5. Consider fine-tuning if running a local model that supports it
-
-### 4.2 Strategy Expansion
-
-- Add more indicators (orderbook imbalance, funding rates for crypto)
-- Multi-timeframe analysis (LLM evaluates signals across timeframes)
-- Correlation analysis between assets to avoid concentrated risk
-- Regime detection (trending vs. ranging markets → different strategies)
-
-### 4.3 Live Trading Readiness Checklist
-
-- [ ] Paper trading PnL positive for ≥ 4 weeks
-- [ ] Win rate > 50% after fees simulation
-- [ ] Max drawdown within acceptable bounds
-- [ ] LLM response time consistently < timeout threshold
-- [ ] All circuit breakers tested and verified
-- [ ] Exchange API rate limits understood and respected
-- [ ] Disaster recovery plan (network outage, exchange downtime)
-
----
-
-## Risks & Mitigations
-
-| Risk | Impact | Mitigation |
-|---|---|---|
-| LLM gives bad signals | Financial loss (even paper) | Risk engine gates everything; conservative defaults |
-| LLM is too slow | Missed trading opportunities | Timeout with HOLD fallback; optimize prompt size |
-| Exchange API rate limits | Data gaps, failed orders | Rate limiting built in; exponential backoff |
-| XTB API access delayed | Stocks agent blocked | Start with crypto only; use yfinance for data even without execution |
-| Overfitting to paper trading | Live performance differs | Simulate fees/slippage; start small if going live |
-| Hallucinated indicators | Wrong decisions | Validate LLM output against computed values; include raw numbers in prompt |
-| LLM non-determinism | Backtest replay won't reproduce stored decisions | `temperature=0.2` set (not 0); optional determinism `seed` shipped (§7.33, model permitting); full prompt+response audit logging in place — decision-replay backtests (§7.14) need no LLM at all |
-| Paper PnL is optimistic | Overstates strategy quality | Verify `PaperExecutor` fee/slippage defaults before trusting paper PnL against the §4.3 live-readiness gates |
-
----
-
-## 7. Gaps & Next Steps
-
-Updated after the full-codebase reviews of **2026-09-15** (`docs/reviews/review.MD`), **2026-09-17** (`docs/reviews/review2.md`), **2026-09-21** (`docs/reviews/external_review3.md`), and **2026-09-24** (`docs/reviews/external_4.md` — §7.39–§7.60). Bugs and gaps found during development are logged directly here with a severity and a place in the order of work (`nightly_finds.md` was retired 2026-09-25; its "find #N" labels survive in HISTORY/git history). Overlaps have been consolidated and all open items are grouped by severity below.
-
-> **This section lists only open work.** Items §7.1–§7.27 (incl. §7.18, done 2026-09-29), §7.82, §7.83, §7.29–§7.33, §7.35, §7.37–§7.65, §7.67–§7.73, §7.75–§7.77, §7.79 were completed in 2026-09; their full write-ups live in [HISTORY.md](HISTORY.md) under their original numbers. §7.N identifiers are **never renumbered or reused**.
-
-### Critical / high severity (open)
-
-> Order of work (from `docs/reviews/external_4.md` §7; §7.39–§7.58 done — the §4.3 paper clock can start, replay numbers are look-ahead-free and the venue prerequisites §7.40/§7.41/§7.48/§7.58 are in). §7.61 (venue history hygiene, finds #18/#19) also landed ahead of the keyed venue run (§7.28). §7.75 (venue order lifecycle) and §7.76 (venue-scoped risk seeds), both found by the demo round trips, were fixed the same day. §7.77 (restart replay net of fees) and §7.79 (unbooked BUYs counted in equity) followed. §7.78 (one DB per agent × mode) landed 2026-09-28 (split applied to the real DB). **Open: the §7.28 multi-day demo run in a clean `data/demo_crypto.db`.**
-
-
-### Medium severity (open)
-
-> Order of work (2026-09-26, venues decided — **OKX Europe** for crypto, **Saxo** for stocks, CHANGE.md Q1; **crypto first**, ≈ €1,000 budget, free services only): ~~§7.64~~ (done) → ~~§7.65~~ (done) → §7.28 (OKX demo smoke run — keys work, overnight run clean, round trips done, §7.75 fixed and paper fees aligned 2026-09-28; the agent-driven round trips found §7.76 (fixed) and §7.77 — §7.77 fixed and re-verified; the DB is now split per agent × mode (§7.78 done 2026-09-28); next: the multi-day run in a clean `demo_crypto.db`) → ~~crypto screener + watchlist~~ (done as §7.70) → ~~§7.71~~ (crypto strategy sleeves, CHANGE.md P1 — done) → §7.66 (Saxo executor, SIM/paper only; per-symbol exchange windows land with it) → ~~§7.73~~ (performance ledger + baselines, CHANGE.md P2 — done) → §7.74 (allocator, CHANGE.md P3 — once the two sleeves have paper history). ~~§7.18~~ (market context, CHANGE.md P5 — done 2026-09-29; follow-ups §7.80/§7.81 open, §7.82/§7.83 done). These are the prerequisites of the CHANGE.md proposal (§5) and make paper numbers honest for the §4.3 gates.
-
-66. **Stocks executor → Saxo OpenAPI (replaces the dead XTB path)** ⏳ [found 2026-09-26; broker decided 2026-09-26]
-    - XTB disabled API access on 2025-03-14 ("XTB no longer offers API access"); our client targets `wss://ws.xapi.pro`, known only from third-party wrappers, and its module docs wrongly claim trading "now lives" there. Saxo (Danish bank, serves Slovakia) has a free developer **SIM** environment ($100k, no funding) and the same OpenAPI for live after app approval.
-    - Scope (decided 2026-09-26): **US and EU-listed stocks**; **paper/SIM only** until the budget grows (≈ €1,000 now; the $1 minimum is ~1 %/side at €100 positions); market data from **Saxo if free and adequate**, else yfinance — compare both here.
-    - Fix, in order: (1) ✅ done 2026-09-26 — XTB docs/comments corrected everywhere (module docstrings, config, README/ARCHITECTURE/API_NOTES/AGENTS: API closed 2025-03-14, `ws.xapi.pro` labelled an unofficial third-party relay, path kept disabled); (2) ✅ done 2026-09-27 — `execution/saxo_client.py::SaxoClient` (httpx; SIM/LIVE gateways, bearer token from env `SAXO_ACCESS_TOKEN`, `ErrorInfo` errors, token never logged) + `execution/saxo_executor.py::SaxoExecutor` behind the unchanged `Executor` protocol: account selection (explicit key or unique account in `account_currency`), Uic lookup via `saxo_execution.symbol_map` or an unambiguous search, whole-share long-only market orders, one-currency rule (FX-quoted instruments refused — US stocks from a USD account), fills from the order-activity audit log with the §7.62 sanity check, ledger positions capped by net positions, per-cycle two-phase reconciliation, `load_fills`/`load_pending_orders` hooks, venue `saxo-sim`/`saxo-live` (live behind `LIVE_TRADING_ACK`); the stocks runner prefers it when enabled (config error if XTB is enabled too). Protocol checked against the developer portal + `saxo_openapi` docs; tests are mocked (`tests/unit/test_saxo_executor.py`).
-    - **Done 2026-09-29 (no account needed):** (4) ✅ OAuth app — `execution/saxo_auth.py::SaxoOAuth` (authorization-code grant per the developer portal: `sim.logonvalidation.net/{authorize,token}`, Basic `AppKey:AppSecret`, 1200 s access / 2400 s rotating refresh token; LIVE host `live.logonvalidation.net` is configurable because the docs only show SIM), token pair in a 0600 file (`data/saxo_<env>.token.json`, gitignored, atomic replace), refresh before expiry + keep-alive rotation every `keepalive_minutes` (the agent makes no calls outside market hours), `SaxoClient(token_source=…)` with one refresh+retry on 401, `scripts/saxo_login.py` (local redirect listener or `--paste`, state checked), config `saxo_execution.oauth`, env `SAXO_APP_KEY`/`SAXO_APP_SECRET`; mocked tests only (`tests/unit/test_saxo_auth.py`). (6) ✅ stocks market context live-checked (yfinance earnings: AAPL 2026-10-29 / MSFT 2026-10-28 20:00 UTC; EDGAR 8-K Atom feeds) and shipped enabled — set `context.http_user_agent` to a name + contact before unattended use (SEC's request). **Per-exchange windows** ✅ — `stocks_agent.exchanges` + `symbol_exchanges` (US + EU universe; a cycle skips only when every window in use is closed, closed symbols skip one by one via `BaseTradingAgent._skip_symbol_reason`).
-    - **Next (needs the user's Saxo developer account — none configured yet):** (3) first SIM run — `--once` with a 24 h developer token (or `saxo_login` with an app), confirm account/instrument resolution, a buy + sell round trip, audit-log fill prices and net-position capping, and the OAuth refresh/keep-alive against the real `/token` endpoint; compare Saxo SIM prices with yfinance (CHANGE.md Q8). (5) Only after a successful SIM run: switch the shipped stocks config to Saxo and delete the XTB executor/client (+ their tests/config) — kept until then as the known-dead reference.
-
-74. **Deterministic allocator (CHANGE.md P3)** ⏳ [CHANGE.md §4.3, logged 2026-09-27 after §7.73]
-    - Weekly job (config) that re-weights sleeves for *new entries only* (never force-closes): score each sleeve on its trailing window (Sharpe-like on sleeve equity, net of fees; 0 unless it beats its best baseline — §7.73 math), shrink toward equal weights by sample size (`w = n/(n+k)·w_perf + k/(n+k)·w_equal`, k ≈ 30 closed trades), clamp to `[min_weight, max_weight]`, cap the change per rebalance (±10 pp), renormalize, and write an audited `strategy_allocations` row (inputs, scores, old → new; reason `rebalance`). A sleeve latched by its drawdown guard scores 0 until re-baselined.
-    - The job fetches history for the baselines (the dashboard cannot — it is DB-only), so it also persists each sleeve's baseline scores; the dashboard sleeve table then gains vs-baseline columns from those rows.
-    - Operator pin (safe-config override, tighten-only spirit of §7.43) and `min_weight`/`max_weight` per sleeve in `sleeves.strategies.*.budget`.
-    - Needs weeks of two-sleeve paper history before its numbers mean anything (CHANGE.md P1/P2 "done when"); replay over stored history first.
-
-28. **Keyed venue smoke pass** ⏳ [R1-H4, §7.6 follow-up, find #1] — *re-scoped by §7.41*
-    - Kraken **spot has no sandbox**, so the original "Kraken testnet" run cannot exist. **Now concrete (2026-09-26):** run it on the **OKX Europe demo** — §7.64 landed, the shipped config is ready (`exchange: myokx`, `testnet: true`; put the demo API key + secret + passphrase in `.env` as `EXCHANGE_API_KEY`/`_SECRET`/`_PASSPHRASE`) — first `--once`, then a multi-day paper run; confirms order format, fills, reconciliation and fee reporting against a real API. Needs a network-enabled environment.
-    - **First keyed demo run (2026-09-27):** OKX EEA demo keys work (read-only check: sandbox mode on `eea.okx.com`, demo balance 4,600 EUR + pre-loaded BTC/ETH — never agent positions, the ledger only knows the agent's own fills). The first `--once` cycle placed nothing but found two real bugs, both fixed: (a) `CcxtExecutor.get_cash` called `fetch_free_balance("EUR")`, but real ccxt's signature is `(params={})` — every keyed cycle died with "'str' object is not a mapping" (the stub accepted the wrong call; a test now runs the real ccxt method); (b) a stale Kraken-era dashboard override (`pairs: BTC/USDT, ETH/USDT`, `interval_minutes: 1`) replaced the EUR pairs — `pairs` overrides now obey the startup quote-currency rule (skipped at apply time, rejected at write time). Next: clear the stale override, re-run `--once`, then a multi-day demo run.
-    - **Second dry-run pass (2026-09-28):** two more finds fixed — (c) real ccxt `fetch_tickers()` returns a `{symbol: ticker}` dict, not a list (`CCXTProvider.fetch_quote_volumes` now handles both shapes; pinned by a test); (d) the EEA **demo** account lists only ~29 EUR spot pairs vs ~243 live, so the screener could add symbols the keyed executor cannot trade — `CcxtExecutor.tradable_symbols()` now whitelists candidates inside `WatchlistManager` (CHANGE.md P4's "only venue-tradable symbols"; paper stays unlimited). Re-run `--once` (watchlist enabled) to confirm end-to-end, then the multi-day demo run.
-    - **Overnight demo run (2026-09-27 23:03 → 09-28 06:33 UTC):** clean — 5-min cycles without gaps, 0 errors/fallbacks, screener added NEAR/EUR + SOL/EUR (both demo-tradable), 34 decisions = 34 HOLDs (LLM 13–26 s/call, prompts 0.9k→2.7k tokens as history filled, completions ≤ 1k) through a −1.4…−5.2 % drift, so **no order was placed** and the venue path stayed unexercised. No log file was captured (the runner ran in a terminal) — redirect output or start it from the dashboard next time.
-    - **Controlled round trip (2026-09-28, `scripts/demo_round_trip.py`):** forces one ~€20 BUY → SELL through the keyed `CcxtExecutor` (demo-only, runner lock held, no DB writes). Pipeline pricing (limit = live last close 73,111.8 vs demo ask 73,125.0) **rested 60 s and was cancelled**; priced 0.2 % across the close (a since-removed `--cross-pct` flag — the executor now does this itself, §7.75) both legs filled (BUY avg 73,096.0, SELL avg 73,087.4). Confirmed working: OKX `create_order` returns only an id (`status: None` → recorded `pending`) and `reconcile_open_orders`/`confirm_reconciled` resolved both within one poll; the BUY booked **net** of the base-currency fee (ledger 0.0002730029 = venue BTC delta exactly, §7.65); the SELL closed the ledger with a realized outcome. Finds → §7.75 (fixed the same day, see HISTORY).
-    - **Round trip after §7.75 (2026-09-28):** the BUY limit (+0.2 %) filled at 73,126.5 and the SELL filled at market, both resolved in the placement call with venue fill times. The dust was written off and the net realized PnL matched the cash change to the dust. **Fees resolved (2026-09-28):** the account reports **maker 0.10 % / taker 0.20 %** and every agent order is a taker, so the crypto paper profile now charges 0.20 %/side (`execution.paper_costs.crypto.paper_fee_pct: 0.002`) — paper, backtest replay and the §7.73 baselines use it. Re-check with the round-trip report when keys change (a live account may sit on another tier). **Next:** one pipeline-driven round trip, then the multi-day demo run.
-    - **Agent-driven round trip (2026-09-28, `scripts/demo_agent_round_trip.py`):** the real runner ran twice (scripted BUY; restart; scripted SELL) against the real DB. The BUY was **rejected by the drawdown gate** because of a peak inherited from old paper history, so no order was placed and the restart/SELL leg had nothing to close. → **§7.76** (critical). Rows written: decisions 143/144 (rejected, reasoning marked `SMOKE TEST`), portfolio snapshots, heartbeat. DB backed up first (`data/backups/trading_agent-pre-agent-roundtrip-20260928.db`).
-    - **Agent-driven round trip after §7.76 (2026-09-28):** both runs traded. Run 1: the BUY decision (145) was approved, sized at 10 % of the 4,600 EUR book (0.00630517 BTC ≈ 460 EUR, filled at 72,986.18 in the placement call) and persisted. The order row is venue-tagged `myokx-sandbox`, linked to its decision, with the venue's fill time. The snapshot shows the net position with SL/TP. Run 2: a fresh runner replayed 1 fill (1 open symbol); the SELL decision (146) filled at 72,948.42. `realized_pnl` landed on the order row, on the SELL decision and via `closed_entries` on the entry decision 145. The final snapshot is flat and the heartbeat carries no error. **Find → §7.77:** after the restart the replayed ledger was gross of the BTC buy fee, so the SELL sold 1.26e-5 BTC of pre-loaded demo coins, and the PnL shows −1.16 EUR instead of ≈ −2.08 EUR.
-    - **Agent round trip after §7.77 (2026-09-28):** OKX demo status polls timed out (`50004`), so the BUY (decision 147, 0.00631492 BTC @ 72,876.27) stayed `pending`. The first restart's SELL (148) was correctly rejected: nothing known to be held. Once the API recovered, `--sell-only` re-tracked the pending row at startup and reconciled it, persisting its `fee_base` 1.263e-5 BTC. The ledger was replayed **net** (0.00630229016 BTC), and the SELL (149) sold exactly that (`fee_quote` 0.918 EUR). Realized **−2.0404 EUR matches the cash change exactly** (4,598.5801 → 4,596.5397) and is backfilled onto entry decision 147. Find → §7.79 (equity dips while a fill is unconfirmed; fixed the same day).
-    - **Note for the multi-day run (2026-09-29):** the crypto book now runs with market context (§7.18) — BUYs are refused around high-impact USD/EUR events and for delisting-noticed assets (`Event guard:` rejections in `llm_decisions.risk_reason`). That is intended, not a venue problem.
-    - *Done meanwhile:* per-cycle status reconciliation of orders left `open` is implemented and pinned — `KrakenExecutor.reconcile_open_orders()` re-polls pending venue orders each cycle (agent-side `_reconcile_orders`), patches the stored row via `Storage.update_order_status`, and flows late fills through the FIFO ledger with entry-decision attribution (§7.28).
-
-### Low severity / housekeeping (open)
-
-80. **Summarizer live pass + model choice (CHANGE.md Q7)** ⏳ [logged 2026-09-29 with §7.18]
-    - The §7.18 summarizer (`context.summarizer`) is built and tested against mocked LLM replies only; it ships **off**. Next: with LM Studio up, enable it on the paper book, check card quality/latency (`llm_exchange` lines tagged `purpose=context_card`), and decide whether a smaller second model is worth a model swap (JIT load / idle-TTL unload cost) or the trading model with `llm: {max_tokens: 4096}` is enough. Watch for decision latency growth — the shared lock queues decisions behind a running digest.
-    - Also check the injection filter's false-positive rate on real news (`CardRejected … injection` warnings) before trusting it.
-
-81. **Macro calendar upkeep** ⏳ [logged 2026-09-29 with §7.18]
-    - `macro_calendar.events` ships FOMC + ECB decisions through December 2027 (official calendars, fetched 2026-09-29); CPI/NFP/PCE come only from the unofficial ForexFactory feed (bls.gov blocks scripted fetches). Add the BLS release dates by hand if the feed proves unreliable; extend the list before 2027 ends (a warning logs once no future entry is left).
-
-84. **`market_snapshots` is write-only** ⏳ [low, found 2026-09-30 in the cleanup pass]
-    - Every decision stores the candle series + indicators (`DecisionPipeline._persist_decision` → `save_market_snapshot`), retention prunes them after `snapshot_retention_days`, and nothing in production reads them (the backtester fetches fresh candles; the full prompt is already in the `llm_exchange` log). Decide: drop the table, the write and `snapshot_retention_days` — or give it a reader (e.g. replay the exact candles a decision saw).
-
-34. **Venue-side stop orders (OCO)** ⏳ [§7.9 follow-up]
-    - SL/TP enforcement is local to the agent; venue-side OCO stop orders (OKX demo algo orders, later Saxo) remain future work — worth revisiting together with the §7.28 keyed run.
-
-
-
+| LLM gives bad signals | Deterministic risk gate on every entry; conservative defaults; exits never gated |
+| LLM too slow / overloaded (timeouts → fallback HOLDs) | Timeout + HOLD fallback, loud alerts (§7.51); size the universe from §7.85; shared LLM lock; smaller summarizer model (§7.80) |
+| LLM non-determinism | `temperature 0.2`, optional `seed`; full prompt/response audit log; decision replay needs no LLM |
+| Paper PnL optimistic / overfitting to paper | Venue-matched costs (§7.65/§7.75); judge on forward time, not replays; start small |
+| Allocator chases noise | Minimum sample, shrinkage, caps, ±10 pp per rebalance, baseline eligibility (§7.74) |
+| News prompt injection / stale news | Raw text never in the trading prompt; strict bounded cards with TTL; guards read calendar data only (§7.18) |
+| Strategies interfere on one symbol | Symbol lock (§7.71) |
+| Exchange rate limits / downtime | ccxt rate limiting, backoff, fail-soft cycles, reconciliation of working orders |
+| Saxo SIM behaves differently from the mocks | §7.66 SIM run before any stocks use |
+| Complexity outgrows the safety story | Every feature behind a flag; with flags off behaviour is unchanged |

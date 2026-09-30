@@ -3,7 +3,7 @@
 One shared implementation of commission/FX arithmetic used by the paper
 executor's fills, the sizing cash-clamp (:func:`buy_cost_factor` /
 :func:`calculate_quantity`) and the decision-replay backtester, so paper PnL
-and the §4.3 live-readiness gates reflect the *venue being simulated* rather
+and the live-readiness gates (PLAN) reflect the *venue being simulated* rather
 than one Kraken-era percentage for everything.
 
 A venue's cost schedule has three parts:

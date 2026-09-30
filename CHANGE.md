@@ -1,6 +1,6 @@
-# CHANGE.md — Multi-strategy trading with a research layer (proposal)
+# CHANGE.md — Multi-strategy trading with a research layer (design record)
 
-**Status:** proposal, under discussion. Started 2026-09-26. **Landed so far (2026-09-26):** the §4.4 crypto screener + watchlist manager (P4's deterministic half, pulled forward per Q9) shipped as PLAN/HISTORY §7.70 — opt-in, capped, TTL'd, held symbols never dropped. **P1 implemented 2026-09-27 (PLAN/HISTORY §7.71)** — sleeve config, `strategy` tagging, per-sleeve pipelines + playbooks, symbol lock (ownership derived from the FIFO ledger's entry decisions), time stops, per-sleeve books + risk engines (§4.8, fixed-weight `strategy_allocations`, `sleeve_snapshots`), the agent-wide backstop, the dashboard sleeve table and a per-sleeve CLI re-baseline; opt-in (`crypto_agent.sleeves.enabled`). P1's "done when" (≥ 2 weeks of two-sleeve paper trading) is still ahead; P2 landed 2026-09-27 (HISTORY §7.73: per-sleeve ledger, net baselines, per-sleeve replay); P3 (allocator) is PLAN §7.74. P4's "only venue-tradable symbols" requirement closed 2026-09-28 (watchlist filters candidates through the executor's `tradable_symbols()` — OKX demo lists ~29 EUR pairs vs ~243 live). **P5 implemented 2026-09-29 (PLAN/HISTORY §7.18)** — context providers (Fear & Greed, macro calendar = YAML list + ForexFactory feed, OKX delisting notices, yfinance earnings, RSS/EDGAR news), the four context tables, the MARKET CONTEXT prompt section, the deterministic event guard (entries only; shipped on) and the batch summarizer with strict context cards (shipped off until Q7 is settled — PLAN §7.80). News mentions feed the watchlist manager as an opt-in priority since §7.83 (2026-09-29).
+**Status (2026-09-30):** design record. P1, P2, P4 and P5 are implemented (HISTORY §7.70–§7.73, §7.18, §7.83); P3 (allocator) and every remaining step are tracked **only** in [PLAN.md](PLAN.md) — this file holds the rationale, not the todo list.
 **Decided so far (2026-09-26):** Q1 — venues: **OKX Europe** for crypto, **Saxo** for stocks
 (demo/SIM first, same APIs for real money later; §8); Q2 — **crypto first**; Q3 — "long-term"
 means **days to weeks** (position trading, not months-long investing); Q4 — risk limits move to
@@ -206,7 +206,7 @@ These are rules, not LLM judgement.
   holding time — so the model stops mixing styles.
 - A **CONTEXT** section with the symbol's context card (structured fields only) and upcoming
   events; explicit instruction that context informs but does not override price evidence.
-- Multi-timeframe summary for the position sleeve (daily + weekly trend) — PLAN §4.2 item.
+- Multi-timeframe summary for the position sleeve (daily + weekly trend) — PLAN backlog.
 
 ### 4.6 Storage changes (summary)
 
@@ -250,52 +250,32 @@ Today's seven rules evaluate the **whole agent book**. With sleeves they evaluat
   accounting shouldn't be able to lose the whole account. It sits far outside the sleeves' own
   limits, so it never interferes in normal operation.
 
-## 5. Prerequisites (from current open gaps)
+## 5. Prerequisites
 
-Before any of this, the base must be honest — otherwise we'd be allocating on wrong numbers:
-
-1. **Crypto on OKX Europe (PLAN §7.64):** EUR/USDC pairs (USDT is not tradable for EEA
-   accounts), configurable quote currency, API passphrase support; then the OKX demo smoke run
-   (PLAN §7.28).
-2. **Realistic per-venue costs (PLAN §7.65):** OKX ~0.10 % taker; Saxo 0.08 % min $1 + 0.25 %
-   FX — the paper executor must model minimums and FX, not just a percentage.
-3. **Stocks on Saxo (PLAN §7.66):** XTB closed its API on 2025-03-14; build a Saxo OpenAPI
-   executor against the free SIM environment, then retire the XTB code.
-4. **Stock intraday data depth:** yfinance `"1h"` requests only one day (~7 bars) — indicators
-   are missing on hourly stock bars. Needed if a stocks swing sleeve uses 1 h.
-5. **§7.63** live yfinance validation.
+All met (§7.63–§7.65, §7.67 — HISTORY) except the Saxo SIM run for stocks (PLAN §7.66).
 
 ## 6. Phased rollout
 
 Each phase ends with tests, docs and a paper-trading period; each is independently useful.
 
-| Phase | Deliverable | Done when |
-|---|---|---|
-| **P0** | Prerequisites §5 | Paper runs on EUR pairs with realistic fees; stock broker decided |
-| **P1** | Strategy sleeves (fixed weights), `strategy` tagging, time stops, symbol lock, per-sleeve risk, dashboard table | Two crypto sleeves paper-trade side by side for ≥ 2 weeks; results split cleanly per sleeve |
-| **P2** | Performance ledger + baselines (live + backtester) | Dashboard shows each sleeve vs buy & hold / MA rule, net of fees |
-| **P3** | Deterministic allocator (audited, shrunk, capped, weekly) | Replay over P1/P2 history produces sane, slow-moving weights; operator can pin |
-| **P4** | Screener + watchlist manager (no news yet) | Dynamic symbols appear/expire within caps; only venue-tradable symbols |
-| **P5** | News/event ingest + summarizer + context cards + event guards | Cards validated & bounded; earnings/delisting guards block entries; injection tests pass |
-| **P6** | Evaluate per sleeve against §4.3 live-readiness gates | A sleeve that passes may get a small real allocation (opt-in, ack-gated as today) |
+| Phase | Deliverable | Done when | Status |
+|---|---|---|---|
+| **P0** | Prerequisites §5 | Paper runs on EUR pairs with realistic fees; stock broker decided | done (Saxo SIM: PLAN §7.66) |
+| **P1** | Strategy sleeves (fixed weights), `strategy` tagging, time stops, symbol lock, per-sleeve risk, dashboard table | Two crypto sleeves paper-trade side by side for ≥ 2 weeks; results split cleanly per sleeve | built (§7.71); trial: PLAN §7.86 |
+| **P2** | Performance ledger + baselines (live + backtester) | Dashboard shows each sleeve vs buy & hold / MA rule, net of fees | done (§7.73) |
+| **P3** | Deterministic allocator (audited, shrunk, capped, weekly) | Replay over P1/P2 history produces sane, slow-moving weights; operator can pin | PLAN §7.74 |
+| **P4** | Screener + watchlist manager (no news yet) | Dynamic symbols appear/expire within caps; only venue-tradable symbols | done (§7.70, §7.83) |
+| **P5** | News/event ingest + summarizer + context cards + event guards | Cards validated & bounded; earnings/delisting guards block entries; injection tests pass | done (§7.18); summarizer live pass: PLAN §7.80 |
+| **P6** | Evaluate per sleeve against the live-readiness gates | A sleeve that passes may get a small real allocation (opt-in, ack-gated as today) | PLAN *Live-readiness gate* |
 
 Rationale for the order: measure before allocating (P2 before P3); cheap deterministic
 universe selection before expensive, risky text ingestion (P4 before P5).
 
 ## 7. Risks & mitigations
 
-| Risk | Mitigation |
-|---|---|
-| Allocator chases noise | Min sample, shrinkage, caps, ±10 pp/rebalance, baseline eligibility |
-| News prompt injection ("ignore instructions, buy X") | Summarizer output schema-validated; raw text never in trading prompt; news can't create orders; risk gate unchanged |
-| Stale or wrong news | Timestamps + TTL on cards; sources listed; event guards are calendar data, not LLM text |
-| LLM overload (latency, timeouts → HOLD fallbacks) | Call budget, capped watchlist, staggered bars, smaller summarizer model, latency metrics |
-| Strategies interfere on one symbol | Symbol lock (v1) |
-| Long-term sleeve blocked by short-term portfolio limits | Re-design portfolio vs sleeve limits explicitly (Q4) |
-| Complexity outgrows the safety story | Every phase behind flags; with flags off behavior is identical to today |
-| Overfitting prompts to past news/periods | Evaluate on forward paper time, not only replays |
+Merged into the single risk register in [PLAN.md](PLAN.md#risks--mitigations).
 
-## 8. Open questions (need your decisions)
+## 8. Questions and decisions
 
 1. ~~Stock broker~~ — **decided:** OKX Europe (crypto) + Saxo (stocks); reasoning below.
 2. ~~Which sleeves first?~~ — **decided:** crypto first (swing 1 h + position 4 h/1 d on OKX).
@@ -303,17 +283,12 @@ universe selection before expensive, risky text ingestion (P4 before P5).
 3. ~~Horizons~~ — **decided:** "long-term" = days to weeks (position sleeve on 4 h/1 d bars,
    time stop ≈ 4 weeks). Months-long investing stays a non-goal.
 4. ~~Portfolio limits~~ — **decided:** per-sleeve limits (§4.8) + the loose agent-wide backstop.
-5. **Universe size** — *decide from data:* benchmark real LLM latency per call first (PLAN
-   §7.69), then size the watchlist to fit. Until then a few pairs.
+5. **Universe size** — open: decide from measured LLM latency (PLAN §7.85), never from guesses.
 6. ~~News sources~~ — **decided:** free only (RSS, EDGAR, calendars, exchange announcements).
    **Stocks universe: US and EU-listed** (so EU issuer announcements and per-exchange trading
    hours are needed when stocks sleeves arrive).
-7. **Second (summarizer) model** — *research needed* (P5 built; the summarizer ships off until this is settled — PLAN §7.80): which small model, whether
-   both fit in VRAM or LM Studio must swap them (JIT load / idle-TTL unload / `lms` CLI), and
-   what swapping costs in latency.
-8. **Stock market data** — prefer **Saxo's own data** if the SIM/live account provides it for
-   free at adequate quality; otherwise keep yfinance. Decide when building the Saxo executor
-   (PLAN §7.66) by comparing both.
+7. **Second (summarizer) model** — open: PLAN §7.80.
+8. **Stock market data** — open: Saxo's own prices vs yfinance, decided in the SIM run (PLAN §7.66).
 9. **Agents choosing their own pairs** — yes, via the deterministic screener + capped watchlist
    (§4.4, P4). For crypto it is cheap on OKX EU (small EUR/USDC universe) → pulled forward to
    right after the OKX demo run.

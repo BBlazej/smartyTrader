@@ -80,7 +80,7 @@ until a SIM run with a real token; verified against the developer portal and the
 - **Holdings:** `GET /port/v1/netpositions/me?FieldGroups=NetPositionBase,NetPositionView` →
   `NetPositionBase.Amount/Uic/AssetType`, `NetPositionView.CurrentPrice` — net per instrument
   whatever the account's position-netting mode; caps the local FIFO ledger.
-- **Market data (open question Q8):** yfinance stays the stocks data source; comparing Saxo's
+- **Market data (open question — PLAN §7.66):** yfinance stays the stocks data source; comparing Saxo's
   own (SIM: delayed) prices is part of the first SIM run.
 
 ## XTB Demo (stocks) — DEAD PATH (2026-09-26, §7.66)

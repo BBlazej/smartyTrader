@@ -8,7 +8,7 @@ Autonomous paper-trading agents powered by a local LLM. The goal: safe, testable
 - Crypto: CCXT → **OKX Europe** (ccxt `myokx`, `eea.okx.com`), EUR-quoted pairs only (USDT not tradable for EEA). Public data needs no key; keyed runs use the OKX **demo** (`testnet: true` → ccxt sandbox) or ack-gated live (§7.41)
 - Stocks: yfinance data (`data/stocks_provider.py`); execution on **Saxo OpenAPI** (SIM first, §7.66). The XTB path is dead (API closed 2025-03-14) and kept disabled until the Saxo SIM run
 - Config: `config/settings.yaml` (all tunables, commented) + `.env` for secrets
-- Docs: `README.md` (overview), `ARCHITECTURE.md` (module map, data flow, schema, design), `PLAN.md` (open work — §7), `HISTORY.md` (done work), `CHANGE.md` (multi-strategy design), `docs/API_NOTES.md` (venue/data APIs), `docs/reviews/` (external reviews; `[R4-xx]` → `external_4.md`)
+- Docs: `README.md` (overview), `ARCHITECTURE.md` (module map, data flow, schema, design), `PLAN.md` (the single list of open work — todos, gaps, open questions, limitations, risks), `HISTORY.md` (done work), `CHANGE.md` (multi-strategy design), `docs/API_NOTES.md` (venue/data APIs), `docs/reviews/` (external reviews; `[R4-xx]` → `external_4.md`)
 
 ### Commands
 
@@ -99,4 +99,4 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 
 - After every change, update `AGENTS.md` (rules only — keep it short), `README.md` and `PLAN.md`; architecture changes also go into `ARCHITECTURE.md`.
 - When a PLAN §7 item completes, move its write-up to `HISTORY.md` under its original number and remove it from PLAN §7. §7.N identifiers are never renumbered or reused.
-- New bugs/gaps found while developing go into `PLAN.md` with a severity and a place in the order of work.
+- Every todo, gap, open question or accepted limitation lives **only** in `PLAN.md` (next free §7.N, a severity, a row in *Order of work*) — never as a to-do list in another doc.

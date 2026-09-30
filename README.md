@@ -182,7 +182,7 @@ watchlist (both opt-in), decision-replay backtests with dumb baselines, and a we
 dashboard. Keyed execution is verified on the OKX **demo**; Saxo SIM (stocks) is built
 and awaits a developer account. Real money stays double-gated (below).
 **1285 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
-open work: [PLAN.md](PLAN.md) §7.
+open work (the single list): [PLAN.md](PLAN.md).
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with
 > `crypto_agent.testnet: false` **and** `live_trading: true` **and**
@@ -196,7 +196,7 @@ open work: [PLAN.md](PLAN.md) §7.
 | `README.md` (this file) | overview & quickstart |
 | `ARCHITECTURE.md` | architecture: module map, data flow, storage schema, control plane, design decisions |
 | `AGENTS.md` | rules and facts for coding agents |
-| `PLAN.md` | open work (§7), iteration plan, risk register |
+| `PLAN.md` | all open work: order of work, §7 items, live-readiness gate, backlog, limitations, risks |
 | `HISTORY.md` | delivered work, completed §7 items |
 | `CHANGE.md` | multi-strategy design: sleeves, allocator, research layer (P1/P2/P4/P5 done, P3 open) |
 | `docs/API_NOTES.md` | venue and data-source API notes |
