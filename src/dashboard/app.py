@@ -54,6 +54,7 @@ from ..core.models import EventKind, SymbolContext
 from ..core.performance import sleeve_performance
 from ..core.risk_engine import RiskEngine
 from ..core.storage import Storage
+from ..core.timeutil import to_utc
 from ..core.web_security import (
     CSRF_FIELD,
     CSRF_HEADER,
@@ -103,9 +104,7 @@ def _rel(dt_value: Any) -> str:
     if dt_value is None:
         return "never"
     try:
-        then = (
-            dt_value.replace(tzinfo=UTC) if getattr(dt_value, "tzinfo", None) is None else dt_value
-        )
+        then = to_utc(dt_value)
     except (AttributeError, ValueError):
         return str(dt_value)
     delta = datetime.now(UTC) - then

@@ -23,25 +23,20 @@ from ..models import (
     NewsItem,
     SentimentReading,
 )
+from ..timeutil import to_naive_utc, to_utc
 from .models import (
     ContextCardRow,
     MarketEventRow,
     NewsItemRow,
     SentimentReadingRow,
-    _as_naive_utc,
 )
-
-
-def _aware(value: datetime) -> datetime:
-    """SQLite hands back naive UTC; the context models carry aware datetimes."""
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def _event_from_row(row: MarketEventRow) -> MarketEvent:
     return MarketEvent(
         source=row.source,
         kind=EventKind(row.kind),
-        at=_aware(row.at),
+        at=to_utc(row.at),
         title=row.title,
         asset=row.asset,
         currency=row.currency,
@@ -56,7 +51,7 @@ def _news_from_row(row: NewsItemRow) -> NewsItem:
         url=row.url,
         title=row.title,
         text=row.body,
-        published_at=_aware(row.published_at),
+        published_at=to_utc(row.published_at),
         symbols=json.loads(row.symbols_json or "[]"),
     )
 
@@ -88,7 +83,7 @@ class ContextMixin:
                         kind=event.kind.value,
                         asset=event.asset,
                         currency=event.currency,
-                        at=_as_naive_utc(event.at),
+                        at=to_naive_utc(event.at),
                         importance=event.importance.value,
                         title=event.title,
                         url=event.url,
@@ -120,10 +115,10 @@ class ContextMixin:
         async with await self._session() as session:
             stmt = delete(MarketEventRow).where(
                 MarketEventRow.source == source,
-                MarketEventRow.at >= _as_naive_utc(start),
+                MarketEventRow.at >= to_naive_utc(start),
             )
             if end is not None:
-                stmt = stmt.where(MarketEventRow.at <= _as_naive_utc(end))
+                stmt = stmt.where(MarketEventRow.at <= to_naive_utc(end))
             if keys:
                 stmt = stmt.where(MarketEventRow.dedup_key.not_in(keys))
             if scoped is not None:
@@ -149,8 +144,8 @@ class ContextMixin:
         """
         async with await self._session() as session:
             stmt = select(MarketEventRow).where(
-                MarketEventRow.at >= _as_naive_utc(start),
-                MarketEventRow.at <= _as_naive_utc(end),
+                MarketEventRow.at >= to_naive_utc(start),
+                MarketEventRow.at <= to_naive_utc(end),
             )
             if assets is not None:
                 wanted = [a.upper() for a in assets]
@@ -175,7 +170,7 @@ class ContextMixin:
             if scoped is not None:
                 stmt = stmt.where(MarketEventRow.agent == scoped)
             first = (await session.execute(stmt)).scalar()
-            return _aware(first) if first is not None else None
+            return to_utc(first) if first is not None else None
 
     # ── Sentiment ─────────────────────────────────────────
 
@@ -189,7 +184,7 @@ class ContextMixin:
             for reading in readings:
                 stmt = select(SentimentReadingRow.id).where(
                     SentimentReadingRow.source == reading.source,
-                    SentimentReadingRow.as_of == _as_naive_utc(reading.as_of),
+                    SentimentReadingRow.as_of == to_naive_utc(reading.as_of),
                 )
                 if scoped is not None:
                     stmt = stmt.where(SentimentReadingRow.agent == scoped)
@@ -201,7 +196,7 @@ class ContextMixin:
                         source=reading.source,
                         value=float(reading.value),
                         label=reading.label,
-                        as_of=_as_naive_utc(reading.as_of),
+                        as_of=to_naive_utc(reading.as_of),
                     )
                 )
                 inserted += 1
@@ -224,7 +219,7 @@ class ContextMixin:
             if row is None:
                 return None
             return SentimentReading(
-                source=row.source, value=row.value, label=row.label, as_of=_aware(row.as_of)
+                source=row.source, value=row.value, label=row.label, as_of=to_utc(row.as_of)
             )
 
     # ── News ──────────────────────────────────────────────
@@ -249,7 +244,7 @@ class ContextMixin:
                         url=item.url,
                         title=item.title,
                         body=item.text,
-                        published_at=_as_naive_utc(item.published_at),
+                        published_at=to_naive_utc(item.published_at),
                         symbols_json=json.dumps(sorted(set(item.symbols))),
                         content_hash=key,
                     )
@@ -263,7 +258,7 @@ class ContextMixin:
         """Items matched to ``symbol`` published after ``since``, newest first."""
         async with await self._session() as session:
             stmt = select(NewsItemRow).where(
-                NewsItemRow.published_at > _as_naive_utc(since),
+                NewsItemRow.published_at > to_naive_utc(since),
                 # symbols_json is a sorted JSON list of strings; the quoted form
                 # matches exactly one element (no BTC/EUR ⊂ WBTC/EUR false hit).
                 NewsItemRow.symbols_json.contains(json.dumps(symbol)),
@@ -291,8 +286,8 @@ class ContextMixin:
                 symbol=card.symbol,
                 card_json=card.model_dump_json(),
                 model=model,
-                news_through=_as_naive_utc(news_through) if news_through else None,
-                expires_at=_as_naive_utc(expires_at),
+                news_through=to_naive_utc(news_through) if news_through else None,
+                expires_at=to_naive_utc(expires_at),
             )
             session.add(row)
             await session.commit()
@@ -315,7 +310,7 @@ class ContextMixin:
     ) -> ContextCard | None:
         """The newest *unexpired* card for ``symbol`` (``None`` when none is fresh)."""
         row = await self.get_latest_context_card_row(symbol, agent=agent)
-        moment = _as_naive_utc(now or datetime.now(UTC))
+        moment = to_naive_utc(now or datetime.now(UTC))
         if row is None or row.expires_at <= moment:
             return None
         return ContextCard.model_validate_json(row.card_json)
@@ -327,7 +322,7 @@ class ContextMixin:
     ) -> list[NewsItem]:
         """Every stored item published after ``since``, newest first."""
         async with await self._session() as session:
-            stmt = select(NewsItemRow).where(NewsItemRow.published_at > _as_naive_utc(since))
+            stmt = select(NewsItemRow).where(NewsItemRow.published_at > to_naive_utc(since))
             scoped = self._agent_scope(agent)
             if scoped is not None:
                 stmt = stmt.where(NewsItemRow.agent == scoped)
@@ -338,7 +333,7 @@ class ContextMixin:
         self, now: datetime | None = None, agent: str | None = None
     ) -> list[tuple[ContextCard, ContextCardRow]]:
         """The newest unexpired card per symbol (symbol order)."""
-        moment = _as_naive_utc(now or datetime.now(UTC))
+        moment = to_naive_utc(now or datetime.now(UTC))
         async with await self._session() as session:
             stmt = select(ContextCardRow).where(ContextCardRow.expires_at > moment)
             scoped = self._agent_scope(agent)
@@ -367,7 +362,7 @@ class ContextMixin:
                 for source, fetched in (await session.execute(stmt)).all():
                     if fetched is None:
                         continue
-                    stamp = _aware(fetched)
+                    stamp = to_utc(fetched)
                     if source not in freshness or stamp > freshness[source]:
                         freshness[source] = stamp
         return freshness
@@ -378,7 +373,7 @@ class ContextMixin:
         """Delete context rows older than ``days`` (``<= 0`` disables)."""
         if days <= 0:
             return {}
-        cutoff = _as_naive_utc(now or datetime.now(UTC)) - timedelta(days=days)
+        cutoff = to_naive_utc(now or datetime.now(UTC)) - timedelta(days=days)
         counts: dict[str, int] = {}
         async with await self._session() as session:
             for name, stmt in (

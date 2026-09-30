@@ -12,7 +12,8 @@ from datetime import datetime
 import structlog
 from sqlalchemy import select
 
-from .models import LLMDecisionRow, _as_naive_utc
+from ..timeutil import to_naive_utc
+from .models import LLMDecisionRow
 
 
 class DecisionMixin:
@@ -209,8 +210,8 @@ class DecisionMixin:
         trade decision (§7.8) and would only add noise to the replay.
         Timestamps are compared as naive UTC (SQLite has no tz-aware storage).
         """
-        cutoff_start = _as_naive_utc(start)
-        cutoff_end = _as_naive_utc(end)
+        cutoff_start = to_naive_utc(start)
+        cutoff_end = to_naive_utc(end)
         async with await self._session() as session:
             stmt = select(LLMDecisionRow).where(
                 LLMDecisionRow.timestamp >= cutoff_start,

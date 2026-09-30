@@ -11,18 +11,6 @@ from datetime import UTC, datetime
 from sqlalchemy import Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-
-def _as_naive_utc(value: datetime) -> datetime:
-    """Render an (aware or naive) UTC datetime as naive UTC for SQLite comparison.
-
-    Timestamps are stored via SQLAlchemy's SQLite DATETIME, which drops tz info —
-    so range comparisons must use the same naive-UTC wall clock.
-    """
-    if value.tzinfo is not None:
-        return value.astimezone(UTC).replace(tzinfo=None)
-    return value
-
-
 # ── Base ──────────────────────────────────────────────
 
 

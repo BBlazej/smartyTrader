@@ -21,7 +21,7 @@ from __future__ import annotations
 import html
 import re
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import httpx
@@ -29,6 +29,7 @@ import structlog
 
 from ...core.config import NewsFeedSpec
 from ...core.models import NewsItem
+from ...core.timeutil import to_utc
 from .base import ContextBatch, base_asset, get_bytes
 
 logger = structlog.get_logger()
@@ -59,7 +60,7 @@ def _parse_time(value: str | None) -> datetime | None:
             parsed = datetime.fromisoformat(value)  # RFC 3339 (Atom)
         except ValueError:
             return None
-    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return to_utc(parsed)
 
 
 def _text(element: ET.Element | None) -> str | None:

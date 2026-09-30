@@ -21,12 +21,9 @@ from ..analysis.context_cards import (
     parse_context_card,
 )
 from .config import SummarizerSettings
+from .timeutil import to_naive_utc
 
 logger = structlog.get_logger()
-
-
-def _naive(value: datetime) -> datetime:
-    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
 class ContextSummarizer:
@@ -74,8 +71,8 @@ class ContextSummarizer:
                 if (
                     latest is not None
                     and latest.news_through is not None
-                    and latest.news_through >= _naive(newest)
-                    and latest.expires_at > _naive(moment)
+                    and latest.news_through >= to_naive_utc(newest)
+                    and latest.expires_at > to_naive_utc(moment)
                 ):
                     status[symbol] = "up to date"
                     continue

@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
 
 from ...core.models import EventImportance, EventKind, MarketEvent
+from ...core.timeutil import to_utc
 from .base import ContextBatch
 
 logger = structlog.get_logger()
@@ -50,7 +51,7 @@ class EarningsProvider:
             value = stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else stamp
             if not isinstance(value, datetime):
                 continue
-            dates.append(value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC))
+            dates.append(to_utc(value))
         return dates
 
     async def fetch(self, symbols: list[str], now: datetime) -> ContextBatch:

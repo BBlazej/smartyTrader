@@ -21,7 +21,7 @@ agent at all), so failures log and leave that piece of state defaulted.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -31,6 +31,7 @@ from ..execution.position_tracker import FillRecord
 from .models import OrderSide, Position
 from .risk_engine import RiskEngine
 from .storage import Storage
+from .timeutil import to_utc
 
 logger = structlog.get_logger()
 
@@ -39,13 +40,6 @@ def executor_venue(executor: Any) -> str | None:
     """The executor's venue label (§7.61), or ``None`` when it declares none."""
     venue = getattr(executor, "venue", None)
     return venue if isinstance(venue, str) and venue else None
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """Attach UTC to naive stored timestamps (SQLite has no tz info)."""
-    if value is None:
-        return None
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
@@ -237,7 +231,7 @@ async def rehydrate_loss_streak(
     """
     try:
         outcomes: list[tuple[float, datetime | None]] = [
-            (float(o.realized_pnl), _as_utc(o.filled_at or o.created_at))
+            (float(o.realized_pnl), to_utc(o.filled_at or o.created_at))
             for o in await storage.get_recent_closing_fills(
                 limit=50, **({"strategy": strategy} if strategy is not None else {})
             )

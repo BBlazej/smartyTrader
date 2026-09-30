@@ -46,6 +46,7 @@ from src.core.db_layout import MODES, db_path
 from src.core.models import OHLCV, MarketEvent
 from src.core.sleeves import sleeve_risk_settings
 from src.core.storage import Storage
+from src.core.timeutil import to_utc
 
 
 def _parse_dt(value: str, *, end_of_day: bool = False) -> datetime:
@@ -138,9 +139,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         decisions = [
             ReplayDecision(
-                timestamp=row.timestamp.replace(tzinfo=UTC)
-                if row.timestamp.tzinfo is None
-                else row.timestamp,
+                timestamp=to_utc(row.timestamp),
                 symbol=row.symbol,
                 action=row.action,
                 confidence=row.confidence,

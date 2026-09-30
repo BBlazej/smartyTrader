@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -38,6 +38,7 @@ from .portfolio import read_portfolio
 from .risk_engine import RiskEngine, long_exposure
 from .sleeves import TIME_STOP, Ownership, SleeveBook
 from .storage import Storage
+from .timeutil import to_utc
 
 logger = structlog.get_logger()
 
@@ -436,9 +437,7 @@ class DecisionPipeline:
         if not signal.is_fallback:
             # A fallback HOLD is not a decision: the next cycle retries the bar.
             decided_at = snapshot.fetched_at
-            self._last_decision_at[symbol] = (
-                decided_at.replace(tzinfo=UTC) if decided_at.tzinfo is None else decided_at
-            )
+            self._last_decision_at[symbol] = to_utc(decided_at)
 
         if risk_result.verdict == RiskVerdict.REJECTED:
             step_logger.warning(
@@ -699,8 +698,7 @@ class DecisionPipeline:
         """This symbol's market context (§7.18) and, on failure, why it is missing."""
         if self._context_reader is None:
             return None, None
-        now = snapshot.fetched_at
-        now = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+        now = to_utc(snapshot.fetched_at)
         try:
             return await self._context_reader.for_symbol(symbol, now), None
         except Exception as exc:  # noqa: BLE001 - the prompt goes on without it
@@ -854,8 +852,7 @@ class DecisionPipeline:
                 logger.warning("last-decision lookup failed", symbol=symbol, error=str(exc))
                 rows = []
             if rows and rows[0].timestamp is not None:
-                ts = rows[0].timestamp
-                last = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+                last = to_utc(rows[0].timestamp)
                 self._last_decision_at[symbol] = last
         if last is not None and last >= bar_closed_at:
             return f"awaiting new {timeframe} bar (last decision {last:%Y-%m-%d %H:%M} UTC)"

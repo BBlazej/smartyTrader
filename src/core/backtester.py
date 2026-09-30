@@ -65,6 +65,7 @@ from .models import (
     TradeSignal,
 )
 from .risk_engine import RiskEngine
+from .timeutil import to_utc
 
 logger = structlog.get_logger()
 
@@ -206,11 +207,7 @@ class DecisionReplayBacktester:
         self._last_close: dict[str, float] = {}
         # §7.82 event guard: None = off (no calendar); a list — even empty — = on.
         self._events = sorted(events, key=lambda e: e.at) if events is not None else None
-        self._guard_since = (
-            event_guard_since.replace(tzinfo=UTC)
-            if event_guard_since is not None and event_guard_since.tzinfo is None
-            else event_guard_since
-        )
+        self._guard_since = to_utc(event_guard_since)
         self._event_blocked = 0
 
     # ── Public API ────────────────────────────────────────────
@@ -343,8 +340,7 @@ class DecisionReplayBacktester:
         """The calendar a live BUY at this moment would have seen (§7.82), or ``None``."""
         if self._events is None or decision.action != Action.BUY.value:
             return None
-        ts = decision.timestamp
-        ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+        ts = to_utc(decision.timestamp)
         if self._guard_since is not None and ts < self._guard_since:
             return None  # decided before the live agent had any context
         asset = base_asset(decision.symbol)
@@ -434,15 +430,11 @@ class DecisionReplayBacktester:
             for candle in candles:
                 if candle.timestamp is None or candle.close <= 0:
                     continue
-                opened = candle.timestamp
-                if opened.tzinfo is None:
-                    opened = opened.replace(tzinfo=UTC)
+                opened = to_utc(candle.timestamp)
                 closed_at = opened + bar if bar is not None else opened
                 events.append((closed_at, 0, "candle", (symbol, candle)))
         for decision in decisions:
-            ts = decision.timestamp
-            if ts.tzinfo is None:  # stored naive UTC → localize for uniform ordering
-                ts = ts.replace(tzinfo=UTC)
+            ts = to_utc(decision.timestamp)  # stored naive UTC → uniform ordering
             events.append((ts, 1, "decision", decision))
         events.sort(key=lambda e: (e[0], e[1]))
         return [(ts, kind, payload) for ts, _o, kind, payload in events]

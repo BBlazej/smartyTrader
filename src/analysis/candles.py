@@ -11,8 +11,10 @@ Pure functions — no I/O.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
+
+from ..core.timeutil import to_utc
 
 _TIMEFRAME_RE = re.compile(r"^(\d+)([mhdw])$")
 _UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86_400, "w": 604_800}
@@ -33,10 +35,6 @@ def timeframe_delta(timeframe: str) -> timedelta | None:
     return timedelta(seconds=count * _UNIT_SECONDS[unit])
 
 
-def _aware(ts: datetime) -> datetime:
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
-
-
 def split_forming(candles: list[Any], timeframe: str, now: datetime) -> tuple[list[Any], Any]:
     """Split ``candles`` into ``(closed, forming)`` — ``forming`` is ``None`` when the
     last bar has already closed (or timing is unknown, in which case all count as closed).
@@ -47,7 +45,7 @@ def split_forming(candles: list[Any], timeframe: str, now: datetime) -> tuple[li
     last = candles[-1]
     if duration is None or getattr(last, "timestamp", None) is None:
         return candles, None
-    if _aware(last.timestamp) + duration > _aware(now):
+    if to_utc(last.timestamp) + duration > to_utc(now):
         return candles[:-1], last
     return candles, None
 
@@ -57,4 +55,4 @@ def bar_close_time(candle: Any, timeframe: str) -> datetime | None:
     duration = timeframe_delta(timeframe)
     if duration is None or getattr(candle, "timestamp", None) is None:
         return None
-    return _aware(candle.timestamp) + duration
+    return to_utc(candle.timestamp) + duration

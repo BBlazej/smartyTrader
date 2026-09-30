@@ -22,6 +22,7 @@ from ..data.context.base import ContextProvider, base_asset
 from ..data.context.news import SymbolMatcher
 from .config import ContextSettings
 from .models import EventKind, SymbolContext
+from .timeutil import to_utc
 
 logger = structlog.get_logger()
 
@@ -30,10 +31,6 @@ logger = structlog.get_logger()
 EVENT_LOOKBACK = timedelta(days=2)
 #: How far back delisting notices stay visible (the guard applies its own days).
 NOTICE_LOOKBACK = timedelta(days=365)
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class ContextRefresher:
@@ -50,7 +47,7 @@ class ContextRefresher:
 
     async def refresh(self, symbols: list[str], now: datetime | None = None) -> dict[str, str]:
         """One pass over every provider; returns ``{provider: "ok (…)" | "failed: …"}``."""
-        moment = _aware(now or datetime.now(UTC))
+        moment = to_utc(now or datetime.now(UTC))
         status: dict[str, str] = {}
         for provider in self._providers:
             try:
@@ -119,7 +116,7 @@ class NewsMentionCounter:
 
     async def __call__(self, symbols: list[str], now: datetime) -> dict[str, int]:
         items = await self._storage.get_recent_news(  # type: ignore[attr-defined]
-            _aware(now) - self._lookback, limit=self.MAX_ITEMS
+            to_utc(now) - self._lookback, limit=self.MAX_ITEMS
         )
         matcher = SymbolMatcher(symbols, self._aliases)
         counts = dict.fromkeys(symbols, 0)
@@ -138,7 +135,7 @@ class ContextReader:
 
     async def for_symbol(self, symbol: str, now: datetime) -> SymbolContext:
         """Raises on a storage error — the pipeline then blocks entries (fail-closed)."""
-        moment = _aware(now)
+        moment = to_utc(now)
         asset = base_asset(symbol)
         settings = self._settings
         storage = self._storage
@@ -160,7 +157,7 @@ class ContextReader:
         sentiment = None
         if settings.sentiment.enabled:
             reading = await storage.get_latest_sentiment(settings.sentiment.source)  # type: ignore[attr-defined]
-            if reading is not None and moment - _aware(reading.as_of) <= timedelta(
+            if reading is not None and moment - to_utc(reading.as_of) <= timedelta(
                 hours=settings.sentiment.max_age_hours
             ):
                 sentiment = reading

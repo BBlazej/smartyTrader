@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 
 from ..core.models import Position
+from ..core.timeutil import to_utc
 
 logger = structlog.get_logger(__name__)
 
@@ -117,7 +118,7 @@ def portfolio_chart(history: list[Any], limit: int | None = None) -> dict[str, l
         if stamp is not None:
             ts_iso.append(stamp.isoformat())
             # SQLite stores naive UTC; interpret it as UTC to get true epoch seconds.
-            ts_epoch.append(stamp.replace(tzinfo=UTC).timestamp())
+            ts_epoch.append(to_utc(stamp).timestamp())
         else:  # pragma: no cover - snapshots always carry a timestamp
             ts_iso.append("")
             ts_epoch.append(0.0)

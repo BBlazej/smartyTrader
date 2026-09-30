@@ -48,6 +48,7 @@ import structlog
 from ..core.config import VenueOrderSettings
 from ..core.costs import base_currency
 from ..core.models import OrderResult, OrderSide, Position
+from ..core.timeutil import to_utc
 from .position_tracker import FillRecord, PositionTracker, book_fill, replay_fills
 
 logger = structlog.get_logger()
@@ -484,9 +485,7 @@ class CcxtExecutor:
         for o in orders:
             if not o.order_id:
                 continue
-            placed_at = o.placed_at
-            if placed_at is not None and placed_at.tzinfo is None:
-                placed_at = placed_at.replace(tzinfo=UTC)  # SQLite stores naive UTC
+            placed_at = to_utc(o.placed_at)  # SQLite stores naive UTC
             self._order_symbols[o.order_id] = o.symbol
             self._open_orders.setdefault(
                 o.order_id,

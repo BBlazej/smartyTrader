@@ -14,12 +14,12 @@ from datetime import time as dtime
 import structlog
 from sqlalchemy import Select, func, select
 
+from ..timeutil import to_naive_utc
 from .models import (
     OrderRow,
     SleeveDrawdownResetRow,
     SleeveSnapshotRow,
     StrategyAllocationRow,
-    _as_naive_utc,
 )
 
 logger = structlog.get_logger()
@@ -76,7 +76,7 @@ class SleeveMixin:
                 OrderRow.status == "filled",
                 OrderRow.strategy == strategy,
                 OrderRow.realized_pnl.isnot(None),
-                OrderRow.filled_at >= _as_naive_utc(since),
+                OrderRow.filled_at >= to_naive_utc(since),
             )
             scope = self._agent_scope(agent)
             if scope is not None:
@@ -94,7 +94,7 @@ class SleeveMixin:
                 OrderRow.status == "filled", OrderRow.strategy == strategy
             )
             if since is not None:
-                stmt = stmt.where(OrderRow.filled_at >= _as_naive_utc(since))
+                stmt = stmt.where(OrderRow.filled_at >= to_naive_utc(since))
             scope = self._agent_scope(agent)
             if scope is not None:
                 stmt = stmt.where(OrderRow.agent == scope)
@@ -111,7 +111,7 @@ class SleeveMixin:
                 SleeveSnapshotRow.strategy == strategy
             )
             if since is not None:
-                stmt = stmt.where(SleeveSnapshotRow.timestamp >= _as_naive_utc(since))
+                stmt = stmt.where(SleeveSnapshotRow.timestamp >= to_naive_utc(since))
             stmt = stmt.order_by(SleeveSnapshotRow.timestamp.asc(), SleeveSnapshotRow.id.asc())
             return [float(v) for v in (await session.execute(stmt)).scalars()]
 
@@ -153,7 +153,7 @@ class SleeveMixin:
                 select(func.max(SleeveSnapshotRow.equity)), SleeveSnapshotRow, agent
             ).where(
                 SleeveSnapshotRow.strategy == strategy,
-                SleeveSnapshotRow.timestamp >= _as_naive_utc(since),
+                SleeveSnapshotRow.timestamp >= to_naive_utc(since),
             )
             value = (await session.execute(stmt)).scalar()
             return float(value) if value is not None else None
@@ -212,7 +212,7 @@ class SleeveMixin:
         """The sleeve's drawdown high-water seed: MAX(equity) since the allocation, or —
         after an operator re-baseline newer than it — ``max(baseline, MAX since reset)``."""
         reset = await self.get_sleeve_drawdown_reset(strategy, agent)
-        if reset is None or _as_naive_utc(reset.reset_at) < _as_naive_utc(since):
+        if reset is None or to_naive_utc(reset.reset_at) < to_naive_utc(since):
             return await self.get_sleeve_peak_equity(strategy, since, agent)
         peak = await self.get_sleeve_peak_equity(strategy, reset.reset_at, agent)
         return (
@@ -256,7 +256,7 @@ class SleeveMixin:
         """The sleeve's earliest snapshot of the current UTC day (at/after ``since``)."""
         start = datetime.combine(datetime.now(UTC).date(), dtime.min)
         if since is not None:
-            start = max(start, _as_naive_utc(since))
+            start = max(start, to_naive_utc(since))
         async with await self._session() as session:
             stmt = self._scoped(select(SleeveSnapshotRow), SleeveSnapshotRow, agent).where(
                 SleeveSnapshotRow.strategy == strategy, SleeveSnapshotRow.timestamp >= start

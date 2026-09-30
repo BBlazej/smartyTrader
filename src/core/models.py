@@ -8,6 +8,8 @@ from typing import Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, StringConstraints
 
+from .timeutil import to_utc
+
 # ── LLM Signal ────────────────────────────────────────────────
 
 
@@ -298,7 +300,7 @@ class MarketEvent(BaseModel):
         """Stable identity across refreshes (same event fetched twice = one row)."""
         import hashlib
 
-        at = self.at.astimezone(UTC) if self.at.tzinfo else self.at.replace(tzinfo=UTC)
+        at = to_utc(self.at)
         raw = "|".join(
             [
                 self.source,

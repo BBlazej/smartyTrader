@@ -13,14 +13,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
+from ..timeutil import to_naive_utc
 from .models import WatchlistEntryRow
-
-
-def _naive_utc(value: datetime) -> datetime:
-    """SQLite DATETIME stores naive UTC; render any aware value the same way."""
-    if value.tzinfo is not None:
-        return value.astimezone(UTC).replace(tzinfo=None)
-    return value
 
 
 class WatchlistMixin:
@@ -38,7 +32,7 @@ class WatchlistMixin:
     ) -> WatchlistEntryRow:
         """Add ``symbol`` (or refresh its expiry/meta if the agent already holds it)."""
         scoped_agent = self._agent_scope(agent)
-        now = _naive_utc(added_at or datetime.now(UTC))
+        now = to_naive_utc(added_at or datetime.now(UTC))
         async with await self._session() as session:
             existing = await session.execute(
                 select(WatchlistEntryRow).where(
@@ -53,12 +47,12 @@ class WatchlistMixin:
                     symbol=symbol,
                     source=source,
                     added_at=now,
-                    expires_at=_naive_utc(expires_at),
+                    expires_at=to_naive_utc(expires_at),
                     meta_json=json.dumps(meta or {}),
                 )
                 session.add(row)
             else:
-                row.expires_at = _naive_utc(expires_at)
+                row.expires_at = to_naive_utc(expires_at)
                 row.meta_json = json.dumps(meta or {})
             await session.commit()
             return row
@@ -67,7 +61,7 @@ class WatchlistMixin:
         self, agent: str | None = None, now: datetime | None = None
     ) -> list[WatchlistEntryRow]:
         """Unexpired entries for the bound/explicit agent, oldest added first."""
-        moment = _naive_utc(now or datetime.now(UTC))
+        moment = to_naive_utc(now or datetime.now(UTC))
         async with await self._session() as session:
             query = select(WatchlistEntryRow).where(WatchlistEntryRow.expires_at > moment)
             scope = self._agent_scope(agent)
@@ -80,7 +74,7 @@ class WatchlistMixin:
         self, agent: str | None = None, now: datetime | None = None
     ) -> int:
         """Drop entries whose TTL has passed; returns the number deleted."""
-        moment = _naive_utc(now or datetime.now(UTC))
+        moment = to_naive_utc(now or datetime.now(UTC))
         scoped_agent = self._agent_scope(agent)
         async with await self._session() as session:
             stmt = delete(WatchlistEntryRow).where(WatchlistEntryRow.expires_at <= moment)

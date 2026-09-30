@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -47,6 +47,7 @@ from .risk_engine import RiskEngine
 
 if TYPE_CHECKING:
     from .decision_pipeline import DecisionPipeline
+from .timeutil import to_utc
 
 logger = structlog.get_logger()
 
@@ -98,10 +99,6 @@ class SleeveEquity:
     @property
     def equity(self) -> float:
         return self.portfolio.total_value
-
-
-def _aware(ts: datetime) -> datetime:
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
 
 
 @dataclass(frozen=True)
@@ -197,7 +194,7 @@ class SleeveBook:
         for decision_id in ids:  # oldest lot first
             name, ts = self._decision_meta.get(decision_id, (None, None))
             if opened_at is None and ts is not None:
-                opened_at = _aware(ts)
+                opened_at = to_utc(ts)
             if strategy is None and self._settings.get(name) is not None:
                 strategy = name
         return Ownership(strategy=strategy or self.default, opened_at=opened_at)
@@ -230,13 +227,13 @@ class SleeveBook:
         max_hours = self.spec(ownership.strategy).max_holding_hours
         if max_hours is None or ownership.opened_at is None:
             return False
-        return _aware(now) - ownership.opened_at >= timedelta(hours=max_hours)
+        return to_utc(now) - ownership.opened_at >= timedelta(hours=max_hours)
 
     def held_hours(self, ownership: Ownership, now: datetime) -> float | None:
         """How long the position has been held (``None`` when its start is unknown)."""
         if ownership.opened_at is None:
             return None
-        return max(0.0, (_aware(now) - ownership.opened_at).total_seconds() / 3600.0)
+        return max(0.0, (to_utc(now) - ownership.opened_at).total_seconds() / 3600.0)
 
     async def _load_meta(self, decision_ids: list[int]) -> None:
         missing = [i for i in dict.fromkeys(decision_ids) if i not in self._decision_meta]
@@ -276,7 +273,7 @@ class SleeveBook:
         self.allocation = Allocation(
             base_equity=float(row.base_equity),
             weights=json.loads(row.weights_json),
-            created_at=_aware(row.created_at),
+            created_at=to_utc(row.created_at),
         )
         return self.allocation
 

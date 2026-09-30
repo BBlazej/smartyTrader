@@ -17,7 +17,6 @@ from .models import (
     MarketSnapshotRow,
     OrderRow,
     PortfolioSnapshotRow,
-    _as_naive_utc,
 )
 from .orders import OrderMixin
 from .pruning import PruneMixin
@@ -40,5 +39,4 @@ __all__ = [
     "PruneMixin",
     "Storage",
     "StorageBase",
-    "_as_naive_utc",
 ]

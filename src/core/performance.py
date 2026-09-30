@@ -15,14 +15,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from typing import Any
 
-
-def _aware(ts: datetime | None) -> datetime | None:
-    if ts is None:
-        return None
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+from .timeutil import to_utc
 
 
 @dataclass(frozen=True)
@@ -48,7 +43,7 @@ def _holding_hours(orders: list[Any]) -> list[float]:
     lots: dict[str, deque[list[Any]]] = {}
     hours: list[float] = []
     for order in orders:
-        filled_at = _aware(getattr(order, "filled_at", None))
+        filled_at = to_utc(getattr(order, "filled_at", None))
         qty = float(order.quantity or 0.0)
         if filled_at is None or qty <= 0:
             continue
