@@ -20,26 +20,26 @@ from src.core.config import Settings
 from src.core.storage import Storage
 from src.dashboard import create_dashboard_app
 from src.dashboard.books import Book
+from tests.helpers import make_settings
 
 # Concrete secrets/paths that must never appear in any dashboard HTML/JSON.
 FORBIDDEN = ("api_key", "database_path", ".env", "qwen-test-model", "http://127.0.0.1:1234")
 
 
 def _settings(tmp_path) -> Settings:
-    config = tmp_path / "settings.yaml"
-    config.write_text(
-        """
-llm: {endpoint: "http://127.0.0.1:1234/v1/chat/completions", model: qwen-test-model}
-crypto_agent: {enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"], decision_history_limit: 10}
-stocks_agent: {enabled: false, interval_minutes: 60, symbols: ["AAPL"], market_hours: "09:00-16:30", decision_history_limit: 10}
-risk: {max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}
-execution: {paper_fee_pct: 0.0026, paper_slippage_pct: 0.001}
-storage: {data_dir: "__DATA_DIR__"}
-monitoring: {log_level: INFO}
-dashboard: {agents: ["crypto", "stocks"], refresh_seconds: 5}
-""".replace("__DATA_DIR__", str(tmp_path))
+    return make_settings(
+        tmp_path,
+        {
+            "llm": {
+                "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+                "model": "qwen-test-model",
+            },
+            "crypto_agent": {"pairs": ["BTC/USDT"], "quote_currency": None},
+            "stocks_agent": {"market_hours": "09:00-16:30"},
+            "execution": {"paper_fee_pct": 0.0026, "paper_slippage_pct": 0.001},
+            "dashboard": {"agents": ["crypto", "stocks"], "refresh_seconds": 5},
+        },
     )
-    return Settings(str(config))
 
 
 def _bound(storage: Storage, agent: str) -> Storage:

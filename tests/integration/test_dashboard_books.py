@@ -19,25 +19,23 @@ from src.core.storage import Storage
 from src.dashboard import create_dashboard_app
 from src.dashboard.books import find_book, open_books
 from src.dashboard.launch import AgentLauncher
+from tests.helpers import make_settings
 
 
 def _settings(tmp_path, *, data_dir=None) -> Settings:
-    config = tmp_path / "settings.yaml"
-    storage_line = f'  data_dir: "{data_dir or tmp_path}"\n'
-    config.write_text(
-        f"""
-llm: {{endpoint: "http://127.0.0.1:1234/v1/chat/completions", model: qwen-test-model}}
-crypto_agent: {{enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"]}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"]}}
-risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-execution: {{paper_fee_pct: 0.0026, paper_slippage_pct: 0.001}}
-storage: {{
-{storage_line}}}
-monitoring: {{log_level: INFO}}
-dashboard: {{agents: ["crypto", "stocks"], refresh_seconds: 5}}
-"""
+    return make_settings(
+        tmp_path,
+        {
+            "llm": {
+                "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+                "model": "qwen-test-model",
+            },
+            "crypto_agent": {"pairs": ["BTC/USDT"], "quote_currency": None},
+            "execution": {"paper_fee_pct": 0.0026, "paper_slippage_pct": 0.001},
+            "storage": {"data_dir": str(data_dir or tmp_path)},
+            "dashboard": {"agents": ["crypto", "stocks"], "refresh_seconds": 5},
+        },
     )
-    return Settings(str(config))
 
 
 async def _seed_book(path: str, *, reasoning: str, total_value: float) -> None:

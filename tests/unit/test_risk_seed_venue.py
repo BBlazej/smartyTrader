@@ -14,11 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from scripts.rebaseline_drawdown import plan_rebaseline
-from src.core.config import RiskSettings, Settings
+from src.core.config import RiskSettings
 from src.core.rehydration import rehydrate_loss_streak, rehydrate_risk_engine
 from src.core.risk_engine import RiskEngine
 from src.core.runner import run_agent
 from src.core.storage import Storage
+from tests.helpers import make_settings
 
 DEMO = "myokx-sandbox"
 
@@ -155,17 +156,7 @@ class TestRunnerSeedsAfterBinding:
     async def test_run_agent_seeds_the_demo_peak_from_demo_rows(
         self, tmp_path: Path, history: str
     ) -> None:
-        config = tmp_path / "settings.yaml"
-        config.write_text(
-            f"""
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent: {{enabled: true, interval_minutes: 5, pairs: ["BTC/EUR"], decision_history_limit: 10}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
-risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{data_dir: "{Path(history).parent}"}}
-monitoring: {{log_level: INFO}}
-"""
-        )
+        settings = make_settings(tmp_path, {"storage": {"data_dir": str(Path(history).parent)}})
         engines: list[RiskEngine] = []
 
         def build_components() -> tuple[MagicMock, MagicMock]:
@@ -184,7 +175,7 @@ monitoring: {{log_level: INFO}}
             return agent
 
         await run_agent(
-            Settings(str(config)),
+            settings,
             component="crypto",
             agent_enabled=True,
             interval_minutes=5,

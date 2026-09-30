@@ -10,15 +10,15 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.core.config import Settings, WatchlistSettings
 from src.core.models import OHLCV, Position
-from src.core.runner import run_agent
 from src.core.storage import Storage
 from src.core.watchlist import WatchlistManager, WatchlistRefreshFailed
+from tests.helpers import StubAgent, make_settings, run_agent_once, runner_patches, stub_components
 
 NOW = datetime(2026, 9, 26, 12, 0, 0, tzinfo=UTC)
 
@@ -256,28 +256,16 @@ class TestWatchlistManager:
 
 # ── Runner integration (§7.70) ────────────────────────────────
 
-_WATCHLIST_YAML = """
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent:
-  enabled: true
-  interval_minutes: 5
-  pairs: ["BTC/EUR"]
-  decision_history_limit: 10
-  quote_currency: EUR
-  watchlist:
-    enabled: {enabled}
-    max_dynamic_symbols: 2
-    ttl_hours: 48
-    min_quote_volume_24h: 1000000
-    momentum_days: 5
-    lookback_days: 20
-    min_daily_volatility: 0.0
-    max_daily_volatility: null
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
-risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
+_WATCHLIST = {
+    "enabled": True,
+    "max_dynamic_symbols": 2,
+    "ttl_hours": 48,
+    "min_quote_volume_24h": 1_000_000,
+    "momentum_days": 5,
+    "lookback_days": 20,
+    "min_daily_volatility": 0.0,
+    "max_daily_volatility": None,
+}
 
 
 class _RunnerProvider(FakeProvider):
@@ -287,42 +275,10 @@ class _RunnerProvider(FakeProvider):
         return None
 
 
-class _RecordingAgent:
-    def __init__(self) -> None:
-        self.symbol_updates: list[list[str]] = []
-        self.cycles = 0
-        self._symbols: list[str] = ["BTC/EUR"]
-
-    def set_symbols(self, symbols: list[str]) -> None:
-        self.symbol_updates.append(list(symbols))
-        self._symbols = symbols
-
-    async def run_cycle(self):
-        # The traded set at cycle time must already include the dynamic symbols.
-        self.cycles += 1
-        return []
-
-    async def start(self) -> None:  # pragma: no cover - scheduled path only
-        return None
-
-    async def shutdown(self) -> None:
-        return None
-
-
-class _OverrideSavingAgent(_RecordingAgent):
-    """Saves an unrelated safe-config override mid-cycle, as the dashboard would."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._applier = None
-
-    def set_control_overrides_applier(self, applier) -> None:  # type: ignore[no-untyped-def]
-        self._applier = applier
-
-    async def run_cycle(self):
-        assert self._applier is not None
-        self._applier('{"decision_history_limit": 5}')
-        return await super().run_cycle()
+def _save_unrelated_override(agent: StubAgent) -> None:
+    """A safe-config save mid-cycle, as the dashboard would make it."""
+    assert agent.applier is not None
+    agent.applier('{"decision_history_limit": 5}')
 
 
 async def _run_once_with_watchlist(
@@ -330,37 +286,19 @@ async def _run_once_with_watchlist(
     *,
     enabled: bool,
     positions: list[Position] | None = None,
-    agent: _RecordingAgent | None = None,
-) -> tuple[_RecordingAgent, Settings]:
-    db = tmp_path / "runner.db"
-    config = tmp_path / "settings.yaml"
-    config.write_text(_WATCHLIST_YAML.format(enabled=str(enabled).lower(), db=db))
-    settings = Settings(str(config))
-    agent = agent or _RecordingAgent()
-
+    agent: StubAgent | None = None,
+) -> tuple[StubAgent, Settings]:
+    settings = make_settings(
+        tmp_path, {"crypto_agent": {"watchlist": {**_WATCHLIST, "enabled": enabled}}}
+    )
+    agent = agent or StubAgent()
     provider = _RunnerProvider(
         volumes={"ETH/EUR": 9e6, "XLM/EUR": 8e6}, drifts={"ETH/EUR": 0.05, "XLM/EUR": 0.03}
     )
-    executor = MagicMock()
-    executor.close = AsyncMock()
+    _, executor = stub_components()
     executor.get_positions = AsyncMock(return_value=positions or [])
-
-    with (
-        patch("src.core.runner.DecisionPipeline"),
-        patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-        patch("src.core.runner.prune_storage", new=AsyncMock()),
-    ):
-        await run_agent(
-            settings,
-            component="crypto",
-            agent_enabled=True,
-            interval_minutes=5,
-            decision_history_limit=10,
-            job_id="crypto_cycle",
-            build_components=lambda: (provider, executor),
-            build_agent=lambda pipeline, storage, risk_engine, llm_client: agent,
-            run_once=True,
-        )
+    with runner_patches():
+        await run_agent_once(settings, agent, provider=provider, executor=executor)
     return agent, settings
 
 
@@ -389,7 +327,10 @@ class TestRunnerWatchlist:
         # would lose marking + exit enforcement until the next refresh (hours).
         held = Position(symbol="DOGE/EUR", quantity=10, avg_entry_price=0.1, current_price=0.2)
         agent, _ = await _run_once_with_watchlist(
-            tmp_path, enabled=True, positions=[held], agent=_OverrideSavingAgent()
+            tmp_path,
+            enabled=True,
+            positions=[held],
+            agent=StubAgent(on_cycle=_save_unrelated_override),
         )
         assert agent._symbols == ["BTC/EUR", "ETH/EUR", "XLM/EUR", "DOGE/EUR"]
 

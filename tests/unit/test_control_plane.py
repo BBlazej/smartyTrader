@@ -20,6 +20,7 @@ from src.core.control_config import (
 from src.core.decision_pipeline import PipelineResult
 from src.core.models import ClosedEntry, OrderResult, Position
 from src.core.storage import Storage
+from tests.helpers import make_settings
 
 
 @pytest.fixture()
@@ -31,18 +32,13 @@ async def storage(tmp_path):
 
 
 def _settings(tmp_path) -> Settings:
-    config = tmp_path / "settings.yaml"
-    config.write_text(
-        """
-llm: {endpoint: "http://localhost:1234/v1/chat/completions", model: m}
-crypto_agent: {enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"], decision_history_limit: 10}
-stocks_agent: {enabled: false, interval_minutes: 60, symbols: ["AAPL"], market_hours: "08:00-22:00", decision_history_limit: 10}
-risk: {max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}
-storage: {data_dir: "."}
-monitoring: {log_level: INFO}
-"""
+    return make_settings(
+        tmp_path,
+        {
+            "crypto_agent": {"pairs": ["BTC/USDT"], "quote_currency": None},
+            "stocks_agent": {"market_hours": "08:00-22:00"},
+        },
     )
-    return Settings(str(config))
 
 
 class TestAgentControlStorage:

@@ -16,6 +16,7 @@ from src.core.storage import Storage
 from src.core.watchlist import WatchlistManager
 from src.data.context import build_context_providers
 from src.data.context.news import RssNewsProvider
+from tests.helpers import StubAgent, make_settings, run_agent_once, runner_patches
 from tests.unit.test_watchlist import NOW, FakeProvider, _config
 
 
@@ -164,65 +165,34 @@ class TestIngestAndConfig:
             _config(news_mentions={"lookback_hours": 0})
 
 
-_YAML = """
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent:
-  enabled: true
-  interval_minutes: 5
-  pairs: ["BTC/EUR"]
-  quote_currency: EUR
-  watchlist: {{enabled: true, news_mentions: {{enabled: {mentions}}}}}
-  context:
-    enabled: true
-    news: {{enabled: true, feeds: [{{name: cd, url: "https://feed.test/rss"}}]}}
-macro_calendar: {{feed_url: ""}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"]}}
-risk: {{max_position_pct: 0.1}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
-
-
 @pytest.mark.parametrize("mentions", [True, False])
 async def test_runner_wires_counter_and_unmatched_ingest(tmp_path, mentions: bool) -> None:
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from src.core.config import Settings
-    from src.core.runner import run_agent
-
-    config = tmp_path / "settings.yaml"
-    config.write_text(_YAML.format(mentions=str(mentions).lower(), db=tmp_path / "r.db"))
-    settings = Settings(str(config))
-    provider = MagicMock()
-    provider.close = AsyncMock()
-    executor = MagicMock()
-    executor.close = AsyncMock()
-    executor.get_positions = AsyncMock(return_value=[])
+    settings = make_settings(
+        tmp_path,
+        {
+            "crypto_agent": {
+                "watchlist": {"enabled": True, "news_mentions": {"enabled": mentions}},
+                "context": {
+                    "enabled": True,
+                    "news": {
+                        "enabled": True,
+                        "feeds": [{"name": "cd", "url": "https://feed.test/rss"}],
+                    },
+                },
+            }
+        },
+    )
     manager_cls = MagicMock()
     manager_cls.return_value.refresh = AsyncMock(side_effect=RuntimeError("skip"))
-    agent = MagicMock()
-    agent.symbols = ["BTC/EUR"]
-    agent.run_cycle = AsyncMock(return_value=[])
-    agent.shutdown = AsyncMock()
     with (
-        patch("src.core.runner.DecisionPipeline"),
-        patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-        patch("src.core.runner.prune_storage", new=AsyncMock()),
+        runner_patches(),
         patch("src.core.runner.WatchlistManager", manager_cls),
         patch("src.data.context.news.get_bytes", new=AsyncMock(side_effect=RuntimeError("off"))),
         patch("src.data.context.build_context_providers", wraps=build_context_providers) as build,
     ):
-        await run_agent(
-            settings,
-            component="crypto",
-            agent_enabled=True,
-            interval_minutes=5,
-            decision_history_limit=10,
-            job_id="crypto_cycle",
-            build_components=lambda: (provider, executor),
-            build_agent=lambda *a: agent,
-            run_once=True,
-        )
+        await run_agent_once(settings, StubAgent())
     counter = manager_cls.call_args.kwargs["mention_counter"]
     assert isinstance(counter, NewsMentionCounter) is mentions
     assert build.call_args.kwargs["keep_unmatched_news"] is mentions

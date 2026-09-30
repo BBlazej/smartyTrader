@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.analysis.prompt_builder import build_user_prompt
-from src.core.config import ContextSettings, Settings
+from src.core.config import ContextSettings
 from src.core.context import ContextReader, ContextRefresher
 from src.core.models import (
     OHLCV,
@@ -23,9 +23,9 @@ from src.core.models import (
     SentimentReading,
     SymbolContext,
 )
-from src.core.runner import run_agent
 from src.core.storage import Storage
 from src.data.context.base import ContextBatch
+from tests.helpers import StubAgent, make_settings, run_agent_once, runner_patches
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 
@@ -268,80 +268,27 @@ class TestPromptSection:
 
 # ── Runner wiring ─────────────────────────────────────────────
 
-_YAML = """
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent:
-  enabled: true
-  interval_minutes: 5
-  pairs: ["BTC/EUR"]
-  quote_currency: EUR
-  context:
-    enabled: {enabled}
-    macro: {{enabled: true, currencies: [USD]}}
-macro_calendar:
-  feed_url: ""
-  events:
-    - {{at: "2099-01-01T12:00:00Z", title: "FOMC", currency: USD}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"]}}
-risk: {{max_position_pct: 0.1}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
 
-
-class _Agent:
-    def __init__(self) -> None:
-        self.cycles = 0
-
-    @property
-    def symbols(self) -> list[str]:
-        return ["BTC/EUR", "ETH/EUR"]
-
-    async def run_cycle(self):
-        self.cycles += 1
-        return []
-
-    async def shutdown(self) -> None:
-        return None
-
-
-async def _run_once(tmp_path: Path, enabled: bool) -> tuple[MagicMock, Storage | None]:
-    db = tmp_path / "runner.db"
-    config = tmp_path / "settings.yaml"
-    config.write_text(_YAML.format(enabled=str(enabled).lower(), db=db))
-    settings = Settings(str(config))
-    provider = MagicMock()
-    provider.close = AsyncMock()
-    executor = MagicMock()
-    executor.close = AsyncMock()
-    captured: dict[str, Storage] = {}
-
-    def build_agent(pipeline, storage, risk_engine, llm_client):
-        captured["storage"] = storage
-        return _Agent()
-
-    with (
-        patch("src.core.runner.DecisionPipeline") as pipeline_cls,
-        patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-        patch("src.core.runner.prune_storage", new=AsyncMock()),
-    ):
-        await run_agent(
-            settings,
-            component="crypto",
-            agent_enabled=True,
-            interval_minutes=5,
-            decision_history_limit=10,
-            job_id="crypto_cycle",
-            build_components=lambda: (provider, executor),
-            build_agent=build_agent,
-            run_once=True,
-        )
-    return pipeline_cls, captured.get("storage")
+async def _run_once(tmp_path: Path, enabled: bool) -> MagicMock:
+    settings = make_settings(
+        tmp_path,
+        {
+            "crypto_agent": {
+                "context": {"enabled": enabled, "macro": {"enabled": True, "currencies": ["USD"]}}
+            },
+            "macro_calendar": {
+                "events": [{"at": "2099-01-01T12:00:00Z", "title": "FOMC", "currency": "USD"}]
+            },
+        },
+    )
+    with runner_patches() as pipeline_cls:
+        await run_agent_once(settings, StubAgent(["BTC/EUR", "ETH/EUR"]))
+    return pipeline_cls
 
 
 class TestRunnerWiring:
     async def test_enabled_context_refreshes_before_first_cycle(self, tmp_path: Path) -> None:
-        pipeline_cls, _ = await _run_once(tmp_path, enabled=True)
+        pipeline_cls = await _run_once(tmp_path, enabled=True)
         reader = pipeline_cls.call_args.kwargs["context_reader"]
         assert isinstance(reader, ContextReader)
         # The YAML macro event was synced into this book's DB before the cycle.
@@ -354,5 +301,5 @@ class TestRunnerWiring:
         assert [e.title for e in events] == ["FOMC"]
 
     async def test_disabled_context_wires_nothing(self, tmp_path: Path) -> None:
-        pipeline_cls, _ = await _run_once(tmp_path, enabled=False)
+        pipeline_cls = await _run_once(tmp_path, enabled=False)
         assert pipeline_cls.call_args.kwargs["context_reader"] is None

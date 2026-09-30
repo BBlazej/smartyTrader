@@ -10,42 +10,17 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.core.config import Settings
 from src.core.runner import RunnerAlreadyRunning, RunnerLock, run_agent
+from tests.helpers import StubAgent, make_settings, runner_patches
 
 
 def _settings(tmp_path: Path) -> Settings:
-    config = tmp_path / "settings.yaml"
-    db = tmp_path / "data" / "locked.db"
-    config.write_text(
-        f"""
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent: {{enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"], decision_history_limit: 10}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
-risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
-    )
-    return Settings(str(config))
-
-
-class _FakeAgent:
-    def set_control_overrides_applier(self, applier) -> None:
-        pass
-
-    async def run_cycle(self):
-        return []
-
-    async def start(self) -> None:
-        pass
-
-    async def shutdown(self) -> None:
-        pass
+    return make_settings(tmp_path, {"storage": {"data_dir": str(tmp_path / "data")}})
 
 
 def _components(built: list[bool]) -> object:
@@ -69,7 +44,7 @@ async def _run_once(settings: Settings, built: list[bool]) -> None:
         decision_history_limit=10,
         job_id="crypto_cycle",
         build_components=_components(built),
-        build_agent=lambda pipeline, storage, risk_engine, llm_client: _FakeAgent(),
+        build_agent=lambda pipeline, storage, risk_engine, llm_client: StubAgent(),
         run_once=True,
     )
 
@@ -108,11 +83,7 @@ class TestRunAgentRefusesDoubleStart:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         request.addfinalizer(holder.close)
         built: list[bool] = []
-        with (
-            patch("src.core.runner.DecisionPipeline"),
-            patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-            patch("src.core.runner.prune_storage", new=AsyncMock()),
-        ):
+        with runner_patches():
             await _run_once(settings, built)  # paper runs while demo holds its lock
         assert built == [True]
         assert (tmp_path / "data" / "paper_crypto.db").exists()
@@ -136,7 +107,7 @@ class TestRunAgentRefusesDoubleStart:
                 decision_history_limit=10,
                 job_id="crypto_cycle",
                 build_components=_components(built),
-                build_agent=lambda pipeline, storage, risk_engine, llm_client: _FakeAgent(),
+                build_agent=lambda pipeline, storage, risk_engine, llm_client: StubAgent(),
             )
 
         # §7.78: the executor decides the mode (and so the lock), so the components
@@ -162,11 +133,7 @@ class TestRunAgentRefusesDoubleStart:
         built: list[bool] = []
 
         # Patch what the runner would otherwise build against real services.
-        with (
-            patch("src.core.runner.DecisionPipeline"),
-            patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-            patch("src.core.runner.prune_storage", new=AsyncMock()),
-        ):
+        with runner_patches():
             await _run_once(settings, built)
             await _run_once(settings, built)  # same process, after graceful release
 
@@ -183,7 +150,7 @@ class TestRunAgentRefusesDoubleStart:
             decision_history_limit=10,
             job_id="crypto_cycle",
             build_components=_components(built),
-            build_agent=lambda pipeline, storage, risk_engine, llm_client: _FakeAgent(),
+            build_agent=lambda pipeline, storage, risk_engine, llm_client: StubAgent(),
         )
         assert built == []
         assert not (tmp_path / "data" / "paper_crypto.runner.lock").exists()

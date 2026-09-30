@@ -21,10 +21,10 @@ from src.core.config import SLEEVE_PLAYBOOKS, RiskSettings, Settings, SleeveSpec
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.models import OHLCV, Action, MarketSnapshot, OrderSide, TradeSignal
 from src.core.risk_engine import RiskEngine
-from src.core.runner import run_agent
 from src.core.sleeves import TIME_STOP, SleeveBook, SleeveRun
 from src.core.storage import Storage
 from src.execution.paper_executor import PaperExecutor
+from tests.helpers import StubAgent, make_settings, run_agent_once, runner_patches
 
 SWING = {"timeframe": "1h", "playbook": "swing", "holding": {"max_hours": 72}}
 POSITION = {"timeframe": "4h", "playbook": "position", "holding": {"max_days": 28}}
@@ -440,80 +440,31 @@ class TestAgentSleeves:
         assert len(closes) == 2 and {o.strategy for o in closes} == {"swing"}
 
 
-_SLEEVES_YAML = """
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
-crypto_agent:
-  enabled: true
-  interval_minutes: 5
-  pairs: ["BTC/EUR"]
-  decision_history_limit: 10
-  sleeves:
-    enabled: {enabled}
-    strategies:
-      crypto_swing: {{timeframe: "1h", playbook: swing, holding: {{max_hours: 72}}, risk: {{max_position_pct: 0.05}}}}
-      crypto_position: {{timeframe: "4h", playbook: position}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
-risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
-
-
-class _Agent:
-    def __init__(self, override: str | None = None) -> None:
-        self.sleeves: list[SleeveRun] | None = None
-        self.cycles = 0
-        self._override = override
-        self._applier = None
-
-    def set_sleeves(self, runs: list[SleeveRun], book: SleeveBook) -> None:
-        self.sleeves = runs
-
-    def set_control_overrides_applier(self, applier) -> None:  # type: ignore[no-untyped-def]
-        self._applier = applier
-
-    def set_symbols(self, symbols: list[str]) -> None:
-        return None
-
-    async def run_cycle(self):
-        if self._override is not None and self._applier is not None:
-            self._applier(self._override)  # a dashboard save mid-run
-        self.cycles += 1
-        return []
-
-    async def shutdown(self) -> None:
-        return None
+_SLEEVES = {
+    "crypto_swing": {
+        "timeframe": "1h",
+        "playbook": "swing",
+        "holding": {"max_hours": 72},
+        "risk": {"max_position_pct": 0.05},
+    },
+    "crypto_position": {"timeframe": "4h", "playbook": "position"},
+}
 
 
 class TestRunnerSleeves:
-    async def _run(self, tmp_path: Path, enabled: bool, override: str | None = None) -> _Agent:
-        config = tmp_path / "settings.yaml"
-        config.write_text(
-            _SLEEVES_YAML.format(enabled=str(enabled).lower(), db=tmp_path / "runner.db")
+    async def _run(self, tmp_path: Path, enabled: bool, override: str | None = None) -> StubAgent:
+        settings = make_settings(
+            tmp_path,
+            {"crypto_agent": {"sleeves": {"enabled": enabled, "strategies": _SLEEVES}}},
         )
-        settings = Settings(str(config))
-        agent = _Agent(override)
-        provider = MagicMock()
-        provider.close = AsyncMock()
-        executor = MagicMock()
-        executor.close = AsyncMock()
-        executor.get_cash = AsyncMock(return_value=10_000.0)
-        executor.get_positions = AsyncMock(return_value=[])
-        with (
-            patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-            patch("src.core.runner.prune_storage", new=AsyncMock()),
-        ):
-            await run_agent(
-                settings,
-                component="crypto",
-                agent_enabled=True,
-                interval_minutes=5,
-                decision_history_limit=10,
-                job_id="crypto_cycle",
-                build_components=lambda: (provider, executor),
-                build_agent=lambda pipeline, storage, risk_engine, llm_client: agent,
-                run_once=True,
-            )
+
+        def save_override(agent: StubAgent) -> None:
+            if override is not None and agent.applier is not None:
+                agent.applier(override)  # a dashboard save mid-run
+
+        agent = StubAgent(on_cycle=save_override)
+        with runner_patches(pipeline=False):
+            await run_agent_once(settings, agent)
         return agent
 
     async def test_enabled_sleeves_get_one_pipeline_each(self, tmp_path: Path) -> None:

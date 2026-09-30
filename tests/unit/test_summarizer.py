@@ -20,13 +20,13 @@ from src.analysis.context_cards import (
     parse_context_card,
 )
 from src.analysis.prompt_builder import build_user_prompt
-from src.core.config import LLMSettings, Settings, SummarizerSettings, summarizer_llm_settings
+from src.core.config import LLMSettings, SummarizerSettings, summarizer_llm_settings
 from src.core.context import ContextReader
 from src.core.llm_client import LLMClient
 from src.core.models import OHLCV, MarketSnapshot, NewsItem
-from src.core.runner import run_agent
 from src.core.storage import Storage
 from src.core.summarizer import ContextSummarizer
+from tests.helpers import StubAgent, make_settings, run_agent_once, runner_patches
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 URL1 = "https://news.example/1"
@@ -319,51 +319,18 @@ def test_summarizer_llm_settings_copy() -> None:
     assert (base.model, base.max_tokens) == ("big", 8192)
 
 
-_YAML = """
-llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: big}}
-crypto_agent:
-  enabled: true
-  interval_minutes: 5
-  pairs: ["BTC/EUR"]
-  quote_currency: EUR
-  context:
-    enabled: true
-    news:
-      enabled: true
-      feeds: [{{name: cd, url: "https://feed.test/rss"}}]
-    summarizer:
-      enabled: true
-      llm: {{model: small}}
-macro_calendar: {{feed_url: ""}}
-stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"]}}
-risk: {{max_position_pct: 0.1}}
-storage: {{data_dir: "{db.parent}"}}
-monitoring: {{log_level: INFO}}
-"""
-
-
-class _Agent:
-    symbols: tuple[str, ...] = ("BTC/EUR",)
-
-    async def run_cycle(self):
-        return []
-
-    async def start(self) -> None:
-        return None
-
-    async def shutdown(self) -> None:
-        return None
+_CONTEXT = {
+    "enabled": True,
+    "news": {"enabled": True, "feeds": [{"name": "cd", "url": "https://feed.test/rss"}]},
+    "summarizer": {"enabled": True, "llm": {"model": "small"}},
+}
 
 
 class TestRunnerWiring:
     async def _run(self, tmp_path: Path, run_once: bool, manager: MagicMock | None = None):
-        config = tmp_path / "settings.yaml"
-        config.write_text(_YAML.format(db=tmp_path / "runner.db"))
-        settings = Settings(str(config))
-        provider = MagicMock()
-        provider.close = AsyncMock()
-        executor = MagicMock()
-        executor.close = AsyncMock()
+        settings = make_settings(
+            tmp_path, {"llm": {"model": "big"}, "crypto_agent": {"context": _CONTEXT}}
+        )
         built: list = []
         real_client = LLMClient
 
@@ -373,9 +340,7 @@ class TestRunnerWiring:
             return client
 
         with (
-            patch("src.core.runner.DecisionPipeline"),
-            patch("src.core.runner.rehydrate_from_storage", new=AsyncMock()),
-            patch("src.core.runner.prune_storage", new=AsyncMock()),
+            runner_patches(),
             patch("src.core.runner.LLMClient", side_effect=make_client),
             patch(
                 "src.data.context.news.get_bytes",
@@ -384,19 +349,7 @@ class TestRunnerWiring:
             patch("src.core.scheduler.AsyncSchedulerManager", return_value=manager or MagicMock()),
             patch("src.core.scheduler.create_async_scheduler"),
         ):
-            task = asyncio.create_task(
-                run_agent(
-                    settings,
-                    component="crypto",
-                    agent_enabled=True,
-                    interval_minutes=5,
-                    decision_history_limit=10,
-                    job_id="crypto_cycle",
-                    build_components=lambda: (provider, executor),
-                    build_agent=lambda *a: _Agent(),
-                    run_once=run_once,
-                )
-            )
+            task = asyncio.create_task(run_agent_once(settings, StubAgent(), run_once=run_once))
             if run_once:
                 await task
             else:
