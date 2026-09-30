@@ -163,10 +163,6 @@ class AlertManager:
             logger.error("all alert sinks failed", alert_event=event, symbol=symbol)
         return delivered
 
-    def reset_dedup(self) -> None:
-        """Clear the dedup state (useful between cycles/tests)."""
-        self._last_sent.clear()
-
     async def close(self) -> None:
         """Release sinks that hold connections (webhook HTTP clients)."""
         for sink in self._sinks:

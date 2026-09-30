@@ -71,10 +71,6 @@ class CostModel:
             )
         return cls(**params)
 
-    @property
-    def is_zero(self) -> bool:
-        return self.fee_pct <= 0 and self.min_commission <= 0 and self.fx_fee_pct <= 0
-
     def commission(self, notional: float) -> float:
         """Per-side commission for a fill of *notional*: percentage floored by the minimum."""
         if notional <= 0:

@@ -52,7 +52,7 @@ class TestBuyCostFactor:
 
         m = CostModel.from_attrs(Mocky())
         assert m.buy_cost_factor == 1.0
-        assert m.is_zero
+        assert (m.fee_pct, m.min_commission, m.fx_fee_pct) == (0.0, 0.0, 0.0)
 
 
 class TestMaxAffordableFillNotional:

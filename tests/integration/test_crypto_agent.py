@@ -145,20 +145,6 @@ def make_agent(
 
 
 class TestLifecycle:
-    async def test_start_stop(
-        self,
-        pipeline: DecisionPipeline,
-        storage: Storage,
-        risk_engine: RiskEngine,
-        paper_executor: PaperExecutor,
-    ) -> None:
-        agent = make_agent(pipeline, storage, risk_engine, paper_executor)
-        assert agent.running is False
-        await agent.start()
-        assert agent.running is True
-        await agent.stop()
-        assert agent.running is False
-
     async def test_shutdown_closes_llm(
         self,
         pipeline: DecisionPipeline,
@@ -170,7 +156,6 @@ class TestLifecycle:
         llm = agent._llm_client
         await agent.shutdown()
         llm.close.assert_awaited_once()
-        assert agent.running is False
 
 
 class TestCycle:

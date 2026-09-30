@@ -471,10 +471,9 @@ class TestZeroPortfolio:
 class TestDailyLossTracker:
     def test_resets_on_new_day(self) -> None:
         tracker = DailyLossTracker()
+        tracker.reset_if_new_day(10000.0)
         tracker.update_latest_value(10000.0)
-
-        # Should have a value set
-        assert tracker.daily_portfolio_value == 10000.0
+        assert tracker.daily_pnl_pct == pytest.approx(0.0)
 
     def test_pnl_calculation(self) -> None:
         tracker = DailyLossTracker()
@@ -486,7 +485,6 @@ class TestDailyLossTracker:
     def test_daily_value_is_none_before_first_update(self) -> None:
         # Declared attribute, honest ``float | None`` — no getattr hack (§7.19).
         tracker = DailyLossTracker()
-        assert tracker.daily_portfolio_value is None
         assert tracker.daily_pnl_pct is None
 
 

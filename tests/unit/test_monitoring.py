@@ -141,15 +141,6 @@ class TestAlertManager:
         assert await manager.send("event", "msg") is True
         assert len(good.sent) == 1
 
-    @pytest.mark.asyncio
-    async def test_reset_dedup(self) -> None:
-        sink = RecordingSink()
-        manager = AlertManager(sinks=[sink], dedup_window=300.0, clock=lambda: 100.0)
-        await manager.send("event", "msg", symbol="BTC/USDT")
-        manager.reset_dedup()
-        await manager.send("event", "msg", symbol="BTC/USDT")
-        assert len(sink.sent) == 2
-
 
 # ── Agent alerting ────────────────────────────────────────────
 

@@ -98,11 +98,6 @@ class DailyLossTracker:
             return None
         return (self._latest_value - self._start_of_day_value) / self._start_of_day_value
 
-    @property
-    def daily_portfolio_value(self) -> float | None:
-        """Latest portfolio value fed in via :meth:`update_latest_value` (None before any)."""
-        return self._latest_value
-
     def update_latest_value(self, value: float) -> None:
         self._latest_value = value
 

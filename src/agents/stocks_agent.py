@@ -99,15 +99,6 @@ def market_closed_reason(
     return None if start <= t <= end else "outside trading window"
 
 
-def is_market_open(now: datetime, market_hours: str, holidays: set[date] | None = None) -> bool:
-    """Return ``True`` when the market is open at ``now``.
-
-    Thin wrapper over :func:`market_closed_reason` — see there for the weekend,
-    holiday and wrap-around semantics.
-    """
-    return market_closed_reason(now, market_hours, holidays) is None
-
-
 class StocksAgent(BaseTradingAgent):
     """Runs decision cycles for a set of stock symbols, gated by exchange hours.
 

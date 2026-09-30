@@ -67,7 +67,6 @@ class BaseTradingAgent:
         self._timeframe = timeframe
         self._alerts = alerts or AlertManager()
         self._logger = structlog.get_logger().bind(component=component)
-        self._running = False
         # Control plane (§7.15): the component name keys the ``agent_control`` row;
         # the runner injects an applier closure over its own Settings/pipeline.
         self._control_agent = component
@@ -137,7 +136,6 @@ class BaseTradingAgent:
     # ── Lifecycle ─────────────────────────────────────────────
 
     async def start(self) -> None:
-        self._running = True
         self._logger.info(
             "agent started",
             symbols=self._symbols,
@@ -146,12 +144,7 @@ class BaseTradingAgent:
         )
 
     async def stop(self) -> None:
-        self._running = False
         self._logger.info("agent stopped")
-
-    @property
-    def running(self) -> bool:
-        return self._running
 
     async def shutdown(self) -> None:
         """Stop the agent and release the LLM client + alert channel connections."""

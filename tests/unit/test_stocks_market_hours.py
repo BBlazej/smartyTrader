@@ -11,7 +11,6 @@ import pytest
 import src.agents.stocks_agent as stocks_agent_module
 from src.agents.stocks_agent import (
     StocksAgent,
-    is_market_open,
     market_closed_reason,
     parse_holidays,
     parse_market_hours,
@@ -40,33 +39,33 @@ class TestIsMarketOpen:
         return datetime(2026, 1, 15, hour, minute, tzinfo=UTC)
 
     def test_within_window(self) -> None:
-        assert is_market_open(self._at(10, 30), "09:00-16:30") is True
+        assert market_closed_reason(self._at(10, 30), "09:00-16:30") is None
 
     def test_at_open_boundary(self) -> None:
-        assert is_market_open(self._at(9, 0), "09:00-16:30") is True
+        assert market_closed_reason(self._at(9, 0), "09:00-16:30") is None
 
     def test_at_close_boundary(self) -> None:
-        assert is_market_open(self._at(16, 30), "09:00-16:30") is True
+        assert market_closed_reason(self._at(16, 30), "09:00-16:30") is None
 
     def test_before_window(self) -> None:
-        assert is_market_open(self._at(8, 59), "09:00-16:30") is False
+        assert market_closed_reason(self._at(8, 59), "09:00-16:30") is not None
 
     def test_after_window(self) -> None:
-        assert is_market_open(self._at(16, 31), "09:00-16:30") is False
+        assert market_closed_reason(self._at(16, 31), "09:00-16:30") is not None
 
     def test_noop_window_always_open(self) -> None:
-        assert is_market_open(self._at(23, 0), "24h") is True
-        assert is_market_open(self._at(0, 0), "24h") is True
+        assert market_closed_reason(self._at(23, 0), "24h") is None
+        assert market_closed_reason(self._at(0, 0), "24h") is None
 
     def test_naive_datetime_is_treated_as_utc(self) -> None:
         naive = datetime(2026, 1, 15, 12, 0)  # noqa: DTZ001 — deliberately naive
-        assert is_market_open(naive, "09:00-16:30") is True
+        assert market_closed_reason(naive, "09:00-16:30") is None
 
     def test_offset_timezone_is_normalized_to_wall_clock(self) -> None:
         # 14:00 in +02:00 == 12:00 UTC; the local wall clock (14:00) is inside 09:00–16:30.
         plus_two = timezone(timedelta(hours=2))
         local_afternoon = datetime(2026, 1, 15, 14, 0, tzinfo=plus_two)
-        assert is_market_open(local_afternoon, "09:00-16:30") is True
+        assert market_closed_reason(local_afternoon, "09:00-16:30") is None
 
 
 class TestWeekendGuard:
@@ -74,22 +73,22 @@ class TestWeekendGuard:
 
     def test_saturday_inside_window_is_closed(self) -> None:
         saturday = datetime(2026, 1, 17, 10, 30, tzinfo=UTC)  # a Saturday
-        assert is_market_open(saturday, "09:00-16:30") is False
+        assert market_closed_reason(saturday, "09:00-16:30") is not None
         assert market_closed_reason(saturday, "09:00-16:30") == "weekend"
 
     def test_sunday_inside_window_is_closed(self) -> None:
         sunday = datetime(2026, 1, 18, 12, 0, tzinfo=UTC)  # a Sunday
-        assert is_market_open(sunday, "09:00-16:30") is False
+        assert market_closed_reason(sunday, "09:00-16:30") is not None
 
     def test_friday_is_unaffected(self) -> None:
         friday = datetime(2026, 1, 16, 10, 30, tzinfo=UTC)  # a Friday
-        assert is_market_open(friday, "09:00-16:30") is True
+        assert market_closed_reason(friday, "09:00-16:30") is None
         assert market_closed_reason(friday, "09:00-16:30") is None
 
     def test_noop_window_stays_open_on_weekend(self) -> None:
         # A bare spec disables the guard entirely — weekends included.
         saturday = datetime(2026, 1, 17, 10, 30, tzinfo=UTC)
-        assert is_market_open(saturday, "24h") is True
+        assert market_closed_reason(saturday, "24h") is None
 
 
 class TestOvernightWindow:
@@ -98,15 +97,15 @@ class TestOvernightWindow:
     def test_evening_inside_wrapped_window(self) -> None:
         # Thursday 23:00 is inside a 22:00-08:00 overnight window.
         evening = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
-        assert is_market_open(evening, "22:00-08:00") is True
+        assert market_closed_reason(evening, "22:00-08:00") is None
 
     def test_early_morning_inside_wrapped_window(self) -> None:
         morning = datetime(2026, 1, 15, 7, 30, tzinfo=UTC)
-        assert is_market_open(morning, "22:00-08:00") is True
+        assert market_closed_reason(morning, "22:00-08:00") is None
 
     def test_daytime_outside_wrapped_window(self) -> None:
         midday = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
-        assert is_market_open(midday, "22:00-08:00") is False
+        assert market_closed_reason(midday, "22:00-08:00") is not None
         assert market_closed_reason(midday, "22:00-08:00") == "outside trading window"
 
 
@@ -126,12 +125,12 @@ class TestHolidays:
     def test_holiday_date_is_closed(self) -> None:
         # Thursday 2026-12-24, 10:00 — inside the trading window but a configured holiday.
         now = datetime(2026, 12, 24, 10, 0, tzinfo=UTC)
-        assert is_market_open(now, "09:00-16:30", {date(2026, 12, 24)}) is False
+        assert market_closed_reason(now, "09:00-16:30", {date(2026, 12, 24)}) is not None
         assert market_closed_reason(now, "09:00-16:30", {date(2026, 12, 24)}) == "holiday"
 
     def test_non_holiday_date_is_open(self) -> None:
         now = datetime(2026, 12, 23, 10, 0, tzinfo=UTC)
-        assert is_market_open(now, "09:00-16:30", {date(2026, 12, 24)}) is True
+        assert market_closed_reason(now, "09:00-16:30", {date(2026, 12, 24)}) is None
 
 
 class TestAgentCycleSkip:
@@ -201,14 +200,14 @@ class TestLocalNowTimezone:
         local_now = self._local_now_at(datetime(2026, 1, 15, 8, 30, tzinfo=UTC))
 
         assert local_now.time() == time(9, 30)
-        assert is_market_open(local_now, "09:00-16:30") is True
+        assert market_closed_reason(local_now, "09:00-16:30") is None
 
     def test_genuinely_closed_time_stays_closed(self) -> None:
         # 22:00 UTC in summer is 00:00 in Warsaw (CEST, UTC+2) — outside the window.
         local_now = self._local_now_at(datetime(2026, 7, 15, 22, 0, tzinfo=UTC))
 
         assert local_now.time() == time(0, 0)
-        assert is_market_open(local_now, "09:00-16:30") is False
+        assert market_closed_reason(local_now, "09:00-16:30") is not None
 
 
 class TestLiveMarketHoursOverride:
