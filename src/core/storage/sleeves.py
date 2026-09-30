@@ -29,9 +29,8 @@ class SleeveMixin:
     """``strategy_allocations`` / ``sleeve_snapshots`` writes + reads."""
 
     def _scoped(self, stmt: Select, table: type, agent: str | None) -> Select:
-        """Agent scope (§7.39) + exactly the bound venue (§7.61) — these tables are new,
-        so there are no legacy NULL rows to admit. An unbound Storage (dashboard, CLIs)
-        reads every venue."""
+        """Agent scope (§7.39) + exactly the bound venue (§7.61). An unbound Storage
+        (dashboard, CLIs) reads every venue."""
         scope = self._agent_scope(agent)
         if scope is not None:
             stmt = stmt.where(table.agent == scope)

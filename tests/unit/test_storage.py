@@ -875,7 +875,6 @@ class TestVenueTagging:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
         try:
-            await storage.save_order("legacy", "BTC/USDT", "buy", 1.0, 1.0, "filled")
             storage.bind_venue("paper")
             await storage.save_order("paper-1", "BTC/USDT", "buy", 1.0, 1.0, "filled")
             await storage.save_portfolio_snapshot(
@@ -887,9 +886,9 @@ class TestVenueTagging:
             await storage.save_portfolio_snapshot(cash=7.0, positions_json="[]", total_value=7.0)
 
             ids = lambda rows: [r.order_id for r in rows]
-            assert ids(await storage.get_filled_orders(venue="paper")) == ["legacy", "paper-1"]
-            assert ids(await storage.get_filled_orders(venue="myokx-live")) == ["legacy", "K-1"]
-            assert ids(await storage.get_filled_orders()) == ["legacy", "paper-1", "K-1"]
+            assert ids(await storage.get_filled_orders(venue="paper")) == ["paper-1"]
+            assert ids(await storage.get_filled_orders(venue="myokx-live")) == ["K-1"]
+            assert ids(await storage.get_filled_orders()) == ["paper-1", "K-1"]
             assert ids(await storage.get_pending_orders(venue="paper")) == []
             assert ids(await storage.get_pending_orders(venue="myokx-live")) == ["K-2"]
 
@@ -898,44 +897,6 @@ class TestVenueTagging:
             assert (await storage.get_latest_portfolio_snapshot()).venue == "myokx-live"
         finally:
             await storage.close()
-
-    async def test_migration_adds_venue_and_tags_paper_orders(self, tmp_db_path: str) -> None:
-        import sqlite3
-
-        conn = sqlite3.connect(tmp_db_path)
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
-            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
-            "filled_at TIMESTAMP, created_at TIMESTAMP, agent VARCHAR(20), realized_pnl FLOAT)"
-        )
-        conn.execute(
-            "CREATE TABLE portfolio_snapshots (id INTEGER PRIMARY KEY, cash FLOAT, "
-            "positions_json TEXT, total_value FLOAT, unrealized_pnl FLOAT, timestamp TIMESTAMP, "
-            "agent VARCHAR(20))"
-        )
-        for oid in ("paper-abc", "OXYZ-1"):
-            conn.execute(
-                "INSERT INTO orders (order_id, symbol, side, quantity, price, status) "
-                "VALUES (?, 'BTC/USDT', 'buy', 1.0, 10.0, 'filled')",
-                (oid,),
-            )
-        conn.execute(
-            "INSERT INTO portfolio_snapshots (cash, positions_json, total_value, unrealized_pnl, "
-            "timestamp) VALUES (5, '[]', 5, 0, '2026-09-01 00:00:00')"
-        )
-        conn.commit()
-        conn.close()
-
-        for _ in range(2):  # idempotent
-            storage = Storage(tmp_db_path)
-            await storage.initialize()
-            try:
-                venues = {o.order_id: o.venue for o in await storage.get_recent_orders()}
-                assert venues == {"paper-abc": "paper", "OXYZ-1": None}
-                snap = await storage.get_latest_portfolio_snapshot(venue="xtb-demo")
-                assert snap is not None and snap.venue is None  # legacy rows match any venue
-            finally:
-                await storage.close()
 
 
 class TestLLMLatencyStats:

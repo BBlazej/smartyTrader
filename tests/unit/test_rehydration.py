@@ -43,6 +43,7 @@ class TestPaperRehydration:
     async def test_restores_cash_and_positions(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path)
         await storage.initialize()
+        storage.bind_venue("paper")  # as the runner does (§7.61)
         try:
             held = Position(
                 symbol="BTC/USDT", quantity=2.0, avg_entry_price=50_000.0, current_price=51_000.0
@@ -94,6 +95,7 @@ class TestFillLedgerRehydration:
     async def test_closed_entries_survive_restart(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path)
         await storage.initialize()
+        storage.bind_venue("paper")  # as the runner does (§7.61)
         try:
             book = PaperExecutor(initial_cash=100_000.0, slippage_pct=0.0)
 
@@ -157,6 +159,7 @@ class TestFillLedgerRehydration:
         """No stored fills → one synthetic lot per position at avg entry (basis kept)."""
         storage = Storage(tmp_db_path)
         await storage.initialize()
+        storage.bind_venue("paper")  # as the runner does (§7.61)
         try:
             held = Position(
                 symbol="ETH/USDT", quantity=2.0, avg_entry_price=20.0, current_price=22.0
@@ -287,6 +290,7 @@ class TestRehydrateFromStorage:
     ) -> None:
         storage = Storage(tmp_db_path)
         await storage.initialize()
+        storage.bind_venue("paper")  # as the runner does (§7.61)
         try:
             held = Position(
                 symbol="ETH/USDT", quantity=3.0, avg_entry_price=10.0, current_price=9.0
@@ -377,24 +381,6 @@ class TestStreakMatchesLiveCounting:
         finally:
             await storage.close()
 
-    async def test_legacy_history_falls_back_to_entry_decisions(
-        self, risk_settings: RiskSettings, tmp_db_path: str
-    ) -> None:
-        storage = Storage(tmp_db_path)
-        await storage.initialize()
-        try:
-            for _ in range(3):  # pre-§7.46: no closing-fill outcomes were stored
-                entry = await _save_decision(storage, "BTC/USDT", action="buy")
-                await storage.add_realized_pnl(entry, -2.0)
-                exit_ = await _save_decision(storage, "BTC/USDT", action="sell")
-                await storage.set_realized_pnl(exit_, -2.0)
-
-            engine = RiskEngine(risk_settings)
-            await rehydrate_risk_engine(engine, storage)
-            assert engine._loss_tracker.consecutive_losses == 3  # entries only, not 6
-        finally:
-            await storage.close()
-
 
 class TestLiveOutcomeCoverage:
     """§7.46: every closing path feeds the loss streak — close-all included."""
@@ -467,6 +453,7 @@ class TestVenueRehydration:
     async def test_spot_venue_book_levels_and_attribution_survive(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
+        storage.bind_venue("test")  # as the runner does (§7.61)
         try:
             d1 = await _entry_decision(storage, "BTC/USDT", 90.0, 150.0)
             d2 = await _entry_decision(storage, "BTC/USDT", 95.0, 160.0)
@@ -532,6 +519,7 @@ class TestVenueRehydration:
     async def test_pending_order_is_reconciled_after_restart(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path, agent="crypto")
         await storage.initialize()
+        storage.bind_venue("test")  # as the runner does (§7.61)
         try:
             d1 = await _entry_decision(storage, "BTC/USDT", 90.0, 150.0)
             await _fill(storage, "OPEN-1", "BTC/USDT", "buy", 1.0, 100.0, d1, status="pending")
@@ -560,6 +548,7 @@ class TestVenueRehydration:
     async def test_xtb_levels_reattach_to_venue_positions(self, tmp_db_path: str) -> None:
         storage = Storage(tmp_db_path, agent="stocks")
         await storage.initialize()
+        storage.bind_venue("xtb-demo")  # as the runner does (§7.61)
         try:
             d1 = await _entry_decision(storage, "AAPL", 95.0, 130.0)
             await _fill(storage, "101", "AAPL", "buy", 2.0, 100.0, d1)

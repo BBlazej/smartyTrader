@@ -42,8 +42,8 @@ class UnknownVenueError(ValueError):
 def venue_mode(venue: str | None) -> str:
     """Trading mode of an executor's venue tag (§7.61 labels).
 
-    ``None`` (an executor declaring no venue) and ``paper`` are paper — the same rule
-    as legacy unstamped rows (§7.76). ``<exchange>-sandbox``, ``saxo-sim`` and
+    ``None`` (an executor declaring no venue) and ``paper`` are paper.
+    ``<exchange>-sandbox``, ``saxo-sim`` and
     ``xtb-demo`` are demo; ``<exchange>-live``, ``saxo-live`` and ``xtb-real`` are real.
     Anything else raises :class:`UnknownVenueError`.
     """

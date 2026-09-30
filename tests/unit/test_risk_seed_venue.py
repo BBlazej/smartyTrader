@@ -1,10 +1,9 @@
 """Risk-tracker seeds read only the bound venue's history (§7.76).
 
 Found by the agent-driven OKX demo round trip: the crypto agent's paper history
-(60 snapshots at the old 100,000 default, unstamped because they predate §7.61)
-seeded the *demo* account's drawdown peak, so every keyed BUY was rejected with a
-95 % "drawdown". Legacy unstamped rows are paper history — they count for ``paper``
-only; a keyed venue sees exactly its own rows.
+(60 snapshots at the old 100,000 default) seeded the *demo* account's drawdown peak,
+so every keyed BUY was rejected with a 95 % "drawdown". Every seed reads exactly the
+bound venue's rows.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ async def _snapshot(storage: Storage, value: float) -> None:
 
 @pytest.fixture()
 async def history(tmp_path: Path) -> str:
-    """Legacy unstamped paper history at 100k, then a demo account at 4,600.
+    """Paper history at 100k, then a demo account at 4,600, in one file.
 
     Written into the demo book's file (§7.78) so the runner test opens exactly it —
     the mixed rows are the §7.76 scenario the venue scoping must still survive.
@@ -38,8 +37,9 @@ async def history(tmp_path: Path) -> str:
     tmp_db_path = str(tmp_path / "demo_crypto.db")
     storage = Storage(tmp_db_path, agent="crypto", identity=("crypto", "demo"))
     await storage.initialize()
+    storage.bind_venue("paper")
     for _ in range(3):
-        await _snapshot(storage, 100_000.0)  # pre-§7.61 paper rows: venue NULL
+        await _snapshot(storage, 100_000.0)
     storage.bind_venue(DEMO)
     for _ in range(3):
         await _snapshot(storage, 4_600.0)
@@ -62,7 +62,7 @@ class TestDrawdownPeak:
         finally:
             await storage.close()
 
-    async def test_paper_keeps_its_legacy_history(self, history: str) -> None:
+    async def test_paper_reads_its_own_history(self, history: str) -> None:
         storage = await _bound(history, "paper")
         try:
             assert await storage.get_effective_peak_equity() == pytest.approx(100_000.0)
@@ -94,17 +94,6 @@ class TestDrawdownResetVenue:
         await storage.record_drawdown_reset(baseline_value=90_000.0, agent="crypto", venue="paper")
         storage.bind_venue(DEMO)
         try:
-            assert await storage.get_effective_peak_equity() == pytest.approx(4_600.0)
-            storage.bind_venue("paper")
-            assert await storage.get_effective_peak_equity() == pytest.approx(90_000.0)
-        finally:
-            await storage.close()
-
-    async def test_a_legacy_reset_counts_for_paper_only(self, history: str) -> None:
-        storage = await _bound(history, None)
-        await storage.record_drawdown_reset(baseline_value=90_000.0, agent="crypto")
-        try:
-            storage.bind_venue(DEMO)
             assert await storage.get_effective_peak_equity() == pytest.approx(4_600.0)
             storage.bind_venue("paper")
             assert await storage.get_effective_peak_equity() == pytest.approx(90_000.0)
@@ -158,20 +147,6 @@ class TestDailyBaselineAndStreak:
             await rehydrate_loss_streak(demo, storage)
             assert demo._loss_tracker.consecutive_losses == 0
             assert await storage.get_recent_closing_fills() == []
-        finally:
-            await storage.close()
-
-    async def test_keyed_venue_skips_the_decision_row_fallback(self, tmp_db_path: str) -> None:
-        # Pre-§7.46 databases fall back to decision outcomes — decisions carry no
-        # venue, so that history is paper's, never a keyed account's streak.
-        storage = await _bound(tmp_db_path, DEMO)
-        storage.get_closed_decisions = AsyncMock(return_value=[])  # type: ignore[method-assign]
-        try:
-            await rehydrate_loss_streak(RiskEngine(RiskSettings()), storage)
-            storage.get_closed_decisions.assert_not_awaited()
-            storage.bind_venue("paper")
-            await rehydrate_loss_streak(RiskEngine(RiskSettings()), storage)
-            storage.get_closed_decisions.assert_awaited_once()
         finally:
             await storage.close()
 

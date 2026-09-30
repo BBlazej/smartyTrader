@@ -31,7 +31,6 @@ from ..execution.position_tracker import FillRecord
 from .models import OrderSide, Position
 from .risk_engine import RiskEngine
 from .storage import Storage
-from .storage.engine import PAPER_VENUE
 
 logger = structlog.get_logger()
 
@@ -59,7 +58,7 @@ async def rehydrate_paper_executor(executor: Any, storage: Storage) -> bool:
     if not callable(load):
         return False
     try:
-        # Only this venue's (or legacy unstamped) snapshots — a paper book must never
+        # Only this venue's snapshots — a paper book must never
         # restore a real account's cash/positions after a venue → paper switch (§7.61).
         venue = executor_venue(executor)
         row = await storage.get_latest_portfolio_snapshot(venue=venue)
@@ -114,9 +113,8 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
     entry SL/TP they enforce (§7.9) and orders left open (§7.28) — was memory-only,
     so a restart silently dropped stops and left open orders ``pending`` forever.
 
-    * ``load_fills(fills)`` ← this agent's filled orders *of this venue* (§7.61; plus
-      legacy unstamped rows, minus ``paper-…`` ids — paper fills never happened at a
-      venue), with the latest buy per symbol carrying its entry decision's SL/TP.
+    * ``load_fills(fills)`` ← this agent's filled orders *of this venue* (§7.61; minus
+      ``paper-…`` ids — paper fills never happened at a venue), with the latest buy per symbol carrying its entry decision's SL/TP.
     * ``load_pending_orders(orders)`` ← this agent's ``pending`` rows; the first cycle's
       reconciliation then resolves them.
 
@@ -244,16 +242,6 @@ async def rehydrate_loss_streak(
                 limit=50, **({"strategy": strategy} if strategy is not None else {})
             )
         ]
-        # pre-§7.46: entry decisions carry one outcome. Decisions have no venue, and
-        # that history is paper — never a keyed account's streak (§7.76).
-        bound = getattr(storage, "venue", None)
-        on_paper = not isinstance(bound, str) or bound == PAPER_VENUE
-        if not outcomes and strategy is None and on_paper:
-            outcomes = [
-                (float(d.realized_pnl or 0.0), _as_utc(d.timestamp))
-                for d in await storage.get_closed_decisions(limit=50)
-                if d.action == "buy"
-            ]
         streak = 0
         newest_loss_ts: datetime | None = None
         for pnl, ts in outcomes:  # newest first

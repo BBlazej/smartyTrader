@@ -394,6 +394,7 @@ class TestOrderTtl:
 
         storage = Storage(str(tmp_path / "t.db"), agent="crypto")
         await storage.initialize()
+        storage.bind_venue("myokx-sandbox")  # as the runner does (§7.61)
         try:
             await storage.save_order("V-9", SYMBOL, "buy", 0.001, 100_000.0, "pending")
             (row,) = await storage.get_pending_orders()

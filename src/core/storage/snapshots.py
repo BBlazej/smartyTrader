@@ -128,7 +128,7 @@ class PortfolioSnapshotMixin:
 
         Upsert per agent; the audit trail is this row plus the structlog line —
         superseded values are not kept here (the snapshot history stays intact).
-        ``venue`` is the account whose peak it resets (§7.76; ``None`` = legacy/paper).
+        ``venue`` is the account whose peak it resets (§7.76).
         """
         scope = self._agent_scope(agent)
         if scope is None:  # pragma: no cover - callers always name an agent
@@ -174,7 +174,7 @@ class PortfolioSnapshotMixin:
 
         venue = self._risk_venue(venue)
         reset = await self.get_drawdown_reset(agent)
-        if reset is None or not self._risk_venue_applies(reset.venue, venue):
+        if reset is None or not self._venue_applies(reset.venue, venue):
             return await self.get_max_portfolio_value(agent, venue=venue)
         async with await self._session() as session:
             stmt = self._scoped_snapshots(
@@ -193,8 +193,8 @@ class PortfolioSnapshotMixin:
     async def get_latest_portfolio_snapshot(
         self, agent: str | None = None, venue: str | None = None
     ) -> PortfolioSnapshotRow | None:
-        """Newest snapshot of the agent; ``venue`` restricts it to that venue's (or
-        legacy unstamped) rows — the paper book never restores a venue account (§7.61)."""
+        """Newest snapshot of the agent; ``venue`` restricts it to that venue's rows —
+        the paper book never restores a venue account (§7.61)."""
         async with await self._session() as session:
             stmt = self._scoped_snapshots(select(PortfolioSnapshotRow), agent)
             if venue is not None:
@@ -223,5 +223,5 @@ class PortfolioSnapshotMixin:
         """Restrict a risk-seed snapshot read to one venue (§7.76); unbound → all."""
         venue = self._risk_venue(venue)
         if venue is not None:
-            stmt = stmt.where(self._risk_venue_match(PortfolioSnapshotRow.venue, venue))
+            stmt = stmt.where(self._venue_match(PortfolioSnapshotRow.venue, venue))
         return stmt

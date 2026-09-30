@@ -32,6 +32,8 @@ async def dbs(tmp_path):
     crypto = Storage(path, agent="crypto")
     stocks = Storage(path, agent="stocks")
     await crypto.initialize()
+    crypto.bind_venue("paper")  # as the runners do (§7.61)
+    stocks.bind_venue("paper")
     yield crypto, stocks
     await crypto.close()
     await stocks.close()

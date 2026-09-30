@@ -10,7 +10,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import ColumnElement, create_engine, or_, text
+from sqlalchemy import ColumnElement, create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base, DbIdentityRow
@@ -81,33 +81,17 @@ class StorageBase:
 
     @staticmethod
     def _venue_match(column: ColumnElement, venue: str) -> ColumnElement:
-        """Rows of ``venue`` plus legacy unstamped (NULL) rows (§7.61)."""
-        return or_(column == venue, column.is_(None))
+        """Rows of exactly ``venue`` (§7.61/§7.76) — every row is venue-stamped."""
+        return column == venue
 
     def _risk_venue(self, venue: str | None) -> str | None:
         """The venue a risk seed reads (§7.76): explicit, else the bound one; ``None`` = all."""
         return venue if venue is not None else self._venue
 
     @staticmethod
-    def _risk_venue_match(column: ColumnElement, venue: str) -> ColumnElement:
-        """Risk-seed scope (§7.76): exactly ``venue``.
-
-        Legacy unstamped (NULL) rows predate venue tagging (§7.61), when only the paper
-        executor ever ran, so they count for ``paper`` only. Admitting them for a keyed
-        venue latched the OKX demo's drawdown gate on a 100,000 paper peak.
-        """
-        if venue == PAPER_VENUE:
-            return or_(column == venue, column.is_(None))
-        return column == venue
-
-    @staticmethod
-    def _risk_venue_applies(row_venue: str | None, venue: str | None) -> bool:
-        """Python twin of :meth:`_risk_venue_match` for single rows (reset rows)."""
-        if venue is None:
-            return True
-        if row_venue is None:
-            return venue == PAPER_VENUE
-        return row_venue == venue
+    def _venue_applies(row_venue: str | None, venue: str | None) -> bool:
+        """Python twin of :meth:`_venue_match` for single rows (reset rows)."""
+        return venue is None or row_venue == venue
 
     @property
     def database_path(self) -> str:

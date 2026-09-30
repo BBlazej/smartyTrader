@@ -99,7 +99,7 @@ class OrderRow(Base):
     # what the live loss-streak tracker counts, so restart rehydration matches it.
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Execution venue (§7.61): ``paper`` / ``myokx-sandbox`` / ``xtb-demo`` … — each
-    # executor replays only its own fills at restart. NULL = legacy/unknown.
+    # executor replays only its own fills at restart (runners always stamp it).
     venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
     # Sleeve the order was placed for (§7.71): the entry's sleeve, or the owning
     # sleeve of the position a close reduced. NULL without sleeves.
@@ -123,8 +123,8 @@ class PortfolioSnapshotRow(Base):
     # Owning agent (§7.39): each agent's book, daily baseline and drawdown peak are
     # its own — mixing them restored one agent's positions into the other's executor.
     agent: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
-    # Execution venue (§7.61): the paper book is restored only from paper (or legacy
-    # NULL) snapshots — never from a venue account's cash/positions.
+    # Execution venue (§7.61): the paper book is restored only from paper snapshots —
+    # never from a venue account's cash/positions.
     venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
@@ -143,7 +143,7 @@ class DrawdownResetRow(Base):
     baseline_value: Mapped[float] = mapped_column(Float)
     reset_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     # The venue whose peak was re-baselined (§7.76) — a paper reset never moves a
-    # keyed account's latch. NULL = legacy row (paper). One row per agent: the latest
+    # keyed account's latch. One row per agent: the latest
     # reset wins, whichever venue it was for.
     venue: Mapped[str | None] = mapped_column(String(40), nullable=True)
 

@@ -132,7 +132,7 @@ class OrderMixin:
                 stmt = stmt.where(OrderRow.agent == scope)
             risk_venue = self._risk_venue(venue)
             if risk_venue is not None:
-                stmt = stmt.where(self._risk_venue_match(OrderRow.venue, risk_venue))
+                stmt = stmt.where(self._venue_match(OrderRow.venue, risk_venue))
             stmt = stmt.order_by(OrderRow.id.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
@@ -163,7 +163,7 @@ class OrderMixin:
         ``decision_id``. Ids are monotonic with execution time for both paper
         and venue paths (rows are written when the fill happens). Agent-scoped
         (§7.39): a runner replays only its own fills; ``venue`` narrows it to one
-        execution venue plus legacy unstamped rows (§7.61).
+        execution venue (§7.61).
         """
         async with await self._session() as session:
             stmt = select(OrderRow).where(OrderRow.status == "filled").order_by(OrderRow.id.asc())
