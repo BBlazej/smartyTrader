@@ -99,9 +99,7 @@ class OrderMixin:
             stmt = select(OrderRow).order_by(OrderRow.id.desc()).limit(limit)
             if symbol:
                 stmt = stmt.where(OrderRow.symbol == symbol)
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
@@ -127,9 +125,7 @@ class OrderMixin:
             )
             if strategy is not None:
                 stmt = stmt.where(OrderRow.strategy == strategy)
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             risk_venue = self._risk_venue(venue)
             if risk_venue is not None:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, risk_venue))
@@ -171,9 +167,7 @@ class OrderMixin:
                 stmt = stmt.where(OrderRow.symbol == symbol)
             if venue is not None:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, venue))
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
@@ -190,8 +184,6 @@ class OrderMixin:
             stmt = select(OrderRow).where(OrderRow.status == "pending").order_by(OrderRow.id.asc())
             if venue is not None:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, venue))
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             result = await session.execute(stmt)
             return list(result.scalars().all())

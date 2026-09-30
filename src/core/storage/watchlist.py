@@ -64,9 +64,7 @@ class WatchlistMixin:
         moment = to_naive_utc(now or datetime.now(UTC))
         async with await self._session() as session:
             query = select(WatchlistEntryRow).where(WatchlistEntryRow.expires_at > moment)
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                query = query.where(WatchlistEntryRow.agent == scope)
+            query = self._where_agent(query, WatchlistEntryRow.agent, agent)
             result = await session.execute(query.order_by(WatchlistEntryRow.added_at))
             return list(result.scalars().all())
 
@@ -75,11 +73,9 @@ class WatchlistMixin:
     ) -> int:
         """Drop entries whose TTL has passed; returns the number deleted."""
         moment = to_naive_utc(now or datetime.now(UTC))
-        scoped_agent = self._agent_scope(agent)
         async with await self._session() as session:
             stmt = delete(WatchlistEntryRow).where(WatchlistEntryRow.expires_at <= moment)
-            if scoped_agent is not None:
-                stmt = stmt.where(WatchlistEntryRow.agent == scoped_agent)
+            stmt = self._where_agent(stmt, WatchlistEntryRow.agent, agent)
             result = await session.execute(stmt)
             await session.commit()
             return int(result.rowcount or 0)

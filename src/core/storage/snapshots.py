@@ -214,9 +214,7 @@ class PortfolioSnapshotMixin:
 
     def _scoped_snapshots(self, stmt: Select, agent: str | None) -> Select:
         """Restrict a ``portfolio_snapshots`` query to the effective agent (§7.39)."""
-        scope = self._agent_scope(agent)
-        if scope is not None:
-            stmt = stmt.where(PortfolioSnapshotRow.agent == scope)
+        stmt = self._where_agent(stmt, PortfolioSnapshotRow.agent, agent)
         return stmt
 
     def _risk_scoped_snapshots(self, stmt: Select, venue: str | None) -> Select:

@@ -31,9 +31,7 @@ class SleeveMixin:
     def _scoped(self, stmt: Select, table: type, agent: str | None) -> Select:
         """Agent scope (§7.39) + exactly the bound venue (§7.61). An unbound Storage
         (dashboard, CLIs) reads every venue."""
-        scope = self._agent_scope(agent)
-        if scope is not None:
-            stmt = stmt.where(table.agent == scope)
+        stmt = self._where_agent(stmt, table.agent, agent)
         if self._venue is not None:
             stmt = stmt.where(table.venue == self._venue)
         return stmt
@@ -78,9 +76,7 @@ class SleeveMixin:
                 OrderRow.realized_pnl.isnot(None),
                 OrderRow.filled_at >= to_naive_utc(since),
             )
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             if self._venue is not None:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, self._venue))
             return float((await session.execute(stmt)).scalar() or 0.0)
@@ -95,9 +91,7 @@ class SleeveMixin:
             )
             if since is not None:
                 stmt = stmt.where(OrderRow.filled_at >= to_naive_utc(since))
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             if self._venue is not None:
                 stmt = stmt.where(self._venue_match(OrderRow.venue, self._venue))
             return list((await session.execute(stmt.order_by(OrderRow.id.asc()))).scalars())
@@ -242,9 +236,7 @@ class SleeveMixin:
                 )
                 .order_by(OrderRow.id.desc())
             )
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(OrderRow.agent == scope)
+            stmt = self._where_agent(stmt, OrderRow.agent, agent)
             owners: dict[str, str] = {}
             for symbol, strategy in (await session.execute(stmt)).all():
                 owners.setdefault(symbol, strategy)

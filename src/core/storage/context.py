@@ -71,8 +71,7 @@ class ContextMixin:
             return 0
         async with await self._session() as session:
             stmt = select(MarketEventRow.dedup_key).where(MarketEventRow.dedup_key.in_(batch))
-            if scoped is not None:
-                stmt = stmt.where(MarketEventRow.agent == scoped)
+            stmt = self._where_agent(stmt, MarketEventRow.agent, agent)
             known = set((await session.execute(stmt)).scalars().all())
             new = [(key, event) for key, event in batch.items() if key not in known]
             for key, event in new:
@@ -109,7 +108,6 @@ class ContextMixin:
         or weeks the feed no longer covers) are untouched. ``end=None`` = open-ended.
         Returns ``(inserted, deleted)``.
         """
-        scoped = self._agent_scope(agent)
         batch = list(events)
         keys = {event.dedup_key() for event in batch}
         async with await self._session() as session:
@@ -121,8 +119,7 @@ class ContextMixin:
                 stmt = stmt.where(MarketEventRow.at <= to_naive_utc(end))
             if keys:
                 stmt = stmt.where(MarketEventRow.dedup_key.not_in(keys))
-            if scoped is not None:
-                stmt = stmt.where(MarketEventRow.agent == scoped)
+            stmt = self._where_agent(stmt, MarketEventRow.agent, agent)
             deleted = int((await session.execute(stmt)).rowcount or 0)
             await session.commit()
         inserted = await self.store_market_events(batch, agent=agent)
@@ -154,9 +151,7 @@ class ContextMixin:
                 )
             if kinds is not None:
                 stmt = stmt.where(MarketEventRow.kind.in_([k.value for k in kinds]))
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(MarketEventRow.agent == scoped)
+            stmt = self._where_agent(stmt, MarketEventRow.agent, agent)
             rows = (await session.execute(stmt.order_by(MarketEventRow.at))).scalars().all()
             return [_event_from_row(row) for row in rows]
 
@@ -166,9 +161,7 @@ class ContextMixin:
 
         async with await self._session() as session:
             stmt = select(func.min(MarketEventRow.fetched_at))
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(MarketEventRow.agent == scoped)
+            stmt = self._where_agent(stmt, MarketEventRow.agent, agent)
             first = (await session.execute(stmt)).scalar()
             return to_utc(first) if first is not None else None
 
@@ -186,8 +179,7 @@ class ContextMixin:
                     SentimentReadingRow.source == reading.source,
                     SentimentReadingRow.as_of == to_naive_utc(reading.as_of),
                 )
-                if scoped is not None:
-                    stmt = stmt.where(SentimentReadingRow.agent == scoped)
+                stmt = self._where_agent(stmt, SentimentReadingRow.agent, agent)
                 if (await session.execute(stmt)).first() is not None:
                     continue
                 session.add(
@@ -208,9 +200,7 @@ class ContextMixin:
     ) -> SentimentReading | None:
         async with await self._session() as session:
             stmt = select(SentimentReadingRow).where(SentimentReadingRow.source == source)
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(SentimentReadingRow.agent == scoped)
+            stmt = self._where_agent(stmt, SentimentReadingRow.agent, agent)
             row = (
                 (await session.execute(stmt.order_by(SentimentReadingRow.as_of.desc()).limit(1)))
                 .scalars()
@@ -232,8 +222,7 @@ class ContextMixin:
             return 0
         async with await self._session() as session:
             stmt = select(NewsItemRow.content_hash).where(NewsItemRow.content_hash.in_(batch))
-            if scoped is not None:
-                stmt = stmt.where(NewsItemRow.agent == scoped)
+            stmt = self._where_agent(stmt, NewsItemRow.agent, agent)
             known = set((await session.execute(stmt)).scalars().all())
             new = [(key, item) for key, item in batch.items() if key not in known]
             for key, item in new:
@@ -263,9 +252,7 @@ class ContextMixin:
                 # matches exactly one element (no BTC/EUR ⊂ WBTC/EUR false hit).
                 NewsItemRow.symbols_json.contains(json.dumps(symbol)),
             )
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(NewsItemRow.agent == scoped)
+            stmt = self._where_agent(stmt, NewsItemRow.agent, agent)
             stmt = stmt.order_by(NewsItemRow.published_at.desc()).limit(max(0, limit))
             return [_news_from_row(row) for row in (await session.execute(stmt)).scalars()]
 
@@ -299,9 +286,7 @@ class ContextMixin:
         """The newest card row for ``symbol``, expired or not (summarizer bookkeeping)."""
         async with await self._session() as session:
             stmt = select(ContextCardRow).where(ContextCardRow.symbol == symbol)
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(ContextCardRow.agent == scoped)
+            stmt = self._where_agent(stmt, ContextCardRow.agent, agent)
             stmt = stmt.order_by(ContextCardRow.id.desc()).limit(1)
             return (await session.execute(stmt)).scalars().first()
 
@@ -323,9 +308,7 @@ class ContextMixin:
         """Every stored item published after ``since``, newest first."""
         async with await self._session() as session:
             stmt = select(NewsItemRow).where(NewsItemRow.published_at > to_naive_utc(since))
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(NewsItemRow.agent == scoped)
+            stmt = self._where_agent(stmt, NewsItemRow.agent, agent)
             stmt = stmt.order_by(NewsItemRow.published_at.desc()).limit(max(0, limit))
             return [_news_from_row(row) for row in (await session.execute(stmt)).scalars()]
 
@@ -336,9 +319,7 @@ class ContextMixin:
         moment = to_naive_utc(now or datetime.now(UTC))
         async with await self._session() as session:
             stmt = select(ContextCardRow).where(ContextCardRow.expires_at > moment)
-            scoped = self._agent_scope(agent)
-            if scoped is not None:
-                stmt = stmt.where(ContextCardRow.agent == scoped)
+            stmt = self._where_agent(stmt, ContextCardRow.agent, agent)
             rows = (await session.execute(stmt.order_by(ContextCardRow.id.desc()))).scalars()
             latest: dict[str, ContextCardRow] = {}
             for row in rows:
@@ -352,13 +333,11 @@ class ContextMixin:
         """``{source: last fetched_at}`` across events, sentiment and news (UTC-aware)."""
         from sqlalchemy import func
 
-        scoped = self._agent_scope(agent)
         freshness: dict[str, datetime] = {}
         async with await self._session() as session:
             for table in (MarketEventRow, SentimentReadingRow, NewsItemRow):
                 stmt = select(table.source, func.max(table.fetched_at)).group_by(table.source)
-                if scoped is not None:
-                    stmt = stmt.where(table.agent == scoped)
+                stmt = self._where_agent(stmt, table.agent, agent)
                 for source, fetched in (await session.execute(stmt)).all():
                     if fetched is None:
                         continue

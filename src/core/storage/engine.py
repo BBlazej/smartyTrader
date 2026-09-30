@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
-from sqlalchemy import ColumnElement, create_engine, text
+from sqlalchemy import ColumnElement, Delete, Select, create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base, DbIdentityRow
+
+#: A statement the agent filter can narrow (a SELECT or a DELETE).
+_Stmt = TypeVar("_Stmt", Select, Delete)
 
 
 class DatabaseIdentityError(RuntimeError):
@@ -59,6 +63,11 @@ class StorageBase:
     def _agent_scope(self, agent: str | None = None) -> str | None:
         """Effective agent for a call: an explicit ``agent`` wins, else the binding."""
         return agent if agent is not None else self._agent
+
+    def _where_agent(self, stmt: _Stmt, column: ColumnElement, agent: str | None = None) -> _Stmt:
+        """``stmt`` filtered to the effective agent (§7.39); unbound + no ``agent`` → as is."""
+        scope = self._agent_scope(agent)
+        return stmt if scope is None else stmt.where(column == scope)
 
     @property
     def venue(self) -> str | None:

@@ -132,9 +132,7 @@ class DecisionMixin:
         """
         async with await self._session() as session:
             stmt = select(LLMDecisionRow).where(LLMDecisionRow.realized_pnl.isnot(None))
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            stmt = self._where_agent(stmt, LLMDecisionRow.agent, agent)
             stmt = stmt.order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc()).limit(
                 limit
             )
@@ -169,9 +167,7 @@ class DecisionMixin:
                 stmt = stmt.where(LLMDecisionRow.symbol == symbol)
             if strategy is not None:
                 stmt = stmt.where(LLMDecisionRow.strategy == strategy)
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            stmt = self._where_agent(stmt, LLMDecisionRow.agent, agent)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
@@ -223,9 +219,7 @@ class DecisionMixin:
                 stmt = stmt.where(LLMDecisionRow.is_fallback == False)
             if strategy is not None:
                 stmt = stmt.where(LLMDecisionRow.strategy == strategy)
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            stmt = self._where_agent(stmt, LLMDecisionRow.agent, agent)
             stmt = stmt.order_by(LLMDecisionRow.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())
@@ -252,9 +246,7 @@ class DecisionMixin:
                 .order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc())
                 .limit(limit)
             )
-            scope = self._agent_scope(agent)
-            if scope is not None:
-                stmt = stmt.where(LLMDecisionRow.agent == scope)
+            stmt = self._where_agent(stmt, LLMDecisionRow.agent, agent)
             result = await session.execute(stmt)
             rows = list(result.all())
 
