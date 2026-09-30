@@ -261,3 +261,33 @@ class TestShippedMarketContext:
             times = [e["at"] for e in events if e["currency"] == currency]
             assert times == sorted(times)
         assert all(e["at"].utcoffset().total_seconds() == 0 for e in events)
+
+
+class TestConfigModels:
+    """Pydantic settings blocks: typos fail, null means default, secrets stay env-only."""
+
+    def test_unknown_keys_are_rejected(self) -> None:
+        from src.core.config import AgentConfig, RiskSettings
+
+        with pytest.raises(ValueError, match="max_positon_pct"):
+            RiskSettings(max_positon_pct=0.1)
+        with pytest.raises(ValueError, match="broker"):
+            AgentConfig(enabled=True, broker="xtb")
+
+    def test_null_means_default_unless_the_field_takes_none(self) -> None:
+        from src.core.config import AgentConfig, WatchlistSettings
+
+        agent = AgentConfig(enabled=True, pairs=None, watchlist=None)
+        assert agent.pairs == [] and agent.watchlist.enabled is False
+        assert WatchlistSettings(max_daily_volatility=None).max_daily_volatility is None
+
+    def test_llm_api_key_is_env_only_and_never_printed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.core.config import LLMSettings
+
+        with pytest.raises(ValueError, match="LLM_API_KEY"):
+            LLMSettings(endpoint="http://x", model="m", api_key="from-yaml")
+        monkeypatch.setenv("LLM_API_KEY", "sekret")
+        llm = LLMSettings(endpoint="http://x", model="m")
+        assert llm.api_key == "sekret" and "sekret" not in repr(llm)

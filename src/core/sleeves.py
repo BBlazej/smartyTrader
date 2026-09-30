@@ -65,7 +65,7 @@ def sleeve_risk_settings(
     agent-wide through the safe-config surface (``live`` differs from ``baseline``,
     §7.43) acts as a ceiling on every sleeve — an override can only ever tighten.
     """
-    values = {name: getattr(baseline, name) for name in vars(RiskSettings())}
+    values = {name: getattr(baseline, name) for name in RiskSettings.model_fields}
     values.update(overrides)
     for name, direction in _TIGHTER.items():
         live_value, base_value = getattr(live, name), getattr(baseline, name)
