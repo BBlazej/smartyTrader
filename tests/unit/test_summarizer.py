@@ -353,7 +353,12 @@ class TestRunnerWiring:
             if run_once:
                 await task
             else:
-                await asyncio.sleep(0.2)
+                # Wait until the scheduled loop is up (jobs registered) — a fixed sleep
+                # flaked on a loaded machine.
+                for _ in range(500):
+                    if manager is not None and manager.start.called:
+                        break
+                    await asyncio.sleep(0.01)
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         return built

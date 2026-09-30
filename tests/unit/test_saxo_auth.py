@@ -175,7 +175,12 @@ async def test_keepalive_rotates_while_idle(tmp_path: Path) -> None:
     oauth = make(tmp_path, server, clock, keepalive_minutes=0.001)  # 60 ms
     await oauth.exchange_code("c")
     await oauth.access_token()  # starts the keep-alive
-    await asyncio.sleep(0.2)
+    # Wait for two keep-alive rotations (60 ms apart) rather than a fixed sleep — a
+    # loaded machine (coverage, CI) can stretch the timer.
+    for _ in range(200):
+        if server.issued >= 3:
+            break
+        await asyncio.sleep(0.01)
     await oauth.close()
     assert server.issued >= 3
 
@@ -229,9 +234,13 @@ class TestLoginScript:
         waiter = asyncio.create_task(
             wait_for_redirect(f"http://127.0.0.1:{port}/callback", timeout=5)
         )
-        await asyncio.sleep(0.1)
         async with httpx.AsyncClient() as c:
-            response = await c.get(f"http://127.0.0.1:{port}/callback?code=xyz&state=s")
+            for _ in range(200):  # until the listener is up (no fixed sleep)
+                try:
+                    response = await c.get(f"http://127.0.0.1:{port}/callback?code=xyz&state=s")
+                    break
+                except httpx.ConnectError:
+                    await asyncio.sleep(0.01)
         assert response.status_code == 200
         assert parse_callback(await waiter, "s") == "xyz"
 

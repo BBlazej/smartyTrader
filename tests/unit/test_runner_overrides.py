@@ -47,7 +47,7 @@ class TestStartupOverrides:
 
         task = asyncio.create_task(_scheduled_run(settings, fake_agent, manager))
         try:
-            await asyncio.sleep(0.1)  # let startup + first cycle settle
+            await _until(lambda: manager.start.called)  # startup + first cycle done
             cycle_calls = [
                 c
                 for c in manager.schedule_cycle.call_args_list
@@ -66,7 +66,7 @@ class TestStartupOverrides:
 
         task = asyncio.create_task(_scheduled_run(settings, fake_agent, manager))
         try:
-            await asyncio.sleep(0.1)
+            await _until(lambda: manager.start.called)
             assert fake_agent.applier is not None  # applier installed on the agent
 
             fake_agent.applier('{"interval_minutes": 12}')
@@ -94,6 +94,14 @@ class TestStartupOverrides:
         assert settings.crypto_agent.pairs == ["ETH/EUR"]  # applied before the cycle
         assert fake_agent.cycles == 1
         manager_cls.assert_not_called()
+
+
+async def _until(condition, timeout: float = 5.0) -> None:
+    """Poll ``condition()`` until true — fixed sleeps flake on a loaded machine."""
+    for _ in range(int(timeout / 0.01)):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
 
 
 async def _scheduled_run(settings: Settings, agent: StubAgent, manager: MagicMock) -> None:
