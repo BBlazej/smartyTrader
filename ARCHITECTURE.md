@@ -4,13 +4,13 @@ This document describes **how the system is built**: module layout, data flow, s
 
 **Document map**
 
-- [README.md](README.md) — user-facing overview & quickstart (canonical file-level project layout)
+- [README.md](README.md) — user-facing overview & quickstart
 - **ARCHITECTURE.md** (this file) — architecture: components, data flow, schema, control plane, design decisions
 - [HISTORY.md](HISTORY.md) — what has been delivered (status snapshot, original Phase 1–2 plans, completed §7 items)
 - [PLAN.md](PLAN.md) — gaps, todos & next steps (§7 lives there; §7.N identifiers are never renumbered)
 - [CHANGE.md](CHANGE.md) — multi-strategy design (sleeves, allocator, research layer) — P1/P2/P4/P5 implemented, P3 allocator open
 - `AGENTS.md` — agent-facing facts & rules injected into coding-agent prompts
-- `review.MD` / `review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
+- `docs/reviews/review.MD` / `docs/reviews/review2.md` — external full-codebase reviews (`[R-xx]` tags reference these)
 
 ## Overview
 
@@ -105,12 +105,15 @@ flowchart TB
 
 ## Module layout (current)
 
+The canonical file-level map (README only summarizes the directories).
+
 ```
 src/
 ├── core/
 │   ├── models.py             # Pydantic models + Executor Protocol (single source of truth for contracts)
 │   ├── config.py             # YAML + env settings loader (Settings validates config/settings.yaml)
 │   ├── llm_client.py         # LM Studio HTTP client (retry, think-tolerant JSON parse §7.57, HOLD fallback, llm_exchange audit log)
+│   ├── timeutil.py           # to_utc / to_naive_utc — the one pair of datetime normalizers
 │   ├── costs.py              # CostModel — per-venue commission/FX schedule (paper fills, sizing, replay) (§7.65)
 │   ├── risk_engine.py        # 7 deterministic risk rules (all live) + trackers (daily loss, cooldown, drawdown HWM)
 │   ├── watchlist.py          # WatchlistManager: capped/TTL dynamic symbols over the screener; held/core never dropped (§7.70)
@@ -236,6 +239,7 @@ Notes:
 - **The pipeline prices, the venue executor executes** (§7.75): the pipeline hands every order a *reference* price (the last close) — exactly what paper fills at. `CcxtExecutor` turns it into a venue order via `venue_orders`: BUY = limit crossed by `entry_offset_pct` (sizing reserves it through `buy_price_factor` → `sizing_cost_model`), SELL = market (an exit must fill; a limit at the bare close rested unfilled on the OKX demo), amounts floored to the lot size, sub-minimum orders never sent. Working orders are aged: past `order_ttl_seconds` reconciliation cancels them, and until then `working_order_sides` stops the pipeline from stacking a second same-side order (exits, close-all, entries). Fees the venue reports go into cost basis / realized PnL, so venue outcomes are net like paper's; a lot-size remainder is written off the ledger, never a position.
 - **Exit levels bypass the gate deliberately** (§7.9): cooldown/daily-loss blocks must never strand a position. Levels ride on `Position` (persisted in portfolio snapshots → survive restarts). These are *local* checks, not venue-side stop orders.
 - **Strategy sleeves** (§7.71, opt-in): the agent runs one `DecisionPipeline` per sleeve (own timeframe, playbook system prompt, `strategy` tag) per symbol, in config order. Right after marking, the pipeline resolves the symbol's owner via `SleeveBook` (open FIFO lots → entry decisions → `llm_decisions.strategy`; unknown → first sleeve). Exit levels still run first and tag the close with the owner; then the owner's **time stop** (`holding.max_hours/max_days`, clock = the oldest lot's decision time) closes like an exit level; a symbol owned by another sleeve ends the run with `skip_reason` (symbol lock — no LLM call). Bar timing and prompt history filter on the sleeve's own rows; the YOUR BOOK section adds the sleeve and its time stop.
+- **Stocks data & hours** (§7.10/§7.11/§7.67/§7.68): daily stock candles come over a `"6mo"` window and hourly ones over `"1mo"`, so every timeframe feeds MACD (≥ 26 closes; `StocksProvider` warns once per symbol/timeframe when a book is shallower); candle rows with a NaN OHLC cell are dropped, never zero-filled. The market-hours guard compares the exchange's *local* wall clock (`market_timezone`) with `market_hours`, closes weekends and `market_holidays`, wraps overnight windows, and must match the traded exchange — shipped US stocks ⇒ NYSE `09:30-16:00 America/New_York`; per-exchange windows for a mixed universe via `exchanges`/`symbol_exchanges` (§7.66).
 - **Market context** (§7.18, opt-in per agent): after the book read the pipeline asks `ContextReader.for_symbol` for a `SymbolContext` and renders it as the prompt's MARKET CONTEXT section; the risk engine's `event_blackout_reason` is computed first and shown as `ENTRY BLACKOUT` so the model knows a BUY would be refused. After `evaluate` (and the sleeve backstop), an approved BUY passes `check_event_guard`; an unreadable context rejects it. See *Market context* below.
 - Indicators and prompt building live in `src/analysis/` (`indicators.py`, `prompt_builder.py`), extracted verbatim from `core/decision_pipeline.py` (§7.17); the pipeline now only orchestrates data → indicators → prompt → LLM → risk → execution.
 
@@ -357,7 +361,7 @@ stateDiagram-v2
 - **No column migrations (2026-09-30):** `Storage.initialize` only creates missing tables (`create_all`); the old `ALTER TABLE` migrations and the §7.39 agent backfill were removed once every book was current. A future column change ships its own one-off migration.
 - **Market-context tables (§7.18, agent-scoped, additive):** `market_events` (source, kind `macro`/`earnings`/`delisting`, asset or NULL = market-wide, currency, `at`, importance, title, url, `dedup_key`), `sentiment_readings` (source, value, label, as_of), `news_items` (feed, url, title, plain-text `body` — summarizer input only, `symbols_json`, `content_hash`) and `context_cards` (validated `card_json`, model, `news_through`, `expires_at` TTL). Writes are idempotent (dedup keys); calendar feeds re-sync their published window so moved/cancelled events stop blocking. Pruned after `storage.context_retention_days` (default 30) by the regular retention pass.
 - **Strategy tag (§7.71):** `llm_decisions.strategy` and `orders.strategy` (nullable; NULL = no sleeves) name the sleeve that decided / placed the order (a close is tagged with the *owning* sleeve). Ownership itself is not stored — it is derived from the executor ledger's open lots and these decision rows, so it is exactly as restart-safe as the ledger.
-- **Agent scoping (§7.39, second layer after §7.78):** within one file, `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. `market_snapshots` is a symbol-keyed candle cache and stays unscoped.
+- **Agent scoping (§7.39, second layer after §7.78):** within one file, `llm_decisions`, `orders` and `portfolio_snapshots` carry an indexed `agent` column (`crypto`/`stocks`). A runner's `Storage(path, agent=component)` stamps every write and filters every read of those tables on it — each agent has its own book, daily baseline, drawdown peak, loss streak, FIFO replay and prompt history. Unbound storage (dashboard, CLIs) reads across agents or narrows with an explicit `agent=`. `market_snapshots` is a symbol-keyed candle cache and stays unscoped. Queries filter through one helper, `StorageBase._where_agent(stmt, column, agent)`; writes stamp `_agent_scope(agent)`.
 - **New table — `agent_control`** (control plane, dashboard read/write):
 
   | Column | Purpose |
@@ -593,263 +597,12 @@ Metrics (CLI summary + `--report` JSON):
 - LLM audit trail ✅ — full `llm_exchange` structlog event (tagged `purpose=trade_signal|context_card`) (system prompt + user prompt + raw response) per live decision; fallback HOLDs flagged in `llm_decisions.is_fallback` and excluded from prompt context (§7.8)
 - Web dashboard (FastAPI + Jinja2/HTMX, Docker) — monitoring **plus control** plus safe config management: agent-side control API ✅ (§7.15 P1/P2); dashboard pages + control/config UI ✅ (`src/dashboard/`, `scripts/run_dashboard.py` — §7.15 P3/P4); Docker/compose packaging ✅ (`Dockerfile` + `docker-compose.yml` — §7.15 P5)
 
-## LM Studio Integration Details
+## LLM server, venue APIs, configuration, dependencies
 
-**Endpoint:** `http://127.0.0.1:1234/v1/chat/completions` (OpenAI-compatible)
-
-**Model:** Qwen 3.8 27B (`qwen/qwen3.8-27b`)
-
-**Key considerations:**
-- Use JSON mode / structured output if the model supports it, otherwise validate and retry on parse failure
-- Keep prompts under context window — trim old data aggressively
-- Set reasonable timeout (15-30s) with fallback to HOLD signal on LLM failure
-- Log full prompt + response for auditability
-
-## API Notes
-
-### OKX Europe (crypto spot) — §7.64
-- EEA accounts use **OKX Europe** — ccxt `myokx`, host `eea.okx.com`; **EUR/USDC pairs only** (USDT not tradable under MiCA). **Demo trading** = same host + `x-simulated-trading: 1` (ccxt sandbox mode, own demo API key). Keyed live trading is real money — gated by `crypto_agent.live_trading: true` + `LIVE_TRADING_ACK` (§7.41). Kraken was dropped 2026-09-26 (no spot demo, higher fees).
-- `fetch_positions` covers margin/derivatives only (`[]` for spot) — the executor reports its FIFO ledger capped by `fetch_balance` totals, marked each cycle via `update_price` (§7.41/§7.64).
-- Auth: API key + secret + passphrase (ccxt `password`); details in `docs/API_NOTES.md`
-- Rate limits: Check current docs — implement exponential backoff
-- Order types: market, limit, stop-loss, take-profit supported
-
-### XTB Demo — DEAD PATH (§7.66)
-- **XTB closed its API access on 2025-03-14** — no supported successor; the path is kept disabled as reference only until the Saxo OpenAPI executor replaces it (PLAN §7.66)
-- xAPI requires registration + an xAPI verification code generated in xStation (demo is easier)
-- Protocol reality (verified §7.16): the old `ws.xtb.com`/`xapi.xtb.com` hosts were **retired 2025-03-14**; what remains is `wss://ws.xapi.pro/{demo,real}` — an **unofficial third-party relay** (not XTB-sanctioned), ordered JSON transactions
-- Auth: classic WS `login` command (account id + verification code, valid ~30 days, revocable) — **no OAuth2 token endpoint exists**
-- Trading hours: Warsaw Stock Exchange schedule
-- Instruments: Stocks, CFDs, indices
-
-## Configuration (`config/settings.yaml`)
-
-Everything is config-driven — thresholds, endpoints, schedules, retention windows. The authoritative file is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it (current contents):
-
-```yaml
-llm:
-  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
-  model: "qwen/qwen3.8-27b"
-  timeout_seconds: 300     # whole (non-streamed) completion incl. reasoning
-  max_retries: 3
-  use_json_schema: false   # enable once the local model accepts response_format
-  max_tokens: 8192         # completion cap — not the context window (that's LM Studio's)
-  max_response_chars: 36000  # size guard ≈ 4 × max_tokens
-
-crypto_agent:
-  enabled: true
-  exchange: myokx               # OKX Europe (§7.64); keys → demo with testnet: true
-  testnet: true
-  live_trading: false
-  quote_currency: EUR           # every pair must be quoted in it (USDT not tradable in the EEA)
-  interval_minutes: 5
-  pairs:
-    - BTC/EUR
-    - ETH/EUR
-  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
-  timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
-  decide_on_new_bar_only: true # one LLM decision per closed bar; cycles between only mark + exit-check
-  watchlist:                   # §7.70 — opt-in screener-driven dynamic universe
-    enabled: false             # off ⇒ traded set is exactly `pairs`
-    refresh_minutes: 360
-    max_dynamic_symbols: 2     # hard cap on manager-added pairs (core + held never count)
-    ttl_hours: 96              # dynamic pair dropped (slot freed) after this
-    min_quote_volume_24h: 1000000   # liquidity floor in quote currency (EUR)
-    momentum_days: 14          # ranking window on daily bars
-    lookback_days: 30          # candle depth for the volatility estimate
-    min_daily_volatility: 0.005
-    max_daily_volatility: 0.25
-    max_candidates: 20         # candle fetches per refresh (best liquidity first)
-    exclude_symbols: []
-  sleeves:                     # §7.71 — opt-in strategy sleeves (CHANGE.md P1)
-    enabled: false             # off ⇒ one implicit style on `timeframe`
-    backstop_max_drawdown_pct: 0.20   # agent-wide breaker over all sleeves' entries
-    strategies:                # config order = priority on a same-cycle tie
-      crypto_swing:            # weight × allocated capital; risk: overrides the agent block
-        {timeframe: "1h", playbook: swing, holding: {max_hours: 72}, weight: 0.5,
-         risk: {max_position_pct: 0.05, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.06, max_stop_distance_pct: 0.08}}
-      crypto_position:
-        {timeframe: "4h", playbook: position, holding: {max_days: 28}, weight: 0.5,
-         risk: {max_position_pct: 0.10, daily_loss_limit_pct: 0.04, max_drawdown_pct: 0.15, max_stop_distance_pct: 0.20}}
-
-stocks_agent:
-  enabled: false
-  broker: xtb
-  demo: true
-  interval_minutes: 15
-  # §7.68: the window must match the exchange of the symbols actually traded —
-  # these are US stocks (NYSE), not the Warsaw session the block inherited from
-  # the XTB/GPW origins. Regular hours 09:30–16:00 America/New_York.
-  market_hours: "09:30-16:00"   # local wall-clock window for the exchange
-  market_timezone: "America/New_York"   # zone the window is in (so a UTC host stays correct)
-  # Exchange closure dates (§7.10, ISO YYYY-MM-DD). Weekends are always closed;
-  # fill in holidays/one-off shutdowns here (validated at startup — bad entries
-  # abort with an actionable error rather than silently disabling the guard).
-  # NYSE full-day closures for the rest of 2026 plus 2027 (§7.68) — extend as
-  # needed; half-day early closes are not expressible (the window guard only
-  # skips whole days).
-  market_holidays:
-    - "2026-11-26"   # Thanksgiving
-    - "2026-12-25"   # Christmas
-    - "2027-01-01"   # New Year's Day
-    - "2027-01-18"   # MLK Day
-    - "2027-02-15"   # Presidents' Day
-    - "2027-03-26"   # Good Friday
-    - "2027-05-31"   # Memorial Day
-    - "2027-06-18"   # Juneteenth (observed — June 19 is a Saturday)
-    - "2027-07-05"   # Independence Day (observed — July 4 is a Sunday)
-    - "2027-09-06"   # Labor Day
-    - "2027-11-25"   # Thanksgiving
-    - "2027-12-24"   # Christmas (observed — December 25 is a Saturday)
-  symbols:
-    - AAPL
-    - MSFT
-  decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
-  timeframe: "1d"              # daily bars (yfinance); indicators use closed bars only
-  decide_on_new_bar_only: true # one LLM decision per closed daily bar (§7.56)
-
-risk:
-  max_position_pct: 0.10
-  daily_loss_limit_pct: 0.02
-  max_drawdown_pct: 0.05
-  consecutive_losses_cooldown_minutes: 60
-  consecutive_losses_threshold: 3   # streak that arms the cooldown (§7.19)
-  max_open_positions: 5
-  min_confidence: 0.6
-  # Entry geometry (§7.54): a BUY's stop must sit BELOW the current price and within
-  # this fraction of it; take_profit, when given, must be ABOVE the price.
-  max_stop_distance_pct: 0.25
-  # Optional risk-per-trade sizing (§7.54): > 0 caps each BUY so
-  # (entry − stop) × quantity ≤ this fraction of total value. 0 = disabled.
-  risk_per_trade_pct: 0.0
-  # Deterministic stop-loss / take-profit enforcement (§7.9): when a position's
-  # mark price breaches the levels carried from its entry signal, the pipeline
-  # closes it on the next cycle without asking the LLM or the risk gate.
-  enforce_exit_levels: true
-  # Event guard (§7.18) — needs <agent>.context.enabled; gates new BUYs, never exits.
-  event_guard_enabled: true
-  event_blackout_before_minutes: 120
-  event_blackout_after_minutes: 60
-  event_guard_min_importance: high
-  earnings_blackout_days_before: 1
-  earnings_blackout_hours_after: 24
-  delisting_blackout_days: 90
-
-# Market context (§7.18) — abridged; see config/settings.yaml for the full blocks.
-# crypto_agent.context: enabled, refresh_minutes 60, lookahead_hours 48, sentiment,
-#   macro (USD, EUR, high), announcements, news (CoinDesk/Cointelegraph/The Block +
-#   aliases), summarizer (off; llm overrides). stocks_agent.context: earnings + EDGAR,
-#   off. macro_calendar: feed_url (ForexFactory) + curated FOMC/ECB events (UTC).
-
-# Paper-executor costs so realized PnL (and the LLM's feedback loop) is net of
-# fees/slippage (§7.65). The flat fields are the generic default schedule; a
-# percentage-only venue has no minimum. paper_costs overrides per runner component,
-# so each paper book simulates the venue it stands in for.
-execution:
-  paper_fee_pct: 0.001
-  paper_slippage_pct: 0.001
-  paper_min_commission: 0.0   # absolute per-side floor, book currency (0 = none)
-  paper_fx_fee_pct: 0.0       # charged when trades settle in a foreign currency
-  initial_cash: 1000.0     # seeds a fresh paper portfolio (sized to the real plan); after the first cycle
-                           # the persisted snapshot (and restart rehydration) wins
-  # Per-venue profiles (§7.65). Stocks mirrors Saxo US-equities pricing: 0.08%/side
-  # with a min ~1 unit/side (~1% on a €100 position — invisible to a percentage-only
-  # model) plus 0.25% FX per EUR↔USD conversion (avoidable later by holding USD).
-  paper_costs:
-    crypto:
-      paper_fee_pct: 0.002      # the OKX account's reported taker rate (§7.75)
-    stocks:
-      paper_fee_pct: 0.0008
-      paper_min_commission: 1.0
-      paper_fx_fee_pct: 0.0025
-
-storage:
-  data_dir: "data"                # §7.78: <mode>_<agent>.db files live here
-  # Retention (§7.12). Market snapshots are re-creatable cache (~100-candle JSON
-  # per symbol-cycle — the space hog), so they prune by default. Decisions/orders
-  # are the trade record (audit + fine-tuning data): kept forever unless you set
-  # history_retention_days > 0. portfolio_snapshots are NEVER pruned — the
-  # drawdown high-water seed reads MAX over their full history.
-  snapshot_retention_days: 30
-  history_retention_days: 0
-  prune_interval_minutes: 1440   # how often runners prune while alive (startup always)
-
-monitoring:
-  log_level: INFO
-  alert_dedup_window_seconds: 300
-
-# Agent-side control API (§7.15). Off by default: nothing listens unless you enable
-# it. The dashboard shares the Docker network (or this host); binds to loopback by
-# default, and credentials are structurally absent from every endpoint.
-control_api:
-  enabled: false
-  host: "127.0.0.1"
-  crypto_port: 8101   # per-mode offset (§7.78): paper +0 / demo +10 / real +20
-  stocks_port: 8102
-
-# Standalone web dashboard (§7.15 P3–P4): FastAPI + Jinja2/HTMX. Run it separately
-# (`python -m scripts.run_dashboard`); it opens every per-mode book (§7.78) and writes
-# control latches directly, so it works with or without the agent-side control API.
-# Loopback by default; credentials are structurally absent from every page.
-dashboard:
-  host: "127.0.0.1"
-  port: 8080
-  refresh_seconds: 5           # HTMX polling interval for live fragments
-  agents: ["crypto", "stocks"] # which control rows to show/control
-  allow_launch: false          # §7.24 Start/Stop buttons (keep false under compose)
-
-# XTB demo execution via xAPI (§7.16). Off by default — the paper executor stays.
-# When enabled AND XTB_ACCOUNT_ID + XTB_ACCOUNT_PASSWORD are set (.env; the password
-# is the xAPI verification code from xStation settings, NOT your login password),
-# the stocks runner executes against the XTB *demo* account over
-# wss://ws.xapi.pro/demo. Deliberately outside the dashboard's safe-config
-# whitelist: turning on real execution must never be a web-form click.
-xtb_execution:
-  enabled: false
-  host: "wss://ws.xapi.pro"
-  account_type: "demo"          # demo | real — validated at startup; keep demo
-  request_timeout_seconds: 10
-```
-
-> `crypto_agent.watchlist_size` (an earlier draft) is **not** present in the real config and not consumed by any code — dropped. The authoritative config is `config/settings.yaml`; `Settings` in `src/core/config.py` validates it.
-
-Secrets never live in YAML: `.env` at the repo root holds API keys (loaded by a dependency-free `_load_dotenv()` in the runners); env overrides: `LOCAL_LLM_ENDPOINT`, `LLM_API_KEY`, `EXCHANGE_API_KEY`/`EXCHANGE_API_SECRET`/`EXCHANGE_API_PASSPHRASE`, `LOCAL_LLM_USE_JSON_SCHEMA`, and (since §7.16) `XTB_ACCOUNT_ID`/`XTB_ACCOUNT_PASSWORD` — the XTB demo account id + xAPI verification code, consumed only when `xtb_execution.enabled: true`.
-
-## Dependencies (current)
-
-```toml
-dependencies = [
-    "ccxt>=4.0",
-    "httpx>=0.27",
-    "sqlalchemy[asyncio]>=2.0",  # [asyncio] → greenlet; 2.1 no longer installs it implicitly
-    "aiosqlite>=0.20",
-    "apscheduler>=3.10",
-    "pydantic>=2.0",
-    "pyyaml>=6.0",
-    "structlog>=24.0",
-    # §7.15 control plane: agent-side control API + dashboard (server-rendered).
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-    "jinja2>=3.1",
-    # §7.16 XTB demo execution: xAPI WebSocket client (imported lazily; unit
-    # tests never touch it).
-    "websockets>=12",
-]
-
-[project.optional-dependencies]
-stocks = [
-    "yfinance>=0.2",
-]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=5.0",
-    "hypothesis>=6.100",
-    "ruff>=0.6",
-]
-```
-
-> Earlier drafts listed `pandas-ta` (indicators are hand-rolled) and `python-dotenv` (custom loader); both were removed in §7.3. `fastapi`/`uvicorn`/`jinja2` joined as runtime deps with the control plane (§7.15). HTMX + uPlot are CDN assets — no Node/npm build step anywhere.
+- **LLM:** any local OpenAI-compatible server (LM Studio, Unsloth desktop, llama-server); endpoint/model/timeouts in the `llm:` block, env `LOCAL_LLM_ENDPOINT` / `LLM_API_KEY` / `LOCAL_LLM_USE_JSON_SCHEMA`. Client behaviour (retries, size guard, reasoning-tolerant parser, audit log, shared lock with the summarizer) is described under *Decision pipeline* and *Market context* above.
+- **Venue APIs:** OKX Europe, Saxo OpenAPI (incl. OAuth), the dead XTB xAPI path and the market-context sources — payload shapes and quirks in [docs/API_NOTES.md](docs/API_NOTES.md).
+- **Configuration:** `config/settings.yaml` is the single source (commented block by block); `src/core/config.py` validates it as Pydantic models — unknown keys fail at load, a YAML `null` means the field's default, secrets come only from `.env`/the environment (see README *Environment variables*).
+- **Dependencies:** `pyproject.toml` (`[stocks]` adds yfinance, `[dev]` the test/lint tools). HTMX and uPlot are CDN assets — no Node build step.
 
 ## Testing Strategy
 
@@ -867,8 +620,8 @@ dev = [
 - Risk engine invariants: "approved signal always satisfies all rules"
 - Storage consistency: "every executed order has a matching decision record"
 
-### Test Data
-- Realistic OHLCV fixtures from historical data
-- Edge cases: gap-ups, zero volume, extreme volatility periods
+### Shared test scaffolding
+- `tests/helpers.py`: `make_settings(tmp_path, overrides)` (a minimal valid config, deep-merged), `StubAgent`, `runner_patches` + `run_agent_once` for runner-level tests
+- Live provider smokes are opt-in (`pytest -m network`)
 
-Current numbers: **1283 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).
+Current numbers: **1285 tests passing at ~95% coverage** (`pytest`; see [HISTORY.md](HISTORY.md) for the delivery record behind each number).

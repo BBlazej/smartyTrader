@@ -54,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1283 tests, no network needed (live smokes are opt-in:
+pytest                      # 1285 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -103,78 +103,19 @@ false`. A Saxo OpenAPI executor replaces it (PLAN §7.66).
 ## Project layout
 
 ```
-src/
-├── core/
-│   ├── models.py             # Pydantic models (TradeSignal, DecisionRecord, Position, OrderResult, Executor protocol)
-│   ├── config.py             # YAML + env settings loader
-│   ├── llm_client.py         # LM Studio HTTP client (retry + think-tolerant JSON parse + HOLD fallback)
-│   ├── risk_engine.py        # 7 deterministic risk rules (all live)
-│   ├── storage/              # SQLite (SQLAlchemy + aiosqlite) repository package (§7.36)
-│   ├── decision_pipeline.py  # fetch → indicators → prompt → LLM → risk → persist decision → execute
-│   ├── rehydration.py        # Restores paper book, venue ledgers/exit levels/pending orders + risk trackers at startup
-│   ├── retention.py          # Fail-soft storage pruning wrapper (startup + scheduled)
-│   ├── runner.py             # Shared runner lifecycle: enabled-gate, wiring, --once/scheduled loops
-│   ├── backtester.py         # Decision-replay backtester: same risk/fee model, zero LLM calls (§7.14)
-│   ├── performance.py        # Per-sleeve performance ledger: trades, win rate, profit factor, holding time, max DD (§7.73)
-│   ├── control_api.py        # Agent-side FastAPI control API (pause/resume/close-all/config) (§7.15)
-│   ├── control_config.py     # Safe config-override whitelist (credentials structurally impossible) (§7.15)
-│   ├── watchlist.py          # Capped TTL watchlist manager over the screener (§7.70)
-│   ├── sleeves.py            # Strategy sleeves: ledger-derived ownership, symbol lock, time stops (§7.71)
-│   ├── context.py            # Market context: fail-soft refresh job + per-decision reader (§7.18)
-│   ├── summarizer.py         # Batch LLM news summarizer → validated context cards (§7.18)
-│   └── scheduler.py          # APScheduler wrapper
-├── data/
-│   ├── ccxt_provider.py      # Crypto OHLCV via CCXT (OKX Europe)
-│   ├── stocks_provider.py    # Stocks OHLCV (yfinance source behind a StockDataSource seam)
-│   └── context/              # Market-context providers (§7.18): Fear & Greed, macro calendar
-│                             #   (YAML + ForexFactory), OKX delisting notices, yfinance
-│                             #   earnings, RSS/Atom news + EDGAR filings
-├── execution/
-│   ├── paper_executor.py     # Simulated executor (default; fee + slippage + net PnL)
-│   ├── position_tracker.py   # Shared FIFO cost-basis ledger → realized PnL per entry decision
-│   ├── ccxt_executor.py      # Keyed ccxt spot orders — OKX demo, live only with §7.41 ack
-│   ├── saxo_executor.py      # Saxo OpenAPI stock orders — SIM first; ledger-capped long-only (§7.66)
-│   ├── saxo_client.py        # Saxo OpenAPI REST client (accounts, instruments, orders, fill audit)
-│   ├── saxo_auth.py          # Saxo OAuth: code grant, rotating refresh tokens, keep-alive (§7.66)
-│   ├── xtb_executor.py       # XTB demo orders (DEAD path — API closed 2025-03-14; §7.66 → Saxo)
-│   └── xtb_client.py         # Real xAPI WebSocket client (§7.16): unofficial ws.xapi.pro relay
-├── agents/
-│   ├── base_agent.py         # Shared cycle loop, post-process, persistence, alerts (§7.13)
-│   ├── crypto_agent.py       # Thin subclass (24/7, no hours guard)
-│   └── stocks_agent.py       # Thin subclass + market-hours guard (weekend/holiday/wrap)
-├── analysis/                 # Feature engineering + prompt building (§7.17)
-│   ├── indicators.py         # compute_indicators: RSI/MACD/Bollinger/ATR (pure, moved from core)
-│   ├── screener.py           # Deterministic universe screening: liquidity/vol/momentum (§7.70)
-│   ├── baselines.py          # Dumb baselines a strategy must beat: buy & hold, 20/50 MA crossover, cash (§7.73)
-│   ├── context_cards.py      # Summarizer prompt + strict card parser (injection defenses, §7.18)
-│   ├── sanitize.py           # safe_label: plain bounded text for external strings in prompts
-│   └── prompt_builder.py     # build_user_prompt (+ MARKET CONTEXT section) + DEFAULT_SYSTEM_PROMPT
-├── monitoring/
-│   ├── logger.py             # structlog setup
-│   └── alerts.py             # AlertManager + sinks (Noop)
-└── dashboard/                # Web UI (§7.15 P3/P4): FastAPI + Jinja2/HTMX, reads the WAL DB
-    ├── app.py                # Pages + HTMX control endpoints (latch writes; SafeConfigOverrides form)
-    ├── views.py              # Pure view-models: win-rate/confidence stats, uPlot shaping, positions
-    └── templates/            # base / overview / decisions / positions / context / config / _health
-
-scripts/
-├── run_crypto_agent.py       # Entry point — crypto-specific factories + shared runner
-├── run_stocks_agent.py       # Entry point — stocks-specific factories + shared runner
-├── run_dashboard.py          # Web dashboard server (monitor + control + safe config) (§7.15)
-├── prune_storage.py          # Out-of-band retention pruning (no agents, no trades)
-├── rebaseline_drawdown.py    # Audited CLI drawdown peak re-baseline — the latch's only exit (§7.53)
-├── backtest.py               # Decision replay vs fresh historical candles + net baselines; --strategy replays one sleeve (§7.73)
-├── saxo_login.py             # One-time Saxo OAuth login → token pair the stocks runner refreshes (§7.66)
-└── benchmark_llm.py          # LLM decision-latency benchmark on real prompts — p50/p95 + watchlist sizing (§7.69)
-
-config/settings.yaml          # All tunables (LLM, pairs, risk, execution, monitoring)
-Dockerfile                    # Slim image (python:3.11, non-root) for all services (§7.15 P5)
-docker-compose.yml            # agent-crypto/-stocks + dashboard + on-demand backtester (§7.15 P5)
-.github/workflows/ci.yml      # lint + format check + pytest on Python 3.11 (§7.60)
-tests/
-├── unit/                     # Fast, no network
-└── integration/              # Full pipeline, mocked provider, real SQLite
+src/agents/      per-market agents (crypto, stocks) on a shared base agent
+src/core/        runner, decision pipeline, risk engine, LLM client, storage, config,
+                 market context, sleeves, watchlist, backtester, control plane
+src/data/        market data (ccxt, yfinance) + data/context/ market-context providers
+src/execution/   paper, ccxt spot (OKX), Saxo OpenAPI, XTB (dead) executors + FIFO ledger
+src/analysis/    indicators, screener, baselines, prompt + context-card building
+src/dashboard/   FastAPI + Jinja2/HTMX web UI
+src/monitoring/  structlog setup + alerts
+scripts/         runners, dashboard, backtest, prune, re-baseline, login/benchmark tools
+config/          settings.yaml (all tunables)        tests/  unit + integration
 ```
+
+Module-by-module map: [ARCHITECTURE.md → Module layout](ARCHITECTURE.md#module-layout-current).
 
 ## Configuration
 
@@ -234,77 +175,29 @@ on Python 3.11 — the Docker image's version — for every push to `main` and e
 
 ## Status
 
-Phases 1–5 complete: shared core (LLM client, risk engine, storage, scheduler,
-decision pipeline, with indicators & prompt in the extracted `analysis/` layer), crypto provider + executor +
-agent, **stocks provider + executor + agent**, paper executor with
-fee/slippage modeling, monitoring (structured logging), both
-entry scripts, the **learn-from-your-own-track-record loop** (prior decisions
-+ realized PnL fed back to the LLM), and the **crypto agent on real data**
-(the paper path fetches live public OKX Europe OHLCV — no API key needed — while
-execution stays simulated), the **timezone-aware market-hours guard** (the
-stocks window is compared in the config-driven `market_timezone`, so a UTC host
-stays correct), **SQLite WAL mode** (concurrent reads while the agent writes),
-and **per-cycle position marking** (open paper positions are re-marked at each
-snapshot's last close before the risk check, so unrealized PnL and the
-daily-loss rule track the market), and **honest `enabled: false` semantics**
-(both runners exit without running anything when an agent is disabled; `--once`
-is the explicit single-cycle flag), a **single runner process per agent** (exclusive
-file lock — a double-start refuses with exit code 2, §7.52), and the **drawdown guard is live** (peak
-equity high-water mark persisted via SQLite, seeded at startup) with the
-**order-size cap enforced at the gate** (oversized plans are rejected before
-execution; sells clamp to units held), and the **keyed ccxt spot path hardened
-against real ccxt payloads** (nested balances, fill price/time recording, spot-only
-positions from the fill ledger — §7.64; §7.41 removed any accidental path to
-real money — OKX demo smoke run still pending, §7.28),
-and **restart-safe paper state** (cash/positions rehydrate from the latest
-portfolio snapshot; ccxt/XTB executors rebuild their FIFO ledgers, entry SL/TP and pending
-orders from stored rows, §7.58 — each executor only from its own venue-tagged rows, §7.61; daily-loss baseline and losing-streak/cooldown rebuild from
-persisted outcomes; `execution.initial_cash` is config-driven), and **honest
-outcome attribution** (one shared FIFO tracker gives every executor's closing
-fills a `realized_pnl` plus per-entry-decision `closed_entries`, so the PnL of a
-closed position lands back on the buy decision that opened it; LLM-unavailable
-fallback HOLDs are stored for audit but never re-fed into prompts, and each live
-decision's full prompt+response is logged), and **deterministic stop-loss /
-take-profit exits** (levels ride on the position through restarts; a breach is
-closed on the next cycle without asking the LLM or the risk gate — toggle with
-`risk.enforce_exit_levels`), and **decision-replay backtesting** (re-simulates the
-agent's own stored decisions against fresh historical candles through the same risk
-engine + fee/slippage model — deterministic, zero LLM calls; `scripts/backtest.py`),
-and a **web dashboard** (FastAPI + Jinja2/HTMX: portfolio chart, positions, decisions
-with win-rate/confidence stats, agent health (heartbeat-derived — stale agents show
-`offline`, not the last latch value); HTMX pause/resume/close-all controls and a
-safe-config editor (risk limits can only be tightened; overrides apply immediately —
-including re-arming the cycle interval — are stored only as diffs against
-`settings.yaml`, and removing one reverts the live value; §7.50) — all writing the same `agent_control` latches, behind
-Host-allowlist, cross-origin and CSRF-token guards (§7.43); `scripts/run_dashboard.py`,
-§7.15 P3/P4), packaged for containers (`docker compose up -d --build` — agents, dashboard
-and an on-demand backtester on one shared volume of per-mode SQLite books (§7.78) — each
-agent × mode keeps its own file, book, drawdown peak and history; §7.15 P5, §7.39), and an XTB demo
-execution path over xAPI (`execution/xtb_client.py`, §7.16) — **dead since XTB closed
-its API on 2025-03-14**, kept disabled as reference until the Saxo executor lands
-(PLAN §7.66). Paper stays the default everywhere.
-**Market context (§7.18, CHANGE.md P5):** sentiment, macro calendar, venue delisting
-notices and RSS news feed a sanitized MARKET CONTEXT prompt section and a deterministic
-entry event guard; an opt-in LLM summarizer writes validated context cards; the dashboard
-has a read-only `/context` page.
-**1283 tests passing at ~95% coverage.**
-
-Open work: see `PLAN.md` §7 (Gaps & Next Steps)
-for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
+Paper trading runs end to end on both markets: live public data (OKX Europe, yfinance),
+a local LLM, seven deterministic risk rules plus the market-context event guard,
+restart-safe books (one SQLite file per agent × mode), strategy sleeves and a screener
+watchlist (both opt-in), decision-replay backtests with dumb baselines, and a web
+dashboard. Keyed execution is verified on the OKX **demo**; Saxo SIM (stocks) is built
+and awaits a developer account. Real money stays double-gated (below).
+**1285 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
+open work: [PLAN.md](PLAN.md) §7.
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with
 > `crypto_agent.testnet: false` **and** `live_trading: true` **and**
 > `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK`; anything less stays on paper (or on the OKX demo with
-> `testnet: true`) and logs why (same ack for `xtb_execution.account_type: real`). All four critical findings of external review 4 are closed.
+> `testnet: true`) and logs why (the same ack gates Saxo `environment: live`).
 
 ## Documentation map
 
 | File | Contents |
 |---|---|
 | `README.md` (this file) | overview & quickstart |
-| `ARCHITECTURE.md` | architecture: components, data flow, storage schema, control plane, design decisions (Mermaid diagrams) |
-| `HISTORY.md` | delivered work: status snapshot, original Phase 1–2 plans, completed §7 items |
-| `PLAN.md` | gaps, todos & next steps (§7), Phase 4 iteration, risk register |
-| `CHANGE.md` | multi-strategy design: sleeves, capital allocator, research layer (P1/P2/P4/P5 implemented; P3 allocator open) |
-| `AGENTS.md` | agent-facing facts & rules for coding agents |
-| `review.MD` / `review2.md` / `external_review3.md` / `external_4.md` | external full-codebase architecture & code reviews |
+| `ARCHITECTURE.md` | architecture: module map, data flow, storage schema, control plane, design decisions |
+| `AGENTS.md` | rules and facts for coding agents |
+| `PLAN.md` | open work (§7), iteration plan, risk register |
+| `HISTORY.md` | delivered work, completed §7 items |
+| `CHANGE.md` | multi-strategy design: sleeves, allocator, research layer (P1/P2/P4/P5 done, P3 open) |
+| `docs/API_NOTES.md` | venue and data-source API notes |
+| `docs/reviews/` | external full-codebase reviews (`[R-xx]` / `[R4-xx]` tags) |

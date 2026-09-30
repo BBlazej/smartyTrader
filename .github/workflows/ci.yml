@@ -1,4 +1,4 @@
-# Minimal CI (PLAN §7.60 / external_4.md L12): lint, format check and the full test
+# Minimal CI (PLAN §7.60 / docs/reviews/external_4.md L12): lint, format check and the full test
 # suite on Python 3.11 — the version the Docker image runs — so the test counts the
 # docs quote are reproducible off any one developer's machine. Tests are offline by
 # project rule (all external APIs mocked), so no secrets are needed.

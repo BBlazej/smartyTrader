@@ -6,13 +6,13 @@ The delivery record of the autonomous trading agent project: what has been built
 
 - **§7.N identifiers are never renumbered.** Completed items from PLAN.md §7 appear below under their original numbers; cross-references from code comments, `AGENTS.md` and `README.md` keep resolving.
 - "Phase N" / "Week N" headings reproduce the original planning timeline. Phase 3 (risk/monitoring) design now lives in [ARCHITECTURE.md](ARCHITECTURE.md); Phase 4 (iteration/live-readiness) is still open and stays in [PLAN.md](PLAN.md).
-- `[R-xx]` severity tags reference `review.MD` / `review2.md` at the repo root.
+- `[R-xx]` severity tags reference `docs/reviews/review.MD` / `docs/reviews/review2.md` at the repo root.
 
 ## Status snapshot
 
 > ### Status (as of this revision)
 > **Built & tested (465 tests passing, ~93% coverage):** core (LLM client, risk engine, storage, scheduler, decision pipeline, with its indicators & prompt now extracted into the `analysis/` layer (§7.17)), crypto provider + executor + agent, **stocks provider (xAPI + yfinance) + executor + agent**, paper executor, monitoring (structured logging), both entry scripts, the **"learn from its own track record" loop** (the LLM sees each prior decision **and its realized PnL outcome** — now attributed FIFO to the *entry* decision through the shared `execution/position_tracker.py`, on paper and on real venues alike — §7.8), **fee modeling in the paper executor**, the **crypto agent running on real data** (paper path fetches live public Kraken OHLCV via CCXT; execution stays simulated), the **timezone-aware market-hours guard**, **SQLite WAL mode**, **weekend/holiday-aware market-hours guard with wrap-around windows** (§7.10), **per-cycle position marking** (§7.1), **all seven risk rules live** including the peak-equity drawdown gate and the notional cap enforced at the gate (§7.5), a **hardened keyed-Kraken path** (real ccxt balance/fill payloads; spot `fetch_positions` degradation — §7.6, live testnet smoke still pending), **restart-safe paper portfolio + risk state** rehydrated from SQLite (`core/rehydration.py`, §7.7), **storage retention pruning** (startup + scheduled passes, `orders.created_at` for un-filled rows; portfolio snapshots exempt — §7.12), a **shared base agent + runner factory** (`agents/base_agent.py`, `core/runner.py` — the two agents and two scripts are now thin market-specific shells — §7.13), and **deterministic stop-loss / take-profit enforcement** (levels carried on positions; a breach closes the position on the next cycle without an LLM call and bypassing the gate — §7.9), and the **standalone web dashboard** (`src/dashboard/` + `scripts/run_dashboard.py`: FastAPI + Jinja2/HTMX monitor — uPlot portfolio chart, positions, decisions with win-rate/confidence stats, health cards — plus HTMX pause/resume/close-all controls and a safe-config editor, all writing the `agent_control` latches directly so they work with or without the agent-side control API — §7.15 P3/P4), and **Docker/compose packaging** (one slim image; `docker-compose.yml`: both agents + dashboard + on-demand backtester on the shared `agent-data` volume — §7.15 P5), and **real XTB demo execution over xAPI** (`execution/xtb_client.py`: WebSocket login with the xStation verification code, instant orders + fill-status polling, live position marks via `getTickPrices`, reconnect-once; opt-in via `xtb_execution.enabled` + env credentials — paper stays default — §7.16), and the **`analysis/` layer extraction** (`analysis/indicators.py` + `analysis/prompt_builder.py`: all indicator math and prompt construction moved verbatim out of `core/decision_pipeline.py`, which now only orchestrates — §7.17), and the **code-nits bundle** (public `get_portfolio_state` / `cooldown_until` accessors replacing private pokes, an honest `DailyLossTracker._latest_value`, config-driven `risk.consecutive_losses_threshold` + `llm.temperature`/`max_tokens`/`retry_backoff_base_seconds` with real exponential retry backoff, robust chat-URL resolution replacing the `/v1` string surgery, structlog in the risk engine, `PipelineStep` a real `StrEnum`, Wilder-vs-simple-average indicator notes — §7.19). Config-driven via `decision_history_limit`, the `execution:` block, `stocks_agent.market_timezone` / `market_holidays`, `risk.enforce_exit_levels`, and the `dashboard:` block (host/port/refresh/agents).
-> **Not yet implemented (do not assume these exist):** news/sentiment feed, economic-calendar feed (both landed later as §7.18, 2026-09-29), live execution against anything but paper/Kraken-testnet/XTB-demo opt-in paths (the dashboard, control plane and Docker packaging — §7.15 in full — and XTB demo xAPI execution — §7.16 — have since landed; see ARCHITECTURE.md), and **venue-side** stop/take orders (our SL/TP checks are local to the agent). Full list incl. findings from the 2026-09-15 code review (`review.MD`): see §7 Gaps & Next Steps.
+> **Not yet implemented (do not assume these exist):** news/sentiment feed, economic-calendar feed (both landed later as §7.18, 2026-09-29), live execution against anything but paper/Kraken-testnet/XTB-demo opt-in paths (the dashboard, control plane and Docker packaging — §7.15 in full — and XTB demo xAPI execution — §7.16 — have since landed; see ARCHITECTURE.md), and **venue-side** stop/take orders (our SL/TP checks are local to the agent). Full list incl. findings from the 2026-09-15 code review (`docs/reviews/review.MD`): see §7 Gaps & Next Steps.
 
 ## Delivered milestones (original implementation order)
 
@@ -182,6 +182,15 @@ RULES:
 
 SCHEMA: {json_schema}
 ```
+
+## Housekeeping — cleanup pass (2026-09-30, not a §7 item)
+
+- **Compat code removed** (single user — renames are clean breaks): old env names (`LM_STUDIO_*`), tolerated obsolete config keys, the NULL-venue = paper rule (the 60 unstamped paper snapshots were stamped `paper`), the pre-§7.46 decision-row streak fallback, all column migrations (every book was current), the pre-split shared DB (archived to `data/backups/legacy-20260930/`) with `scripts/split_database.py`, and the dashboard's single-file mode + `?agent=` alias.
+- **Renames:** `data/xtb_provider.py` → `data/stocks_provider.py` (`StocksProvider`); stocks market-hours defaults NYSE; Kraken-era test names → OKX.
+- **Duplication:** one pair of datetime helpers (`core/timeutil.py`, replacing 9 copies + 14 inline), one storage agent-scope helper (`_where_agent`, 27 queries), one runner CLI (`runner_main`), shared test scaffolding (`tests/helpers.py`: 15 inline settings files, 7 fake agents, the runner harness), five test-only APIs removed.
+- **Config:** the 27 settings classes became Pydantic models (`extra="forbid"`, messages kept).
+- **Docs:** AGENTS.md 49 KB → ~11 KB (rules only); ARCHITECTURE drops its `settings.yaml`/`pyproject` copies and duplicate API notes; README's layout and status condensed; reviews moved to `docs/reviews/`.
+- **Found, not done (needs a decision):** `market_snapshots` is written every decision and pruned, but never read — PLAN §7.84.
 
 ## Completed §7 items — A. Low-hanging fruit
 
@@ -456,7 +465,7 @@ The original PLAN.md §7.E block ("Done (for the record)") — the pre-review de
 
 ## Completed §7 items — G. External review 4 (§7.39–§7.60)
 
-Findings from `external_4.md` (2026-09-24), tagged `[R4-xx]`.
+Findings from `docs/reviews/external_4.md` (2026-09-24), tagged `[R4-xx]`.
 
 ### §7.39 — Scope storage per agent — ✅ complete [R4-C1]
 
