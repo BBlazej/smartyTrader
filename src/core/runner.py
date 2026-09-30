@@ -23,10 +23,11 @@ Safety invariants preserved (see §7.2 / AGENTS.md):
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import inspect
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -42,6 +43,7 @@ from .context import ContextReader, ContextRefresher, NewsMentionCounter
 from .control_config import parse_and_apply, risk_baseline
 from .db_layout import (
     CONTROL_PORT_OFFSET,
+    MODES,
     UnknownVenueError,
     db_path,
     lock_path,
@@ -667,3 +669,38 @@ async def run_agent(
         if runner_lock is not None:
             runner_lock.release()
         log.info(f"{component} agent shut down cleanly")
+
+
+def runner_main(component: str, run: Callable[..., Awaitable[None]]) -> None:
+    """The shared CLI of ``scripts/run_<component>_agent.py``: ``--once``, ``--mode``.
+
+    Exit codes: 2 = another runner owns this agent × mode (§7.52), 3 = ``--mode``
+    and the built executor disagree (§7.78) — distinct so cron/systemd notices.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            f"Run the {component} agent on a schedule. A disabled agent "
+            f"({component}_agent.enabled: false) exits without running anything."
+        )
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one decision cycle and exit instead of the scheduled loop.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=list(MODES),
+        default=None,
+        help="Refuse to start unless the built executor trades this mode (§7.78): it picks "
+        "the book file, so --mode demo guarantees demo/SIM keys and --mode real a live account.",
+    )
+    args = parser.parse_args()
+    try:
+        asyncio.run(run(run_once=args.once, expected_mode=args.mode))
+    except KeyboardInterrupt:
+        pass
+    except RunnerAlreadyRunning:
+        raise SystemExit(2) from None
+    except ModeMismatch:
+        raise SystemExit(3) from None

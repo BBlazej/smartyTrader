@@ -18,8 +18,6 @@ one full cycle and exits cleanly.
 
 from __future__ import annotations
 
-import argparse
-import asyncio
 import os
 
 import structlog
@@ -31,8 +29,7 @@ from src.core.config import (
     Settings,
     live_trading_acknowledged,
 )
-from src.core.db_layout import DEMO, PAPER, REAL
-from src.core.runner import ModeMismatch, RunnerAlreadyRunning, build_alerts, load_dotenv, run_agent
+from src.core.runner import build_alerts, load_dotenv, run_agent, runner_main
 from src.data.ccxt_provider import create_ccxt_provider, exchange_has_sandbox
 from src.execution.ccxt_executor import create_ccxt_executor
 from src.execution.paper_executor import create_paper_executor
@@ -163,37 +160,7 @@ async def run(run_once: bool = False, expected_mode: str | None = None) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run the crypto agent on a schedule. A disabled agent "
-            "(crypto_agent.enabled: false) exits without running anything."
-        )
-    )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Run exactly one decision cycle and exit instead of the scheduled loop.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=[PAPER, DEMO, REAL],
-        default=None,
-        help="Refuse to start unless the built executor trades this mode (§7.78): it picks "
-        "the book file, so --mode demo guarantees demo keys and --mode real a live one.",
-    )
-    args = parser.parse_args()
-
-    try:
-        asyncio.run(run(run_once=args.once, expected_mode=args.mode))
-    except KeyboardInterrupt:
-        pass
-    except RunnerAlreadyRunning:
-        # §7.52: another runner owns this agent × mode; run_agent logged the reason.
-        # Distinct exit code so cron/systemd notices a refused double-start.
-        raise SystemExit(2)
-    except ModeMismatch:
-        # §7.78: --mode and the executor disagreed; nothing was constructed against a DB.
-        raise SystemExit(3)
+    runner_main("crypto", run)
 
 
 if __name__ == "__main__":
