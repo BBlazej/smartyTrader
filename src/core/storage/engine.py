@@ -16,7 +16,7 @@ from .models import Base, DbIdentityRow
 
 
 class DatabaseIdentityError(RuntimeError):
-    """The database file holds another book, or is a legacy file with no identity (§7.78)."""
+    """The database file holds another book (§7.78)."""
 
 
 class StorageBase:
@@ -120,11 +120,6 @@ class StorageBase:
                         f"{mode} {agent} — refusing to write into it"
                     )
                 return
-            if self._has_rows(conn):
-                raise DatabaseIdentityError(
-                    f"{self.database_path} has data but no identity (a pre-§7.78 shared "
-                    "database?) — split it with `python -m scripts.split_database`"
-                )
             conn.execute(
                 text(
                     "INSERT INTO db_identity (id, agent, mode, created_at) "
@@ -138,15 +133,8 @@ class StorageBase:
                 },
             )
 
-    @staticmethod
-    def _has_rows(conn) -> bool:
-        for table in ("llm_decisions", "orders", "portfolio_snapshots", "agent_control"):
-            if conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1")).first() is not None:
-                return True
-        return False
-
     async def get_identity(self) -> tuple[str, str] | None:
-        """The file's recorded ``(agent, mode)``, or ``None`` (legacy / not stamped)."""
+        """The file's recorded ``(agent, mode)``, or ``None`` (opened without an identity)."""
         async with await self._session() as session:
             row = await session.get(DbIdentityRow, 1)
             return (row.agent, row.mode) if row is not None else None

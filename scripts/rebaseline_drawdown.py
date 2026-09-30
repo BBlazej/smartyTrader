@@ -49,7 +49,7 @@ async def plan_rebaseline(
     """Resolve (old peak seed, proposed new baseline) without writing anything.
 
     ``venue`` selects the account whose peak is reset (§7.76 — each venue has its
-    own latch); ``None`` reads across venues (legacy behaviour).
+    own latch); ``None`` reads across venues.
 
     Raises ``SystemExit`` on unusable input (no history and no explicit value,
     or a non-positive baseline) so the CLI fails before touching the DB.

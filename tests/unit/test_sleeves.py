@@ -454,7 +454,7 @@ crypto_agent:
       crypto_position: {{timeframe: "4h", playbook: position}}
 stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], decision_history_limit: 10}}
 risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{database_path: "{db}"}}
+storage: {{data_dir: "{db.parent}"}}
 monitoring: {{log_level: INFO}}
 """
 

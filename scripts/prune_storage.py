@@ -49,13 +49,7 @@ async def run(
     else:
         books = discover(data_dir)
         if not books:
-            legacy = settings.storage.database_path
-            hint = (
-                " — split it first with `python -m scripts.split_database` (§7.78)"
-                if legacy and legacy != ":memory:" and Path(legacy).exists()
-                else ""
-            )
-            log.warning("no <mode>_<agent>.db books found", data_dir=str(data_dir), hint=hint)
+            log.warning("no <mode>_<agent>.db books found", data_dir=str(data_dir))
             return {}
 
     total: dict[str, int] = {}

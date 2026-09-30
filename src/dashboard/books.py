@@ -2,10 +2,8 @@
 
 One SQLite file per agent × trading mode; the dashboard opens every book it finds in
 ``storage.data_dir`` (:func:`src.core.db_layout.discover`) and routes each page, latch
-write and launch to that file's own :class:`~src.core.storage.Storage`. Before a split
-has run there is no ``<mode>_<agent>.db`` file — then the legacy shared
-``storage.database_path`` opens as one book *per configured agent* (the pre-§7.78 view:
-tabs keyed by agent, no mode badge).
+write and launch to that file's own :class:`~src.core.storage.Storage`, keyed by
+``<mode>_<agent>`` (``demo_crypto``).
 
 Books are opened unbound (readers + latch writers); row filtering stays per-file, and
 the ``agent``/``venue`` columns remain a second layer within it.
@@ -29,8 +27,8 @@ logger = structlog.get_logger(__name__)
 class Book:
     """One opened book: the file of ``(mode, agent)``, plus its dashboard key."""
 
-    key: str  # ``demo_crypto`` in file mode; ``crypto`` in legacy single-file mode
-    mode: str | None  # paper|demo|real, or ``None`` for a pre-§7.78 shared file
+    key: str  # ``<mode>_<agent>``, e.g. ``demo_crypto``
+    mode: str  # paper | demo | real
     agent: str
     storage: Storage
 
@@ -40,24 +38,14 @@ def configured_agents(settings: Settings) -> list[str]:
 
 
 async def open_books(settings: Settings) -> list[Book]:
-    """Open every book for the dashboard — discovered files, else the legacy file.
+    """Open every ``<mode>_<agent>.db`` book in ``storage.data_dir``.
 
-    The caller owns the storages and must ``close()`` each distinct one.
+    The caller owns the storages and must ``close()`` each one.
     """
     agents = configured_agents(settings)
     data_dir = Path(settings.storage.data_dir)
     discovered = db_layout.discover(data_dir, agents)
     if not discovered:
-        legacy = settings.storage.database_path
-        if legacy and legacy != ":memory:" and Path(legacy).exists():
-            logger.warning(
-                "no <mode>_<agent>.db books found — serving the legacy shared file; "
-                "run `python -m scripts.split_database` (§7.78)",
-                database=legacy,
-            )
-            storage = Storage(legacy)
-            await storage.initialize()
-            return [Book(key=a, mode=None, agent=a, storage=storage) for a in agents]
         logger.warning("no books to serve yet", data_dir=str(data_dir))
         return []
 
@@ -70,20 +58,8 @@ async def open_books(settings: Settings) -> list[Book]:
     return books
 
 
-def find_book(books: list[Book], *, key: str | None, agent: str | None) -> Book | None:
-    """Resolve a request's book: explicit ``?book=`` first, then legacy ``?agent=``.
-
-    A legacy ``?agent=crypto`` link also matches a *book key* (``crypto`` in the
-    single-file setup). Matching purely on the agent name is only honored when it is
-    unambiguous — with both ``paper_crypto`` and ``demo_crypto`` open, ``?agent=crypto``
-    resolves to nothing rather than silently picking one file over another.
-    """
+def find_book(books: list[Book], key: str | None) -> Book | None:
+    """The book called ``key`` (``?book=`` / path segment); no key → the first book."""
     if key is not None:
         return next((b for b in books if b.key == key), None)
-    if agent is not None:
-        by_key = [b for b in books if b.key == agent]
-        if by_key:
-            return by_key[0]
-        by_agent = [b for b in books if b.agent == agent]
-        return by_agent[0] if len(by_agent) == 1 else None
     return books[0] if books else None

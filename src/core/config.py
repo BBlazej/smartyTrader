@@ -894,16 +894,14 @@ class StorageSettings:
     """Where the per-agent × mode SQLite files live, and how they are kept (§7.78).
 
     ``data_dir`` holds ``<mode>_<agent>.db`` files (:mod:`src.core.db_layout`) — the
-    runner derives the file from the executor's venue, never from config. The legacy
-    ``database_path`` is still read: its parent directory becomes ``data_dir`` (and it
-    is the default source of ``scripts/split_database.py``); ``":memory:"`` keeps one
-    in-memory database (tests).
+    runner derives the file from the executor's venue, never from config.
+    ``in_memory`` keeps one in-memory database instead (tests).
     """
 
     def __init__(
         self,
-        database_path: str | None = None,
-        data_dir: str | None = None,
+        data_dir: str = "data",
+        in_memory: bool = False,
         # Retention windows in days (§7.12). Market snapshots are the space hogs
         # (~100-candle JSON per symbol-cycle) and are re-creatable cache, so they
         # prune by default; decisions/orders are the trade record and kept forever
@@ -923,14 +921,8 @@ class StorageSettings:
         # than this are pruned; 0 keeps them forever.
         context_retention_days: int = 30,
     ) -> None:
-        self.database_path = database_path
-        self.in_memory = database_path == ":memory:"
-        if data_dir:
-            self.data_dir = str(data_dir)
-        elif database_path and not self.in_memory:
-            self.data_dir = str(Path(database_path).parent)
-        else:
-            self.data_dir = "data"
+        self.data_dir = str(data_dir)
+        self.in_memory = bool(in_memory)
         self.snapshot_retention_days = snapshot_retention_days
         self.history_retention_days = history_retention_days
         self.prune_interval_minutes = prune_interval_minutes

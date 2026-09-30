@@ -71,7 +71,7 @@ def app_settings(tmp_db_path: str, _tmp_path: Path) -> Settings:
             "min_confidence": 0.6,
         },
         "storage": {
-            "database_path": tmp_db_path,
+            "data_dir": str(Path(tmp_db_path).parent),
         },
         "monitoring": {
             "log_level": "DEBUG",

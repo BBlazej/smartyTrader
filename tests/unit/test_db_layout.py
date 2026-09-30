@@ -55,11 +55,10 @@ class TestVenueMode:
 
 
 class TestStorageSettings:
-    def test_data_dir_explicit_or_from_the_legacy_path(self) -> None:
+    def test_data_dir_and_in_memory(self) -> None:
         assert StorageSettings(data_dir="books").data_dir == "books"
-        assert StorageSettings(database_path="data/trading_agent.db").data_dir == "data"
-        memory = StorageSettings(database_path=":memory:")
-        assert memory.in_memory is True and memory.data_dir == "data"
+        assert StorageSettings().data_dir == "data" and StorageSettings().in_memory is False
+        assert StorageSettings(in_memory=True).in_memory is True
 
 
 class TestIdentityGuard:
@@ -87,17 +86,6 @@ class TestIdentityGuard:
         with pytest.raises(DatabaseIdentityError, match="holds the demo crypto book"):
             await intruder.initialize()
         await intruder.close()
-
-    async def test_a_legacy_file_with_data_is_refused(self, tmp_path: Path) -> None:
-        path = str(tmp_path / "paper_crypto.db")
-        legacy = Storage(path, agent="crypto")  # pre-§7.78: no identity
-        await legacy.initialize()
-        await legacy.save_portfolio_snapshot(cash=1.0, positions_json="[]", total_value=1.0)
-        await legacy.close()
-        runner = Storage(path, identity=("crypto", "paper"))
-        with pytest.raises(DatabaseIdentityError, match="split_database"):
-            await runner.initialize()
-        await runner.close()
 
     async def test_readers_open_any_file_without_checking(self, tmp_path: Path) -> None:
         path = str(tmp_path / "demo_crypto.db")

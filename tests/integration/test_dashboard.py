@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from src.core.config import Settings
 from src.core.storage import Storage
 from src.dashboard import create_dashboard_app
+from src.dashboard.books import Book
 
 # Concrete secrets/paths that must never appear in any dashboard HTML/JSON.
 FORBIDDEN = ("api_key", "database_path", ".env", "qwen-test-model", "http://127.0.0.1:1234")
@@ -33,10 +34,10 @@ crypto_agent: {enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"], decision
 stocks_agent: {enabled: false, interval_minutes: 60, symbols: ["AAPL"], market_hours: "09:00-16:30", decision_history_limit: 10}
 risk: {max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}
 execution: {paper_fee_pct: 0.0026, paper_slippage_pct: 0.001}
-storage: {database_path: "x.db"}
+storage: {data_dir: "__DATA_DIR__"}
 monitoring: {log_level: INFO}
 dashboard: {agents: ["crypto", "stocks"], refresh_seconds: 5}
-"""
+""".replace("__DATA_DIR__", str(tmp_path))
     )
     return Settings(str(config))
 
@@ -107,6 +108,13 @@ async def _seed_rows(storage: Storage) -> None:
     )
 
 
+def _books(storage: Storage) -> list[Book]:
+    """One shared test file exposed as the paper book of each agent (§7.78 keys)."""
+    return [
+        Book(key=f"paper_{a}", mode="paper", agent=a, storage=storage) for a in ("crypto", "stocks")
+    ]
+
+
 def _client(app) -> AsyncClient:
     """A same-origin browser session: loopback Host + the page-embedded CSRF token (§7.43)."""
     return AsyncClient(
@@ -122,7 +130,7 @@ async def env(tmp_path):
     storage = Storage(str(tmp_path / "dash.db"))
     await storage.initialize()
     await _seed(storage)
-    app = create_dashboard_app(storage=storage, settings=settings)
+    app = create_dashboard_app(settings, _books(storage))
     client = _client(app)
     yield SimpleNamespace(client=client, storage=storage, settings=settings)
     await client.aclose()
@@ -137,22 +145,22 @@ def _assert_no_secrets(body: str) -> None:
 
 class TestLogViewer:
     async def test_missing_log_shows_hint(self, env) -> None:
-        body = (await env.client.get("/logs/crypto")).text
+        body = (await env.client.get("/logs/paper_crypto")).text
         assert "No log file yet" in body
 
     async def test_page_tails_written_log(self, env, tmp_path) -> None:
-        (tmp_path / "agent_crypto.out.log").write_text(
+        (tmp_path / "agent_paper_crypto.out.log").write_text(
             "[2026-09-21 20:34:41][info] cycle start symbols=['BTC/USDT']\n"
             "[2026-09-21 20:34:42][info] cycle end executed=0\n"
         )
-        body = (await env.client.get("/logs/crypto")).text
+        body = (await env.client.get("/logs/paper_crypto")).text
         assert "cycle start" in body and "cycle end" in body
 
     async def test_partial_refreshes_tail(self, env, tmp_path) -> None:
-        (tmp_path / "agent_crypto.out.log").write_text("first line\n")
-        assert "first line" in (await env.client.get("/logs/crypto/partial")).text
-        (tmp_path / "agent_crypto.out.log").write_text("second line\n")
-        body = (await env.client.get("/logs/crypto/partial")).text
+        (tmp_path / "agent_paper_crypto.out.log").write_text("first line\n")
+        assert "first line" in (await env.client.get("/logs/paper_crypto/partial")).text
+        (tmp_path / "agent_paper_crypto.out.log").write_text("second line\n")
+        body = (await env.client.get("/logs/paper_crypto/partial")).text
         assert "second line" in body and "first line" not in body
 
     async def test_unknown_agent_404(self, env) -> None:
@@ -163,7 +171,7 @@ class TestLaunchDisabled:
     """Without dashboard.allow_launch (the default) there is no supervision at all."""
 
     async def test_launch_endpoints_forbidden(self, env) -> None:
-        resp = await env.client.post("/launch/crypto/start")
+        resp = await env.client.post("/launch/paper_crypto/start")
         assert resp.status_code == 403
 
     async def test_no_start_buttons_rendered(self, env) -> None:
@@ -189,40 +197,40 @@ class TestLaunch:
                 "import time; time.sleep(30)",
             ],
         )
-        app = create_dashboard_app(storage=storage, settings=settings, launcher=launcher)
+        app = create_dashboard_app(settings, _books(storage), launcher=launcher)
         client = _client(app)
         yield SimpleNamespace(client=client, storage=storage, launcher=launcher)
-        for agent in ("crypto", "stocks"):
-            await launcher.stop(agent)  # never leave a sleep process behind
+        for key in ("paper_crypto", "paper_stocks"):
+            await launcher.stop(key)  # never leave a sleep process behind
         await client.aclose()
         await storage.close()
 
     async def test_start_then_stop_round_trip(self, lenv) -> None:
-        resp = await lenv.client.post("/launch/crypto/start")
+        resp = await lenv.client.post("/launch/paper_crypto/start")
         assert resp.status_code == 200
-        assert "/launch/crypto/stop" in resp.text  # card now offers Stop
-        pid = lenv.launcher.managed_pid("crypto")
+        assert "/launch/paper_crypto/stop" in resp.text  # card now offers Stop
+        pid = lenv.launcher.managed_pid("paper_crypto")
         assert pid is not None
 
-        resp = await lenv.client.post("/launch/crypto/stop")
+        resp = await lenv.client.post("/launch/paper_crypto/stop")
         assert resp.status_code == 200
-        assert "/launch/crypto/start" in resp.text  # back to offering Start
-        assert lenv.launcher.managed_pid("crypto") is None
+        assert "/launch/paper_crypto/start" in resp.text  # back to offering Start
+        assert lenv.launcher.managed_pid("paper_crypto") is None
 
     async def test_start_refused_when_fresh_heartbeat(self, lenv) -> None:
         # An agent already trading (started elsewhere) must not get a twin launched.
         await lenv.storage.record_cycle_health("crypto")
-        resp = await lenv.client.post("/launch/crypto/start")
+        resp = await lenv.client.post("/launch/paper_crypto/start")
         assert resp.status_code == 409
         assert "already running" in resp.json()["detail"]
 
     async def test_start_refused_for_disabled_agent(self, lenv) -> None:
         # stocks_agent is enabled: false — its runner would exit at the enabled-gate.
-        resp = await lenv.client.post("/launch/stocks/start")
+        resp = await lenv.client.post("/launch/paper_stocks/start")
         assert resp.status_code == 409
 
     async def test_stop_refused_for_foreign_process(self, lenv) -> None:
-        resp = await lenv.client.post("/launch/crypto/stop")
+        resp = await lenv.client.post("/launch/paper_crypto/stop")
         assert resp.status_code == 409
 
 
@@ -274,17 +282,17 @@ class TestMonitorPages:
 
 class TestControl:
     async def test_pause_resume_round_trip(self, env) -> None:
-        frag = (await env.client.post("/control/crypto/pause")).text
+        frag = (await env.client.post("/control/paper_crypto/pause")).text
         assert "paused" in frag
         row = await env.storage.get_agent_control("crypto")
         assert row is not None and row.state == "paused"
 
-        await env.client.post("/control/crypto/resume")
+        await env.client.post("/control/paper_crypto/resume")
         row = await env.storage.get_agent_control("crypto")
         assert row is not None and row.state == "running"
 
     async def test_close_all_latches_for_the_agent(self, env) -> None:
-        await env.client.post("/control/crypto/close-all")
+        await env.client.post("/control/paper_crypto/close-all")
         row = await env.storage.get_agent_control("crypto")
         assert row is not None and row.close_all_requested is True
 
@@ -295,7 +303,7 @@ class TestControl:
 
 class TestConfigForm:
     async def test_get_config_form_is_safe(self, env) -> None:
-        body = (await env.client.get("/config/crypto")).text
+        body = (await env.client.get("/config/paper_crypto")).text
         assert 'name="risk.min_confidence"' in body
         assert 'name="interval_minutes"' in body
         # Whitelisted numeric default is present; secrets are structurally absent.
@@ -304,16 +312,16 @@ class TestConfigForm:
 
     async def test_valid_overrides_persist(self, env) -> None:
         resp = await env.client.post(
-            "/config/crypto",
+            "/config/paper_crypto",
             data={"interval_minutes": "7", "risk.min_confidence": "0.75"},
         )
         assert resp.status_code == 303
-        assert "/config/crypto?saved=1" in resp.headers["location"]
+        assert "/config/paper_crypto?saved=1" in resp.headers["location"]
 
         row = await env.storage.get_agent_control("crypto")
         assert row is not None and "min_confidence" in (row.config_override_json or "")
 
-        merged = (await env.client.get("/config/crypto")).text
+        merged = (await env.client.get("/config/paper_crypto")).text
         assert "Active overrides" in merged
 
     async def test_saving_yaml_defaults_stores_nothing(self, env) -> None:
@@ -321,7 +329,7 @@ class TestConfigForm:
         # defaults must not persist them as overrides (which would pin defaults
         # against later, stricter YAML edits).
         resp = await env.client.post(
-            "/config/crypto",
+            "/config/paper_crypto",
             data={"interval_minutes": "5", "risk.min_confidence": "0.6", "pairs": "BTC/USDT"},
         )
         assert resp.status_code == 303
@@ -329,17 +337,17 @@ class TestConfigForm:
         assert row is None or not row.config_override_json
 
     async def test_saving_back_to_yaml_clears_existing_override(self, env) -> None:
-        await env.client.post("/config/crypto", data={"interval_minutes": "7"})
+        await env.client.post("/config/paper_crypto", data={"interval_minutes": "7"})
         row = await env.storage.get_agent_control("crypto")
         assert row is not None and "interval_minutes" in (row.config_override_json or "")
 
-        resp = await env.client.post("/config/crypto", data={"interval_minutes": "5"})
+        resp = await env.client.post("/config/paper_crypto", data={"interval_minutes": "5"})
         assert resp.status_code == 303
         row = await env.storage.get_agent_control("crypto")
         assert row is None or not row.config_override_json
 
     async def test_credential_key_is_rejected_wholesale(self, env) -> None:
-        resp = await env.client.post("/config/crypto", data={"api_key": "hunter2"})
+        resp = await env.client.post("/config/paper_crypto", data={"api_key": "hunter2"})
         assert resp.status_code == 400
         assert "hunter2" not in resp.text  # the value is never echoed
 
@@ -347,7 +355,7 @@ class TestConfigForm:
         assert row is None or not row.config_override_json  # nothing saved
 
     async def test_llm_section_is_rejected(self, env) -> None:
-        resp = await env.client.post("/config/crypto", data={"llm.endpoint": "http://evil"})
+        resp = await env.client.post("/config/paper_crypto", data={"llm.endpoint": "http://evil"})
         assert resp.status_code == 400
         _assert_no_secrets(resp.text)
 
@@ -378,33 +386,33 @@ class TestPerAgentBooks:
         await self._seed_stocks(env)  # written last — pre-§7.39 it would win "latest"
         default = (await env.client.get("/")).text
         assert "10,100.00" in default and "77,777.00" not in default
-        stocks = (await env.client.get("/?agent=stocks")).text
+        stocks = (await env.client.get("/?book=paper_stocks")).text
         assert "77,777.00" in stocks and "10,100.00" not in stocks
-        assert "/api/portfolio.json?agent=stocks" in stocks
+        assert "/api/portfolio.json?book=paper_stocks" in stocks
 
     async def test_positions_and_chart_are_scoped(self, env) -> None:
         await self._seed_stocks(env)
-        assert "BTC/USDT" not in (await env.client.get("/positions?agent=stocks")).text
-        data = (await env.client.get("/api/portfolio.json?agent=stocks")).json()
+        assert "BTC/USDT" not in (await env.client.get("/positions?book=paper_stocks")).text
+        data = (await env.client.get("/api/portfolio.json?book=paper_stocks")).json()
         assert data["total_value"] == [77_777.0]
 
     async def test_decisions_all_or_filtered(self, env) -> None:
         await self._seed_stocks(env)
         everything = (await env.client.get("/decisions")).text
         assert "AAPL" in everything and "BTC/USDT" in everything
-        only_stocks = (await env.client.get("/decisions?agent=stocks")).text
+        only_stocks = (await env.client.get("/decisions?book=paper_stocks")).text
         assert "AAPL" in only_stocks and "BTC/USDT" not in only_stocks
 
     async def test_unknown_agent_is_404(self, env) -> None:
-        assert (await env.client.get("/?agent=forex")).status_code == 404
-        assert (await env.client.get("/api/portfolio.json?agent=forex")).status_code == 404
+        assert (await env.client.get("/?book=forex")).status_code == 404
+        assert (await env.client.get("/api/portfolio.json?book=forex")).status_code == 404
 
 
 class TestBrowserSafety:
     """§7.43: CSRF / DNS-rebinding guards and tighten-only risk overrides."""
 
     async def test_page_embeds_the_csrf_token(self, env) -> None:
-        body = (await env.client.get("/config/crypto")).text
+        body = (await env.client.get("/config/paper_crypto")).text
         token = env.client.headers["X-CSRF-Token"]
         assert f'"X-CSRF-Token": "{token}"' in body  # HTMX header on <body>
         assert f'name="csrf_token" value="{token}"' in body  # config form field
@@ -415,7 +423,7 @@ class TestBrowserSafety:
 
     async def test_cross_site_post_is_rejected(self, env) -> None:
         resp = await env.client.post(
-            "/control/crypto/close-all", headers={"Origin": "https://evil.example"}
+            "/control/paper_crypto/close-all", headers={"Origin": "https://evil.example"}
         )
         assert resp.status_code == 403
         row = await env.storage.get_agent_control("crypto")
@@ -423,22 +431,26 @@ class TestBrowserSafety:
 
     async def test_referer_is_checked_when_origin_missing(self, env) -> None:
         resp = await env.client.post(
-            "/control/crypto/pause", headers={"Referer": "https://evil.example/page"}
+            "/control/paper_crypto/pause", headers={"Referer": "https://evil.example/page"}
         )
         assert resp.status_code == 403
 
     async def test_writes_without_token_are_rejected(self, env) -> None:
         bare = AsyncClient(transport=env.client._transport, base_url="http://127.0.0.1:8080")
         try:
-            for path in ("/control/crypto/pause", "/config/crypto", "/launch/crypto/start"):
+            for path in (
+                "/control/paper_crypto/pause",
+                "/config/paper_crypto",
+                "/launch/paper_crypto/start",
+            ):
                 assert (await bare.post(path)).status_code == 403, path
             wrong = await bare.post(
-                "/control/crypto/pause", headers={"X-CSRF-Token": "not-the-token"}
+                "/control/paper_crypto/pause", headers={"X-CSRF-Token": "not-the-token"}
             )
             assert wrong.status_code == 403
             # The config form may carry the token as a hidden field instead of a header.
             ok = await bare.post(
-                "/config/crypto",
+                "/config/paper_crypto",
                 data={
                     "csrf_token": env.client.headers["X-CSRF-Token"],
                     "risk.min_confidence": "0.7",
@@ -452,14 +464,14 @@ class TestBrowserSafety:
 
     async def test_same_origin_post_is_allowed(self, env) -> None:
         resp = await env.client.post(
-            "/control/crypto/pause", headers={"Origin": "http://127.0.0.1:8080"}
+            "/control/paper_crypto/pause", headers={"Origin": "http://127.0.0.1:8080"}
         )
         assert resp.status_code == 200
 
     async def test_review_attack_payload_is_rejected(self, env) -> None:
         """external_4 H1: a form that loosened every guard — now each field is refused."""
         resp = await env.client.post(
-            "/config/crypto",
+            "/config/paper_crypto",
             data={
                 "risk.max_drawdown_pct": "1",
                 "risk.daily_loss_limit_pct": "1",
@@ -473,13 +485,15 @@ class TestBrowserSafety:
         assert row is None or not row.config_override_json
 
     async def test_exit_level_switch_is_not_on_the_web_surface(self, env) -> None:
-        resp = await env.client.post("/config/crypto", data={"risk.enforce_exit_levels": "false"})
+        resp = await env.client.post(
+            "/config/paper_crypto", data={"risk.enforce_exit_levels": "false"}
+        )
         assert resp.status_code == 400
-        assert "enforce_exit_levels" not in (await env.client.get("/config/crypto")).text
+        assert "enforce_exit_levels" not in (await env.client.get("/config/paper_crypto")).text
 
     async def test_tightening_is_accepted(self, env) -> None:
         resp = await env.client.post(
-            "/config/crypto",
+            "/config/paper_crypto",
             data={"risk.max_drawdown_pct": "0.03", "risk.min_confidence": "0.75"},
         )
         assert resp.status_code == 303
@@ -508,7 +522,7 @@ class TestLLMFallbackVisibility:
             await crypto.close()
         health = (await env.client.get("/partials/health")).text
         assert "LLM fallbacks 1/" in health
-        decisions = (await env.client.get("/decisions?agent=crypto")).text
+        decisions = (await env.client.get("/decisions?book=paper_crypto")).text
         assert "1 LLM fallback" in decisions
 
 
@@ -541,7 +555,7 @@ class TestSleevePages:
 
     async def test_positions_page_shows_sleeve_table_and_owner(self, env) -> None:
         await self._seed_sleeves(env.storage)
-        body = (await env.client.get("/positions?agent=crypto")).text
+        body = (await env.client.get("/positions?book=paper_crypto")).text
         assert "Strategy sleeves" in body
         assert "crypto_swing" in body and "crypto_position" in body
         assert "5,300.00" in body and "5,000.00" in body  # equity, capital (0.5 × 10k)

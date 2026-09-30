@@ -4,10 +4,8 @@ Since §7.78 each ``(mode, agent)`` pair keeps its own SQLite file, and the dash
 opens one :class:`~src.dashboard.books.Book` per file found in ``storage.data_dir``.
 Every page, latch write and launch targets exactly *one* book's
 :class:`~src.core.storage.Storage` — foreign modes' rows are absent from that file,
-not filtered out of a shared one. Before the first split there is no
-``<mode>_<agent>.db`` file: then the legacy shared ``storage.database_path`` opens as
-one book per configured agent keyed by agent name, i.e. exactly the pre-§7.78 view and
-URLs (``/control/crypto/pause``, ``?agent=stocks``, …).
+not filtered out of a shared one. Books are keyed ``<mode>_<agent>``
+(``/control/demo_crypto/pause``, ``?book=paper_crypto``, …).
 
 Control intent (pause / resume / close-all) is written straight into that book's
 ``agent_control`` table via the same repository methods the agent-side control API
@@ -171,28 +169,18 @@ def _form_to_payload(form: dict[str, str]) -> dict[str, Any]:
 
 
 def create_dashboard_app(
-    storage: Storage | None = None,
-    settings: Settings | None = None,
+    settings: Settings,
+    books: list[Book],
     launcher: AgentLauncher | None = None,
-    books: list[Book] | None = None,
 ) -> FastAPI:
     """Build the dashboard app over loaded ``settings`` and one book per SQLite file.
 
     §7.78 book model: every page, latch write and launch targets one *book*
-    (``(mode, agent)``). Pass ``books`` (from :func:`~src.dashboard.books.open_books`)
-    for the per-mode files, or a single legacy ``storage`` — it becomes one book per
-    configured agent keyed by agent name, i.e. exactly the pre-§7.78 behavior and URLs.
-    ``launcher`` overrides process supervision (§7.24, tests); when omitted and
+    (``(mode, agent)``, from :func:`~src.dashboard.books.open_books`). ``launcher``
+    overrides process supervision (§7.24, tests); when omitted and
     ``dashboard.allow_launch`` is true, a default :class:`AgentLauncher` is built with
-    its pid/log files next to the SQLite database (keyed per book).
+    its pid/log files in ``storage.data_dir`` (keyed per book).
     """
-    if settings is None:
-        raise ValueError("settings is required")
-    if books is None:
-        if storage is None:
-            raise ValueError("either storage or books must be provided")
-        agents = list(getattr(settings.dashboard, "agents", ["crypto", "stocks"]))
-        books = [Book(key=a, mode=None, agent=a, storage=storage) for a in agents]
     app = FastAPI(title="trading-agent dashboard", docs_url=None, redoc_url=None)
     # §7.43: Host allowlist (DNS rebinding) + cross-origin write rejection (CSRF).
     install_request_guards(
@@ -215,9 +203,8 @@ def create_dashboard_app(
 
     refresh_seconds = int(getattr(settings.dashboard, "refresh_seconds", 5))
 
-    # Data dir shared by the launcher and the log viewer: next to the live SQLite DB
-    # (legacy single file) or the configured ``storage.data_dir`` of the book files.
-    data_dir = Path(storage.database_path).parent if storage else Path(settings.storage.data_dir)
+    # Data dir shared by the launcher and the log viewer: where the book files live.
+    data_dir = Path(settings.storage.data_dir)
 
     # §7.24 opt-in process supervision: absent unless explicitly allowed by config.
     if launcher is None and getattr(settings.dashboard, "allow_launch", False):
@@ -227,15 +214,11 @@ def create_dashboard_app(
     def _book_views() -> list[dict[str, Any]]:
         return [{"key": b.key, "mode": b.mode, "agent": b.agent} for b in books]
 
-    def _require_book(key: str | None = None, agent: str | None = None) -> Book:
-        """Resolve a request's book (``?book=``/legacy ``?agent=``); unknown → 404.
-
-        Path routes pass their path segment as ``key``; it still matches a legacy
-        book keyed by bare agent name, so pre-§7.78 URLs keep working.
-        """
-        book = find_book(books, key=key, agent=agent)
+    def _require_book(key: str | None = None) -> Book:
+        """Resolve a request's book (``?book=`` or path segment); unknown → 404."""
+        book = find_book(books, key)
         if book is None:
-            raise HTTPException(status_code=404, detail=f"unknown book '{key or agent}'")
+            raise HTTPException(status_code=404, detail=f"unknown book '{key}'")
         return book
 
     def _require_csrf(request: Request, form_token: str | None = None) -> None:
@@ -277,7 +260,7 @@ def create_dashboard_app(
                 llm_stats = None
             rows.append(
                 {
-                    # Card name = book key (``crypto`` legacy, ``demo_crypto`` per-mode).
+                    # Card name = book key (``demo_crypto``).
                     "name": book.key,
                     "agent": book.agent,
                     "mode": book.mode,
@@ -312,10 +295,8 @@ def create_dashboard_app(
     # ── Pages ─────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    async def overview(
-        request: Request, book: str | None = None, agent: str | None = None
-    ) -> HTMLResponse:
-        selected = _require_book(book, agent)
+    async def overview(request: Request, book: str | None = None) -> HTMLResponse:
+        selected = _require_book(book)
         latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
         history = await selected.storage.get_portfolio_history(limit=200, agent=selected.agent)
         chart = portfolio_chart(history)
@@ -342,19 +323,18 @@ def create_dashboard_app(
         request: Request,
         limit: int = 200,
         book: str | None = None,
-        agent: str | None = None,
     ) -> HTMLResponse:
         limit = max(1, min(limit, 1000))
         selected_key: str | None = None
-        if book is not None or agent is not None:
-            selected = _require_book(book, agent)
+        if book is not None:
+            selected = _require_book(book)
             selected_key = selected.key
             rows = await selected.storage.get_recent_decisions(
                 limit=limit, include_fallback=True, agent=selected.agent
             )
         else:
             # No selection → every book's decisions (the table shows agent + file).
-            # One read per *distinct* storage (legacy books share one handle).
+            # One read per *distinct* storage (tests may share one handle).
             storages: dict[int, Storage] = {}
             for b in books:
                 storages.setdefault(id(b.storage), b.storage)
@@ -413,10 +393,8 @@ def create_dashboard_app(
         return sleeve_rows(snapshots, allocation, peaks, performance), owners
 
     @app.get("/positions", response_class=HTMLResponse)
-    async def positions_page(
-        request: Request, book: str | None = None, agent: str | None = None
-    ) -> HTMLResponse:
-        selected = _require_book(book, agent)
+    async def positions_page(request: Request, book: str | None = None) -> HTMLResponse:
+        selected = _require_book(book)
         latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
         positions = parse_positions(latest)
         sleeves, owners = await _sleeve_view(selected, [p.symbol for p in positions])
@@ -437,10 +415,8 @@ def create_dashboard_app(
     # ── Market context (§7.18), read-only ───────────────────────────────
 
     @app.get("/context", response_class=HTMLResponse)
-    async def context_page(
-        request: Request, book: str | None = None, agent: str | None = None
-    ) -> HTMLResponse:
-        selected = _require_book(book, agent)
+    async def context_page(request: Request, book: str | None = None) -> HTMLResponse:
+        selected = _require_book(book)
         store = selected.storage
         now = datetime.now(UTC)
         agent_cfg = getattr(settings, f"{selected.agent}_agent", None)
@@ -711,11 +687,9 @@ def create_dashboard_app(
     # ── JSON for the uPlot chart (safe fields only) ───────────
 
     @app.get("/api/portfolio.json")
-    async def portfolio_json(
-        limit: int = 200, book: str | None = None, agent: str | None = None
-    ) -> dict[str, Any]:
+    async def portfolio_json(limit: int = 200, book: str | None = None) -> dict[str, Any]:
         limit = max(1, min(limit, 1000))
-        selected = _require_book(book, agent)
+        selected = _require_book(book)
         history = await selected.storage.get_portfolio_history(limit=limit, agent=selected.agent)
         return portfolio_chart(history)
 

@@ -13,9 +13,8 @@ the browser on a single host. Safety posture (§7.15 heritage):
   running agent started elsewhere (terminal, systemd, another container) can be
   paused via its latch but is never killed by pid guesswork.
 
-Keys are *book* names (§7.78): one per agent × mode — ``crypto`` for a legacy
-single-file setup, ``demo_crypto`` for a per-mode book (a compound key spawns the
-runner with ``--mode demo``, so the dashboard can start paper and demo side by side).
+Keys are *book* names (§7.78): one per agent × mode, e.g. ``demo_crypto`` — the runner
+is spawned with ``--mode demo``, so the dashboard can start paper and demo side by side.
 Adoption across dashboard restarts uses a per-book pidfile in the data dir; a
 pid is only adopted when it is alive *and* its ``/proc`` cmdline still matches
 the expected runner module (and ``--mode`` flag), so a recycled pid is never killed.
@@ -57,7 +56,7 @@ class AgentLauncher:
         """Runner-module invocation for a book key, mirroring the documented CLI (§7.78)."""
         parsed = parse_book_key(key)
         if parsed is None:
-            return [sys.executable, "-m", f"scripts.run_{key}_agent"]
+            raise ValueError(f"{key!r} is not a <mode>_<agent> book key")
         mode, agent = parsed
         return [sys.executable, "-m", f"scripts.run_{agent}_agent", "--mode", mode]
 
@@ -85,13 +84,12 @@ class AgentLauncher:
             return False
         argv = raw.decode(errors="replace").split("\x00")
         parsed = parse_book_key(key)
-        agent = parsed[1] if parsed is not None else key
+        if parsed is None:
+            return False
+        mode, agent = parsed
         if not any(f"scripts.run_{agent}_agent" in arg for arg in argv):
             return False
-        # A mode-keyed pid may only adopt the runner started with that --mode (§7.78).
-        if parsed is None:
-            return True
-        mode = parsed[0]
+        # A pid may only be adopted as the runner started with this book's --mode (§7.78).
         return any(arg == "--mode" and argv[i + 1 : i + 2] == [mode] for i, arg in enumerate(argv))
 
     def _adopted_pid(self, agent: str) -> int | None:

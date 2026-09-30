@@ -1,9 +1,8 @@
 """Dashboard over multiple per-mode books (§7.78).
 
-Covers what the single-file suite cannot: ``open_books`` discovery (and its legacy
-shared-file fallback), per-book health cards + mode badges, a latch write landing in
-*that file only*, ambiguous ``?agent=`` resolution refusing to pick between paper and
-demo of one agent, decisions merged across books, and per-book portfolio JSON.
+Covers what the single-file suite cannot: ``open_books`` discovery, per-book health
+cards + mode badges, a latch write landing in *that file only*, book-key resolution,
+decisions merged across books, and per-book portfolio JSON.
 """
 
 from __future__ import annotations
@@ -22,11 +21,9 @@ from src.dashboard.books import find_book, open_books
 from src.dashboard.launch import AgentLauncher
 
 
-def _settings(tmp_path, *, data_dir=None, database_path=None) -> Settings:
+def _settings(tmp_path, *, data_dir=None) -> Settings:
     config = tmp_path / "settings.yaml"
-    storage_line = f'  database_path: "{database_path}"\n' if database_path else ""
-    if data_dir:
-        storage_line += f'  data_dir: "{data_dir}"\n'
+    storage_line = f'  data_dir: "{data_dir or tmp_path}"\n'
     config.write_text(
         f"""
 llm: {{endpoint: "http://127.0.0.1:1234/v1/chat/completions", model: qwen-test-model}}
@@ -120,22 +117,7 @@ class TestDiscovery:
             for b in books:
                 await b.storage.close()
 
-    async def test_legacy_shared_file_fallback(self, tmp_path) -> None:
-        legacy = tmp_path / "trading_agent.db"
-        seed = Storage(str(legacy))
-        await seed.initialize()
-        await seed.close()
-        settings = _settings(tmp_path, database_path=str(legacy))
-        books = await open_books(settings)
-        try:
-            assert [b.key for b in books] == ["crypto", "stocks"]  # pre-§7.78 keys
-            assert all(b.mode is None for b in books)
-            assert books[0].storage is books[1].storage  # one shared handle
-        finally:
-            for b in books:
-                await b.storage.close()
-
-    def test_find_book_ambiguous_agent_is_not_resolved(self) -> None:
+    def test_find_book_by_key(self) -> None:
         from src.dashboard.books import Book
 
         sentinel = object()
@@ -143,9 +125,9 @@ class TestDiscovery:
             Book(key="paper_crypto", mode="paper", agent="crypto", storage=sentinel),
             Book(key="demo_crypto", mode="demo", agent="crypto", storage=sentinel),
         ]
-        assert find_book(books, key=None, agent="crypto") is None  # ambiguous → nothing
-        assert find_book(books, key="demo_crypto", agent=None).key == "demo_crypto"
-        assert find_book(books, key=None, agent="demo_crypto").key == "demo_crypto"
+        assert find_book(books, "demo_crypto").key == "demo_crypto"
+        assert find_book(books, "crypto") is None  # bare agent names are not keys
+        assert find_book(books, None).key == "paper_crypto"
 
 
 class TestPages:
@@ -157,22 +139,21 @@ class TestPages:
         assert str(books_env.data_dir) not in body
 
     async def test_portfolio_json_targets_one_book(self, books_env) -> None:
-        demo = (await books_env.client.get("/api/portfolio.json?agent=demo_crypto")).json()
+        demo = (await books_env.client.get("/api/portfolio.json?book=demo_crypto")).json()
         assert demo["total_value"][-1] == pytest.approx(9_900.0)
         paper = (await books_env.client.get("/api/portfolio.json?book=paper_crypto")).json()
         assert paper["total_value"][-1] == pytest.approx(5_050.0)
 
-    async def test_unknown_book_404_ambiguous_agent_404(self, books_env) -> None:
-        assert (await books_env.client.get("/?agent=forex")).status_code == 404
-        # Two crypto books → "?agent=crypto" must not silently pick one file.
-        assert (await books_env.client.get("/?agent=crypto")).status_code == 404
+    async def test_unknown_book_404(self, books_env) -> None:
+        assert (await books_env.client.get("/?book=forex")).status_code == 404
+        assert (await books_env.client.get("/?book=crypto")).status_code == 404
         assert (await books_env.client.get("/config/crypto")).status_code == 404
         assert (await books_env.client.get("/config/demo_crypto")).status_code == 200
 
     async def test_decisions_merge_across_books(self, books_env) -> None:
         merged = (await books_env.client.get("/decisions")).text
         assert "paper-only-momentum" in merged and "demo-only-momentum" in merged
-        only_demo = (await books_env.client.get("/decisions?agent=demo_crypto")).text
+        only_demo = (await books_env.client.get("/decisions?book=demo_crypto")).text
         assert "demo-only-momentum" in only_demo
         assert "paper-only-momentum" not in only_demo
 

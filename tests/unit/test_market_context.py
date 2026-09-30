@@ -284,7 +284,7 @@ macro_calendar:
     - {{at: "2099-01-01T12:00:00Z", title: "FOMC", currency: USD}}
 stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"]}}
 risk: {{max_position_pct: 0.1}}
-storage: {{database_path: "{db}"}}
+storage: {{data_dir: "{db.parent}"}}
 monitoring: {{log_level: INFO}}
 """
 

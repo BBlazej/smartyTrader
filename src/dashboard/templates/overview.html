@@ -73,7 +73,7 @@
     var u = new uPlot(opts, [data.x, data.total_value, data.cash], el);
 
     function refresh() {
-      fetch('/api/portfolio.json?agent={{ selected_key }}')
+      fetch('/api/portfolio.json?book={{ selected_key }}')
         .then(function (r) { return r.json(); })
         .then(function (d) { if (d && d.x) u.setData([d.x, d.total_value, d.cash]); })
         .catch(function () {});

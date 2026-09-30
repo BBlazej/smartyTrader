@@ -4,6 +4,6 @@
     <a class="btn{{ ' active-pill' if selected_key is none }}" href="?">all books</a>
   {% endif %}
   {% for b in books %}
-    <a class="btn{{ ' active-pill' if selected_key == b.key }}" href="?agent={{ b.key }}">{{ b.key }}</a>
+    <a class="btn{{ ' active-pill' if selected_key == b.key }}" href="?book={{ b.key }}">{{ b.key }}</a>
   {% endfor %}
 </div>

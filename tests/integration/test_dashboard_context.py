@@ -17,7 +17,7 @@ from src.core.models import (
 from src.core.storage import Storage
 from src.dashboard import create_dashboard_app
 from src.dashboard.app import _rel
-from tests.integration.test_dashboard import _assert_no_secrets, _bound, _client, _settings
+from tests.integration.test_dashboard import _assert_no_secrets, _books, _bound, _client, _settings
 
 
 @pytest.fixture()
@@ -76,7 +76,7 @@ async def page_env(tmp_path):
         )
     finally:
         await bound.close()
-    app = create_dashboard_app(storage=storage, settings=settings)
+    app = create_dashboard_app(settings, _books(storage))
     client = _client(app)
     yield client
     await client.aclose()
@@ -84,11 +84,11 @@ async def page_env(tmp_path):
 
 
 async def test_context_page_renders_everything(page_env) -> None:
-    response = await page_env.get("/context?agent=crypto")
+    response = await page_env.get("/context?book=paper_crypto")
     assert response.status_code == 200
     body = response.text
     for fragment in (
-        "Market context — crypto",
+        "Market context — paper_crypto",
         "USD FOMC rate decision",
         "entry blackout",  # 30 min before a high-impact event, by the YAML guard window
         "DORA",
@@ -104,7 +104,7 @@ async def test_context_page_renders_everything(page_env) -> None:
 
 
 async def test_context_page_other_book_is_empty(page_env) -> None:
-    body = (await page_env.get("/context?agent=stocks")).text
+    body = (await page_env.get("/context?book=paper_stocks")).text
     assert "none on record" in body
     assert "FOMC" not in body
 

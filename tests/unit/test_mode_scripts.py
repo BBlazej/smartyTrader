@@ -130,20 +130,6 @@ class TestRebaselineBookSelection:
         await reader.close()
         assert reset is not None and float(reset.baseline_value) == pytest.approx(4_600.0)
 
-    async def test_legacy_unsplit_file_is_refused(self, tmp_path: Path) -> None:
-        config = _settings_yaml(tmp_path)
-        data_dir = tmp_path / "books"
-        # A pre-§7.78 file sitting at the demo book's path: rows, but no identity.
-        legacy = Storage(str(db_layout.db_path(data_dir, "demo", "crypto")), agent="crypto")
-        await legacy.initialize()
-        await legacy.save_portfolio_snapshot(cash=1.0, positions_json="[]", total_value=1.0)
-        await legacy.close()
-
-        from src.core.storage import DatabaseIdentityError
-
-        with pytest.raises(DatabaseIdentityError):
-            await rebaseline_run("crypto", None, True, config, mode="demo")
-
 
 class TestBacktestBookSelection:
     async def test_missing_book_fails_before_anything_else(self, tmp_path: Path) -> None:

@@ -275,7 +275,7 @@ def _run_settings(enabled: bool) -> SimpleNamespace:
         # Retention fields (§7.12): windows off here so lifecycle tests stay
         # focused; pruning itself is covered in test_storage/test_retention.
         storage=SimpleNamespace(
-            database_path=":memory:",
+            in_memory=True,
             snapshot_retention_days=0,
             history_retention_days=0,
             prune_interval_minutes=0,

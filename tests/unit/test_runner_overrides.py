@@ -26,16 +26,16 @@ llm: {{endpoint: "http://localhost:1234/v1/chat/completions", model: m}}
 crypto_agent: {{enabled: true, interval_minutes: 5, pairs: ["BTC/USDT"], decision_history_limit: 10}}
 stocks_agent: {{enabled: false, interval_minutes: 60, symbols: ["AAPL"], market_hours: "08:00-22:00", decision_history_limit: 10}}
 risk: {{max_position_pct: 0.1, daily_loss_limit_pct: 0.02, max_drawdown_pct: 0.05, consecutive_losses_cooldown_minutes: 60, max_open_positions: 5, min_confidence: 0.6}}
-storage: {{database_path: "{tmp_path / "runner.db"}"}}
+storage: {{data_dir: "{tmp_path}"}}
 monitoring: {{log_level: INFO}}
 """
     )
     return Settings(str(config))
 
 
-async def _seed_override(database_path: str, raw: str | None) -> None:
-    # The runner opens its own book file (§7.78): paper crypto next to the old path.
-    book = db_layout.db_path(Path(database_path).parent, "paper", "crypto")
+async def _seed_override(data_dir: str, raw: str | None) -> None:
+    # The runner opens its own book file (§7.78): paper crypto in data_dir.
+    book = db_layout.db_path(data_dir, "paper", "crypto")
     seed = Storage(str(book), identity=("crypto", "paper"))
     await seed.initialize()
     try:
@@ -100,7 +100,7 @@ async def _run(settings: Settings, agent: _FakeAgent, *, run_once: bool = False)
 class TestStartupOverrides:
     async def test_stored_interval_governs_scheduling(self, tmp_path: Path) -> None:
         settings = _settings(tmp_path)
-        await _seed_override(settings.storage.database_path, '{"interval_minutes": 7}')
+        await _seed_override(settings.storage.data_dir, '{"interval_minutes": 7}')
         manager = MagicMock()
         fake_agent = _FakeAgent()
 
@@ -144,7 +144,7 @@ class TestStartupOverrides:
         self, tmp_path: Path
     ) -> None:
         settings = _settings(tmp_path)
-        await _seed_override(settings.storage.database_path, '{"pairs": ["ETH/USDT"]}')
+        await _seed_override(settings.storage.data_dir, '{"pairs": ["ETH/USDT"]}')
         fake_agent = _FakeAgent()
 
         with patch("src.core.scheduler.AsyncSchedulerManager") as manager_cls:

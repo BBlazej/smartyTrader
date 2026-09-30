@@ -8,8 +8,7 @@ works with or without the agent-side ``control_api``. Launch it alongside the ag
     python -m scripts.run_dashboard          # http://127.0.0.1:8080 (config-driven)
 
 It never places orders, never touches credentials, and only edits the safe config
-whitelist. Before ``scripts/split_database`` has run there are no per-mode files, and
-the legacy shared ``storage.database_path`` is served as one book per agent instead.
+whitelist.
 """
 
 from __future__ import annotations
@@ -51,11 +50,8 @@ async def run(host: str | None, port: int | None) -> None:
         pass
     finally:
         server.should_exit = True
-        closed: set[int] = set()
-        for book in books:  # distinct storages only (legacy books share one handle)
-            if id(book.storage) not in closed:
-                await book.storage.close()
-                closed.add(id(book.storage))
+        for book in books:
+            await book.storage.close()
         log.info("dashboard shut down cleanly")
 
 

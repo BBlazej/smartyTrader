@@ -243,9 +243,7 @@ async def run_agent(
     # run; any exit path below (or process death) releases it. An in-memory DB cannot
     # be shared across processes, so there is nothing to guard.
     storage_settings = settings.storage
-    in_memory = bool(getattr(storage_settings, "in_memory", False)) or (
-        getattr(storage_settings, "database_path", None) == ":memory:"
-    )
+    in_memory = bool(getattr(storage_settings, "in_memory", False))
     runner_lock: RunnerLock | None = None
     if not in_memory:
         runner_lock = RunnerLock(lock_path(storage_settings.data_dir, mode, component))

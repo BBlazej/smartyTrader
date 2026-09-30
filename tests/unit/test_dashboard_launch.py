@@ -35,33 +35,33 @@ def _alive(pid: int) -> bool:
 class TestStartStop:
     async def test_start_then_stop_lifecycle(self, tmp_path) -> None:
         launcher = AgentLauncher(tmp_path, command_builder=_sleep_builder())
-        pid = await launcher.start("crypto")
+        pid = await launcher.start("paper_crypto")
         assert _alive(pid)
-        assert launcher.managed_pid("crypto") == pid
-        assert int((tmp_path / "crypto_agent.pid").read_text()) == pid
+        assert launcher.managed_pid("paper_crypto") == pid
+        assert int((tmp_path / "paper_crypto_agent.pid").read_text()) == pid
 
-        assert await launcher.stop("crypto") is True
-        assert launcher.managed_pid("crypto") is None
-        assert not (tmp_path / "crypto_agent.pid").exists()
+        assert await launcher.stop("paper_crypto") is True
+        assert launcher.managed_pid("paper_crypto") is None
+        assert not (tmp_path / "paper_crypto_agent.pid").exists()
         assert not _alive(pid)
 
     async def test_double_start_refused(self, tmp_path) -> None:
         launcher = AgentLauncher(tmp_path, command_builder=_sleep_builder())
-        await launcher.start("crypto")
+        await launcher.start("paper_crypto")
         with pytest.raises(RuntimeError):
-            await launcher.start("crypto")
-        await launcher.stop("crypto")
+            await launcher.start("paper_crypto")
+        await launcher.stop("paper_crypto")
 
     async def test_stop_without_child_is_false(self, tmp_path) -> None:
         launcher = AgentLauncher(tmp_path, command_builder=_sleep_builder())
-        assert await launcher.stop("crypto") is False
+        assert await launcher.stop("paper_crypto") is False
 
     async def test_exited_child_forgotten(self, tmp_path) -> None:
         launcher = AgentLauncher(tmp_path, command_builder=_sleep_builder(0.1))
-        pid = await launcher.start("crypto")
+        pid = await launcher.start("paper_crypto")
         while _alive(pid):  # wait for the short sleep to end on its own
             await asyncio.sleep(0.05)
-        assert launcher.managed_pid("crypto") is None
+        assert launcher.managed_pid("paper_crypto") is None
 
 
 class TestAdoption:
@@ -70,13 +70,15 @@ class TestAdoption:
             sys.executable,
             "-c",
             "import time; time.sleep(2)",
-            "scripts.run_crypto_agent",  # marker the launcher verifies via /proc cmdline
+            "scripts.run_crypto_agent",  # markers the launcher verifies via /proc cmdline
+            "--mode",
+            "paper",
         )
-        (tmp_path / "crypto_agent.pid").write_text(str(child.pid))
+        (tmp_path / "paper_crypto_agent.pid").write_text(str(child.pid))
         launcher = AgentLauncher(tmp_path)
-        assert launcher.managed_pid("crypto") == child.pid
+        assert launcher.managed_pid("paper_crypto") == child.pid
         try:
-            assert await launcher.stop("crypto") is True  # SIGTERM path, no handle
+            assert await launcher.stop("paper_crypto") is True  # SIGTERM path, no handle
             assert not _alive(child.pid)
         finally:
             if child.returncode is None:  # pragma: no cover - only if stop failed
@@ -88,31 +90,30 @@ class TestAdoption:
         child = await asyncio.create_subprocess_exec(
             sys.executable, "-c", "import time; time.sleep(2)", "totally-unrelated"
         )
-        (tmp_path / "crypto_agent.pid").write_text(str(child.pid))
+        (tmp_path / "paper_crypto_agent.pid").write_text(str(child.pid))
         launcher = AgentLauncher(tmp_path)
         try:
-            assert launcher.managed_pid("crypto") is None
-            assert not (tmp_path / "crypto_agent.pid").exists()  # stale file pruned
-            assert await launcher.stop("crypto") is False
+            assert launcher.managed_pid("paper_crypto") is None
+            assert not (tmp_path / "paper_crypto_agent.pid").exists()  # stale file pruned
+            assert await launcher.stop("paper_crypto") is False
             assert _alive(child.pid)
         finally:
             child.terminate()
             await child.wait()
 
     async def test_dead_pid_is_not_adopted(self, tmp_path) -> None:
-        (tmp_path / "crypto_agent.pid").write_text("99999999")  # certainly not ours
+        (tmp_path / "paper_crypto_agent.pid").write_text("99999999")  # certainly not ours
         launcher = AgentLauncher(tmp_path)
-        assert launcher.managed_pid("crypto") is None
-        assert not (tmp_path / "crypto_agent.pid").exists()
+        assert launcher.managed_pid("paper_crypto") is None
+        assert not (tmp_path / "paper_crypto_agent.pid").exists()
 
 
 class TestBookKeys:
     """§7.78: compound ``<mode>_<agent>`` keys spawn/adopt mode-flagged runners."""
 
-    def test_default_command_adds_mode_flag_for_compound_keys(self) -> None:
-        legacy = AgentLauncher.default_command("crypto")
-        assert legacy[1:3] == ["-m", "scripts.run_crypto_agent"]
-        assert "--mode" not in legacy
+    def test_default_command_adds_mode_flag(self) -> None:
+        with pytest.raises(ValueError, match="book key"):
+            AgentLauncher.default_command("crypto")  # bare agent names are not books
         demo = AgentLauncher.default_command("demo_crypto")
         assert demo[1:3] == ["-m", "scripts.run_crypto_agent"]
         assert demo[3:] == ["--mode", "demo"]

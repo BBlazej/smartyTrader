@@ -54,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1303 tests, no network needed (live smokes are opt-in:
+pytest                      # 1283 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -287,7 +287,7 @@ its API on 2025-03-14**, kept disabled as reference until the Saxo executor land
 notices and RSS news feed a sanitized MARKET CONTEXT prompt section and a deterministic
 entry event guard; an opt-in LLM summarizer writes validated context cards; the dashboard
 has a read-only `/context` page.
-**1303 tests passing at ~95% coverage.**
+**1283 tests passing at ~95% coverage.**
 
 Open work: see `PLAN.md` §7 (Gaps & Next Steps)
 for the full list — reordered after the full-codebase reviews; detailed findings live in `review.MD`, `review2.md`, `external_review3.md`, and `external_4.md` at the repo root.
