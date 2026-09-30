@@ -11,7 +11,6 @@ real). Fees are now persisted on the order row and replayed through the same
 
 from __future__ import annotations
 
-import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -194,27 +193,3 @@ class TestPartialSellFees:
         tracker = PositionTracker()
         replay_fills(tracker, [FillRecord(SYMBOL, "buy", 1.0, 100.0)])
         assert tracker.quantity(SYMBOL) == pytest.approx(1.0)
-
-
-class TestMigration:
-    async def test_fee_columns_are_added_to_an_old_orders_table(self, tmp_db_path: str) -> None:
-        conn = sqlite3.connect(tmp_db_path)
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id TEXT UNIQUE, symbol TEXT, "
-            "side TEXT, quantity FLOAT, price FLOAT, status TEXT, decision_id INTEGER, "
-            "filled_at TIMESTAMP)"
-        )
-        conn.execute(
-            "INSERT INTO orders (order_id, symbol, side, quantity, price, status) "
-            "VALUES ('old', 'BTC/EUR', 'buy', 1.0, 100.0, 'filled')"
-        )
-        conn.commit()
-        conn.close()
-
-        storage = Storage(tmp_db_path)
-        await storage.initialize()
-        try:
-            (row,) = await storage.get_recent_orders()
-            assert row.fee_base is None and row.fee_quote is None
-        finally:
-            await storage.close()

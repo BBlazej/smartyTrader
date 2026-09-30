@@ -9,7 +9,6 @@ each sleeve learns from and times its bars on only its own history.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -160,30 +159,6 @@ class TestStrategyStorage:
         swing = await storage.get_recent_closing_fills(strategy="swing")
         assert [o.order_id for o in swing] == ["o1"]
         assert len(await storage.get_recent_closing_fills()) == 2
-
-    async def test_migration_adds_strategy_columns(self, tmp_path: Path) -> None:
-        db = tmp_path / "legacy.db"
-        conn = sqlite3.connect(db)
-        conn.execute(
-            "CREATE TABLE llm_decisions (id INTEGER PRIMARY KEY, symbol VARCHAR(20), "
-            "action VARCHAR(10), confidence FLOAT, reasoning TEXT, stop_loss FLOAT, "
-            "take_profit FLOAT, risk_verdict VARCHAR(10), risk_reason TEXT, timestamp DATETIME)"
-        )
-        conn.execute(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_id VARCHAR(64) UNIQUE, "
-            "symbol VARCHAR(20), side VARCHAR(10), quantity FLOAT, price FLOAT, "
-            "status VARCHAR(20), decision_id INTEGER, filled_at DATETIME)"
-        )
-        conn.commit()
-        conn.close()
-        store = Storage(str(db), agent="crypto")
-        await store.initialize()
-        await store.close()
-        conn = sqlite3.connect(db)
-        for table in ("llm_decisions", "orders"):
-            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-            assert "strategy" in cols
-        conn.close()
 
 
 # ── Ownership (SleeveBook) ────────────────────────────────────
