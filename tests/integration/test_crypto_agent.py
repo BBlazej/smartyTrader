@@ -9,13 +9,16 @@ persistence, order↔decision links and the realized-PnL backfill all run for re
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from src.agents.crypto_agent import CryptoAgent
-from src.core.config import RiskSettings
+from src.core.config import LLMSettings, RiskSettings
 from src.core.decision_pipeline import DecisionPipeline
+from src.core.llm_client import LLMClient
 from src.core.models import (
     OHLCV,
     MarketSnapshot,
@@ -212,6 +215,57 @@ class TestCycle:
         assert len(await first) == 1
         assert llm.ask_trade_signal.await_count == 1
         assert len(await storage.get_recent_decisions()) == 1
+
+    async def test_shutdown_cancels_the_generation_and_ends_the_cycle(
+        self,
+        storage: Storage,
+        risk_engine: RiskEngine,
+        paper_executor: PaperExecutor,
+    ) -> None:
+        # §7.89: stopping the agent mid-generation cancels it on the LLM server; the
+        # cycle ends without a decision (no fallback HOLD row, no order).
+        started, released = asyncio.Event(), asyncio.Event()
+        cancels: list[dict] = []
+
+        async def server(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/inference/cancel":
+                cancels.append(json.loads(request.content))
+                released.set()
+                return httpx.Response(200, json={"cancelled": 1})
+            started.set()
+            await released.wait()
+            return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+        llm = LLMClient(
+            LLMSettings(
+                endpoint="http://localhost:8889/v1",
+                model="m",
+                retry_backoff_base_seconds=0.0,
+                cancel_path="/api/inference/cancel",
+            )
+        )
+        llm._client = httpx.AsyncClient(transport=httpx.MockTransport(server))
+        pipeline = DecisionPipeline(
+            provider=make_provider([100.0]),
+            llm_client=llm,
+            risk_engine=risk_engine,
+            executor=paper_executor,
+            storage=storage,
+        )
+        agent = CryptoAgent(
+            pipeline=pipeline,
+            storage=storage,
+            risk_engine=risk_engine,
+            llm_client=llm,
+            pairs=[SYMBOL],
+        )
+        cycle = asyncio.create_task(agent.run_cycle())
+        await started.wait()
+        await agent.shutdown()
+        assert await cycle == []  # unwound at the LLM call
+        assert len(cancels) == 1
+        assert await storage.get_recent_decisions(include_fallback=True) == []
+        assert await storage.get_recent_orders() == []
 
     async def test_cycle_persists_order(
         self,

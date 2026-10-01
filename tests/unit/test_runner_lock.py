@@ -154,3 +154,30 @@ class TestRunAgentRefusesDoubleStart:
         )
         assert built == []
         assert not (tmp_path / "data" / "paper_crypto.runner.lock").exists()
+
+
+async def test_sigterm_cancels_the_main_task_for_a_clean_shutdown() -> None:
+    # §7.89: SIGTERM (dashboard Stop, docker stop) runs the same cleanup as Ctrl+C —
+    # Python's default would kill the process mid-generation without any of it.
+    import asyncio
+    import signal
+
+    from src.core.runner import _cancel_on_sigterm
+
+    cleaned_up = asyncio.Event()
+
+    async def main() -> None:
+        _cancel_on_sigterm()
+        try:
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(5)
+        finally:
+            cleaned_up.set()
+
+    task = asyncio.create_task(main())
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+    assert cleaned_up.is_set()

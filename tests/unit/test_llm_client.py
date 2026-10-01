@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -435,3 +437,97 @@ class TestApiKey:
             settings = LLMSettings(endpoint="http://localhost:1234/v1", model="m")
         assert settings.api_key is None
         assert "Authorization" not in LLMClient(settings)._client.headers
+
+
+class TestShutdownCancel:
+    """§7.89: a generation still running at shutdown is cancelled on the server."""
+
+    class FakeServer:
+        """Chat requests hang until a cancel arrives; cancels are recorded."""
+
+        def __init__(self) -> None:
+            self.chat_payloads: list[dict] = []
+            self.cancels: list[dict] = []
+            self.started = asyncio.Event()
+            self.released = asyncio.Event()
+
+        async def __call__(self, request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content or b"{}")
+            if request.url.path == "/api/inference/cancel":
+                self.cancels.append(body)
+                self.released.set()
+                return httpx.Response(200, json={"cancelled": 1})
+            self.chat_payloads.append(body)
+            self.started.set()
+            await self.released.wait()
+            # Cut short by the cancel: a partial answer that must never be traded.
+            content = '{"symbol":"X","action":"buy","confidence":0.9,"reasoning":"partial"}'
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    def make(self, server: FakeServer, cancel_path: str | None) -> LLMClient:
+        settings = LLMSettings(
+            endpoint="http://localhost:8889/v1",
+            model="m",
+            max_retries=3,
+            retry_backoff_base_seconds=0.0,
+            cancel_path=cancel_path,
+        )
+        client = LLMClient(settings)
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(server))
+        return client
+
+    async def test_close_cancels_the_running_generation(self) -> None:
+        server = self.FakeServer()
+        client = self.make(server, "/api/inference/cancel")
+        assert client._cancel_url == "http://localhost:8889/api/inference/cancel"
+        call = asyncio.create_task(client.ask_trade_signal("sys", "user"))
+        await server.started.wait()
+        await client.close()
+        with pytest.raises(asyncio.CancelledError):
+            await call  # no fallback HOLD, no retry, the partial answer is discarded
+        cancel_id = server.chat_payloads[0]["cancel_id"]
+        assert server.cancels == [{"cancel_id": cancel_id}]
+        assert len(server.chat_payloads) == 1
+
+    async def test_cancelled_task_cancels_on_the_server(self) -> None:
+        server = self.FakeServer()
+        client = self.make(server, "/api/inference/cancel")
+        call = asyncio.create_task(client.ask_trade_signal("sys", "user"))
+        await server.started.wait()
+        call.cancel()  # Ctrl+C / SIGTERM cancel the task mid-request
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert server.cancels == [{"cancel_id": server.chat_payloads[0]["cancel_id"]}]
+        await client.close()
+        assert len(server.cancels) == 1  # not sent twice
+
+    async def test_without_cancel_path_nothing_extra_is_sent(self) -> None:
+        server = self.FakeServer()
+        client = self.make(server, None)
+        call = asyncio.create_task(client.ask_trade_signal("sys", "user"))
+        await server.started.wait()
+        call.cancel()  # the dropped connection is the only signal
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert "cancel_id" not in server.chat_payloads[0]
+        assert server.cancels == []
+        await client.close()
+
+    async def test_no_new_request_once_shutting_down(self) -> None:
+        server = self.FakeServer()
+        client = self.make(server, "/api/inference/cancel")
+        assert await client.cancel_inflight() == 0
+        with pytest.raises(asyncio.CancelledError):
+            await client.ask_trade_signal("sys", "user")
+        assert server.chat_payloads == []
+        await client.close()
+
+    async def test_failed_cancel_never_raises(self) -> None:
+        def down(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("server gone")
+
+        client = self.make(self.FakeServer(), "/api/inference/cancel")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(down))
+        client._inflight.add("abc")
+        assert await client.cancel_inflight() == 1
+        await client.close()

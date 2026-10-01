@@ -129,6 +129,12 @@ class LLMSettings(_Config):
     # Upper bound on a raw completion's character count before parsing (§7.33): a
     # runaway generation is a failed attempt, never fed into the signal parser.
     max_response_chars: int = 20_000
+    # §7.89: where to cancel an in-flight generation at shutdown — a path on the LLM
+    # server (or a full URL). With it set, every request carries a fresh ``cancel_id``
+    # and shutdown POSTs ``{"cancel_id": …}`` there (Unsloth Studio:
+    # ``/api/inference/cancel``). None: closing the connection is the only signal
+    # (llama-server and LM Studio stop a generation whose client disconnected).
+    cancel_path: str | None = None
     # Bearer key for servers that require one (Unsloth desktop, llama-server
     # --api-key, vLLM). A secret: env ``LLM_API_KEY`` only — never YAML, never logged.
     api_key: str | None = Field(default=None, repr=False)

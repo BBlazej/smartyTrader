@@ -18,6 +18,11 @@ llm:
   # Raw completion size cap before parsing (§7.33); 0 = guard off. Keep it ≈4×
   # max_tokens (~4 chars/token) or long answers are discarded before the parser.
   max_response_chars: 36000
+  # Cancel an in-flight generation on shutdown (§7.89): each request carries a
+  # cancel_id, and stopping the agent POSTs it here (Unsloth Studio's endpoint, on
+  # the same host as LOCAL_LLM_ENDPOINT). null = rely on the dropped connection
+  # alone (plain llama-server / LM Studio have no cancel endpoint).
+  cancel_path: "/api/inference/cancel"
 
 crypto_agent:
   enabled: true

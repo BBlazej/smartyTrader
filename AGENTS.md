@@ -62,6 +62,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 - `enabled: false` means nothing runs — runners exit before constructing any component; a single cycle is only ever the explicit `--once`.
 - Settings profiles (`--profile NAME` → `config/profiles/NAME.yaml` deep-merged over `settings.yaml`, §7.87) are for paper/demo only — `run_agent` refuses a profile on a real account. The `test` profile loosens risk, speeds up bars and adds the `test` playbook (trade often, SL/TP ±0.5 %); its rows are tagged `profile_<name>`.
 - One cycle at a time: `run_cycle` skips a tick while a cycle is running (the first cycle runs outside the scheduler, §7.88).
+- Shutdown cancels LLM work (§7.89): SIGTERM = Ctrl+C (graceful); an in-flight generation is cancelled on the server (`llm.cancel_path` → POST `cancel_id`, Unsloth Studio) before the client closes; a shutting-down client raises `CancelledError` — never a fallback HOLD.
 - One runner per agent × mode (`flock` on `<data_dir>/<mode>_<agent>.runner.lock`; exit 2 if held, exit 3 on `--mode` mismatch, §7.52/§7.78).
 
 **Risk engine**

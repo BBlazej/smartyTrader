@@ -10,6 +10,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
+from urllib.parse import urljoin
+from uuid import uuid4
 
 import httpx
 import structlog
@@ -86,9 +88,49 @@ class LLMClient:
             # servers answer 401 otherwise; LM Studio needs none.
             headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
         )
+        # §7.89: generations still running on the server, by cancel id, and whether
+        # the client is shutting down (then no new request, no retry, no result).
+        self._cancel_url = (
+            urljoin(self._chat_url, settings.cancel_path) if settings.cancel_path else None
+        )
+        self._inflight: set[str] = set()
+        self._closing = False
+
+    async def cancel_inflight(self) -> int:
+        """Stop for shutdown: refuse new requests and ask the server to cancel every
+        generation still running (§7.89). Returns how many cancels were sent.
+
+        Called before the process exits, so the local server does not keep generating
+        an answer nobody will read (with a 27B model that is minutes of GPU time, and a
+        queue the next start waits behind). Fail-soft and bounded.
+        """
+        self._closing = True
+        pending = list(self._inflight)
+        for cancel_id in pending:
+            await self._send_cancel(cancel_id)
+        return len(pending)
 
     async def close(self) -> None:
+        await self.cancel_inflight()
         await self._client.aclose()
+
+    async def _send_cancel(self, cancel_id: str) -> None:
+        """POST one cancel to the server's cancel endpoint; never raises."""
+        self._inflight.discard(cancel_id)
+        if self._cancel_url is None:
+            return
+        try:
+            resp = await self._client.post(
+                self._cancel_url, json={"cancel_id": cancel_id}, timeout=3.0
+            )
+            logger.info(
+                "llm generation cancelled",
+                cancel_id=cancel_id,
+                status=resp.status_code,
+                response=resp.text[:200],
+            )
+        except Exception as exc:  # noqa: BLE001 - shutdown must go on regardless
+            logger.warning("llm cancel request failed", cancel_id=cancel_id, error=str(exc))
 
     async def ask_trade_signal(
         self,
@@ -213,11 +255,35 @@ class LLMClient:
                 "json_schema": schema,
             }
 
-        if self._lock is not None:
-            async with self._lock:
+        # §7.89: shutting down → no new generation. CancelledError (not an Exception)
+        # unwinds the whole cycle: no fallback HOLD row, no alert, no order.
+        if self._closing:
+            raise asyncio.CancelledError("LLM client is shutting down")
+        cancel_id = uuid4().hex
+        if self._cancel_url is not None:
+            payload["cancel_id"] = cancel_id
+        self._inflight.add(cancel_id)
+        try:
+            if self._lock is not None:
+                async with self._lock:
+                    resp = await self._client.post(self._chat_url, json=payload)
+            else:
                 resp = await self._client.post(self._chat_url, json=payload)
-        else:
-            resp = await self._client.post(self._chat_url, json=payload)
+        except asyncio.CancelledError:
+            # The task was cancelled (Ctrl+C, SIGTERM, shutdown) mid-generation: tell
+            # the server to stop it — dropping the connection alone may not reach it.
+            if cancel_id in self._inflight:
+                await self._send_cancel(cancel_id)
+            raise
+        except Exception:
+            if self._closing:  # the request died because we cancelled it — not a failure
+                raise asyncio.CancelledError("LLM client is shutting down") from None
+            raise
+        finally:
+            self._inflight.discard(cancel_id)
+        if self._closing:
+            # Cancelled while waiting: whatever came back is not a decision.
+            raise asyncio.CancelledError("LLM client is shutting down")
         resp.raise_for_status()
 
         data = resp.json()

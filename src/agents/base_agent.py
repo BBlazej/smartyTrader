@@ -150,9 +150,25 @@ class BaseTradingAgent:
     async def stop(self) -> None:
         self._logger.info("agent stopped")
 
-    async def shutdown(self) -> None:
-        """Stop the agent and release the LLM client + alert channel connections."""
+    async def shutdown(self, cycle_grace_seconds: float = 5.0) -> None:
+        """Stop the agent and release the LLM client + alert channel connections.
+
+        §7.89: a cycle may be mid-generation. The LLM client first asks the server to
+        cancel it and refuses further requests, so the cycle unwinds at its LLM call
+        (an order already being placed still completes and is stored). Wait up to
+        ``cycle_grace_seconds`` for that before the client closes — the dashboard's
+        Stop sends SIGKILL 10 s after SIGTERM.
+        """
         await self.stop()
+        cancel = getattr(self._llm_client, "cancel_inflight", None)
+        if callable(cancel):
+            await cancel()
+        if self._cycle_lock.locked():
+            try:
+                await asyncio.wait_for(self._cycle_lock.acquire(), timeout=cycle_grace_seconds)
+                self._cycle_lock.release()
+            except TimeoutError:
+                self._logger.warning("cycle still running at shutdown; closing anyway")
         await self._llm_client.close()
         close_alerts = getattr(self._alerts, "close", None)
         if callable(close_alerts):
@@ -172,7 +188,16 @@ class BaseTradingAgent:
             self._logger.warning("previous cycle still running; skipping this tick")
             return []
         async with self._cycle_lock:
-            return await self._run_cycle()
+            try:
+                return await self._run_cycle()
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise  # the task itself is being cancelled — let it go
+                # The LLM client refused a request because the agent is shutting down
+                # (§7.89): the cycle ends here, with nothing half-decided.
+                self._logger.info("cycle interrupted: shutting down")
+                return []
 
     async def _run_cycle(self) -> list[PipelineResult]:
         # Control plane first (§7.15): pause/close-all/config overrides are read from

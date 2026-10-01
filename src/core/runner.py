@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import inspect
 import os
+import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -663,6 +665,14 @@ async def run_agent(
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        # Stop the clock and the LLM work first (§7.89): a generation still running
+        # on the local server is cancelled there before anything slower happens.
+        manager.shutdown()
+        if summarize_task is not None and not summarize_task.done():
+            summarize_task.cancel()
+            # Let it unwind: its LLM call sends the server a cancel on the way out.
+            await asyncio.wait({summarize_task}, timeout=5.0)
+        await agent.shutdown()
         if control_server is not None:
             control_server.should_exit = True
         if control_task is not None:
@@ -670,10 +680,6 @@ async def run_agent(
                 await asyncio.wait_for(control_task, timeout=5.0)
             except (TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
                 control_task.cancel()
-        manager.shutdown()
-        if summarize_task is not None and not summarize_task.done():
-            summarize_task.cancel()
-        await agent.shutdown()
         await _close_context()
         # Release the data provider / execution adapter (the ccxt client owns an
         # aiohttp session that must be closed explicitly, or it leaks on exit).
@@ -683,6 +689,18 @@ async def run_agent(
         if runner_lock is not None:
             runner_lock.release()
         log.info(f"{component} agent shut down cleanly")
+
+
+def _cancel_on_sigterm() -> None:
+    """SIGTERM (dashboard Stop, ``docker stop``, systemd) → the same graceful shutdown
+    as Ctrl+C: cancel the main task, so ``run_agent``'s cleanup runs — it cancels an
+    in-flight LLM generation on the server (§7.89), closes clients and the DB. Python's
+    default SIGTERM action kills the process without any of that."""
+    task = asyncio.current_task()
+    if task is None:
+        return
+    with contextlib.suppress(NotImplementedError, RuntimeError):  # non-Unix loops
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
 
 
 def runner_main(component: str, run: Callable[..., Awaitable[None]]) -> None:
@@ -716,9 +734,14 @@ def runner_main(component: str, run: Callable[..., Awaitable[None]]) -> None:
         "the book file, so --mode demo guarantees demo/SIM keys and --mode real a live account.",
     )
     args = parser.parse_args()
+
+    async def main() -> None:
+        _cancel_on_sigterm()
+        await run(run_once=args.once, expected_mode=args.mode, profile=args.profile)
+
     try:
-        asyncio.run(run(run_once=args.once, expected_mode=args.mode, profile=args.profile))
-    except KeyboardInterrupt:
+        asyncio.run(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):  # Ctrl+C / SIGTERM: clean stop
         pass
     except RunnerAlreadyRunning:
         raise SystemExit(2) from None
