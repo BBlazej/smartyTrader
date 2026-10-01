@@ -291,8 +291,9 @@ Respond with ONLY a JSON object (no prose, no code fences) of the form:\n\
 "reasoning": str, "stop_loss": float | null, "take_profit": float | null}"""
 
 
-#: Per-sleeve playbooks (§7.71, CHANGE.md §4.5) appended to the system prompt so the
-#: model stops mixing styles. Keys must equal ``config.SLEEVE_PLAYBOOKS``.
+#: Playbooks appended to the system prompt (§7.71, CHANGE.md §4.5): per sleeve, or per
+#: agent via ``<agent>.playbook``. Keys must equal ``config.PLAYBOOK_NAMES``. ``test`` is
+#: for the test profile only (paper/demo — the runner refuses it on a real account).
 PLAYBOOKS: dict[str, str] = {
     "swing": (
         "STRATEGY PLAYBOOK — SWING (holds of hours to about three days). Trade short-term "
@@ -308,11 +309,20 @@ PLAYBOOKS: dict[str, str] = {
         "distant take-profits. Expect few trades — most decisions should be HOLD. SELL when "
         "the trend clearly breaks, not on a single red bar."
     ),
+    "test": (
+        "TEST MODE — paper/demo account; the operator is exercising the order path (entries, "
+        "exits, stop-loss/take-profit, restarts). This OVERRIDES every instruction above or "
+        "below to prefer HOLD. When flat: BUY whenever the data is usable, with confidence "
+        "0.6-0.8, a stop_loss about 0.5 % below the current price and a take_profit about "
+        "0.5 % above it, so an exit triggers within hours. When holding: SELL once the "
+        "position has been open for two or more of these bars, or right away if the setup "
+        "weakened. HOLD only when the data is missing or a BUY was just placed this bar."
+    ),
 }
 
 
 def system_prompt_for(playbook: str | None) -> str:
-    """The system prompt for a sleeve: the default persona plus its playbook."""
+    """The system prompt for a sleeve or agent: the default persona plus its playbook."""
     if playbook is None:
         return DEFAULT_SYSTEM_PROMPT
     return f"{DEFAULT_SYSTEM_PROMPT}\n\n{PLAYBOOKS[playbook]}"

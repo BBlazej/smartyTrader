@@ -35,9 +35,9 @@ LIVE_TRADING_ACK_PHRASE = "I_ACCEPT_REAL_MONEY_RISK"
 #: Event importance levels, lowest first (§7.18; mirrors ``models.EventImportance``).
 IMPORTANCE_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 
-#: Prompt playbooks a sleeve may use (§7.71) — texts live in
+#: Prompt playbooks a sleeve or agent may use (§7.71) — texts live in
 #: :data:`src.analysis.prompt_builder.PLAYBOOKS` (pinned equal by a test).
-SLEEVE_PLAYBOOKS: tuple[str, ...] = ("swing", "position")
+PLAYBOOK_NAMES: tuple[str, ...] = ("swing", "position", "test")
 
 #: LLM fields a summarizer may override (§7.18) — everything else is the main block's.
 _SUMMARIZER_LLM_FIELDS: frozenset[str] = frozenset(
@@ -579,10 +579,8 @@ class SleeveSpec(_Config):
             raise ValueError(
                 f"sleeves.{name}.timeframe {self.timeframe!r} is not a candle timeframe"
             )
-        if self.playbook not in SLEEVE_PLAYBOOKS:
-            raise ValueError(
-                f"sleeves.{name}.playbook must be one of {', '.join(SLEEVE_PLAYBOOKS)}"
-            )
+        if self.playbook not in PLAYBOOK_NAMES:
+            raise ValueError(f"sleeves.{name}.playbook must be one of {', '.join(PLAYBOOK_NAMES)}")
         unknown = set(self.holding) - {"max_hours", "max_days"}
         if unknown:
             raise ValueError(f"sleeves.{name}.holding: unknown keys {sorted(unknown)}")
@@ -700,6 +698,9 @@ class AgentConfig(_Config):
     # §7.64: currency the keyed executor counts as cash (e.g. "EUR" on OKX Europe);
     # every pair must be quoted in it.
     quote_currency: str | None = None
+    # Prompt playbook for the agent's single implicit style (sleeves set their own);
+    # None = the default persona. ``test`` belongs to the test profile only.
+    playbook: str | None = None
     # §7.70 screener watchlist, §7.71 strategy sleeves, §7.18 market context.
     watchlist: WatchlistSettings = Field(default_factory=WatchlistSettings)
     sleeves: SleevesSettings = Field(default_factory=SleevesSettings)
@@ -726,6 +727,8 @@ class AgentConfig(_Config):
 
     @model_validator(mode="after")
     def _check(self) -> AgentConfig:
+        if self.playbook is not None and self.playbook not in PLAYBOOK_NAMES:
+            raise ValueError(f"playbook must be one of {', '.join(PLAYBOOK_NAMES)}")
         unknown = sorted({v for v in self.symbol_exchanges.values() if v not in self.exchanges})
         if unknown:
             raise ValueError(f"symbol_exchanges names exchanges not configured: {unknown}")
@@ -1041,10 +1044,26 @@ class SaxoExecutionSettings(_Config):
 # ── The whole file ────────────────────────────────────────────
 
 
-class Settings:
-    """Application settings loaded from config/settings.yaml and .env."""
+def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """``overlay`` merged into a copy of ``base``: nested mappings merge, the rest replaces."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
-    def __init__(self, config_path: str | None = None) -> None:
+
+class Settings:
+    """Application settings loaded from config/settings.yaml and .env.
+
+    ``profile`` overlays ``config/profiles/<profile>.yaml`` (next to the settings file)
+    on top — e.g. ``test``: permissive risk + a trading playbook for exercising the
+    order path. The runner refuses any profile on a real-money account.
+    """
+
+    def __init__(self, config_path: str | None = None, profile: str | None = None) -> None:
         path = (
             Path(config_path)
             if config_path
@@ -1052,6 +1071,17 @@ class Settings:
         )
         with open(path) as f:
             raw: dict[str, Any] = yaml.safe_load(f)
+        self.profile = profile
+        if profile is not None:
+            if not re.match(r"^[a-z][a-z0-9_]{0,11}$", profile):
+                raise ValueError(
+                    f"profile name {profile!r}: lowercase letters/digits/_, ≤ 12 chars"
+                )
+            profile_path = path.parent / "profiles" / f"{profile}.yaml"
+            if not profile_path.exists():
+                raise ValueError(f"unknown settings profile {profile!r} (no {profile_path})")
+            with open(profile_path) as f:
+                raw = deep_merge(raw, yaml.safe_load(f) or {})
 
         self.llm = LLMSettings(**raw["llm"])
         self.crypto_agent = AgentConfig(**raw["crypto_agent"])

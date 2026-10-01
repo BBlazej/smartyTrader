@@ -1,0 +1,36 @@
+# TEST PROFILE — for exercising the order path on paper or the OKX demo. It is laid
+# over settings.yaml only when a runner gets `--profile test`; the runner REFUSES it on
+# a real-money account. Decisions and orders are tagged `profile_test` (the dashboard's
+# Sleeve column), and its prompt history reads only its own decisions.
+#
+#   python -u -m scripts.run_crypto_agent --mode demo --profile test 2>&1 | tee -a data/agent_demo_crypto.out.log
+#
+# What it changes: permissive risk limits (nothing the LLM proposes is blocked except a
+# missing/insane stop), faster bars, and the `test` playbook, which tells the model to
+# BUY when flat and SELL after ~2 bars, with SL/TP ±0.5 % so stop-loss / take-profit
+# exits fire within hours too. The paper/demo book and its risk history are shared with
+# normal runs: if a test run leaves a drawdown latched, re-baseline it with
+# scripts/rebaseline_drawdown.py --mode demo.
+
+crypto_agent:
+  timeframe: "15m"              # a new decision per pair every 15 min
+  decide_on_new_bar_only: true  # cycles in between still mark and enforce SL/TP
+  playbook: test
+  sleeves: {enabled: false}     # one style, tagged profile_test
+  watchlist: {enabled: false}   # just the core pairs
+
+stocks_agent:
+  playbook: test
+
+risk:
+  min_confidence: 0.3
+  max_position_pct: 0.10        # ≈ 460 EUR per position on the 4,600 EUR demo
+  max_open_positions: 10
+  daily_loss_limit_pct: 0.50    # effectively off
+  max_drawdown_pct: 0.50        # effectively off
+  consecutive_losses_threshold: 1000   # cooldown never arms
+  consecutive_losses_cooldown_minutes: 0
+  max_stop_distance_pct: 0.50   # any stop below the price passes
+  risk_per_trade_pct: 0.0
+  enforce_exit_levels: true     # keep: SL/TP exits are a behaviour under test
+  event_guard_enabled: false    # macro/delisting blackouts off (test the guard separately)

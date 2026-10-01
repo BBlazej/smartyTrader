@@ -59,6 +59,7 @@ pytest                      # 1285 tests, no network needed (live smokes are opt
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
 python -m scripts.run_crypto_agent --once   # exactly one cycle, then exit
+python -m scripts.run_crypto_agent --mode demo --profile test   # test profile: trades often (paper/demo only)
 python -m scripts.backtest --days 30        # replay stored decisions vs fresh candles (§7.14)
 python -m scripts.run_dashboard             # web dashboard at http://127.0.0.1:8080 (§7.15 P3/P4)
 

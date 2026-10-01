@@ -17,7 +17,7 @@ import pytest
 
 from src.agents.crypto_agent import CryptoAgent
 from src.analysis.prompt_builder import DEFAULT_SYSTEM_PROMPT, PLAYBOOKS, system_prompt_for
-from src.core.config import SLEEVE_PLAYBOOKS, RiskSettings, Settings, SleeveSpec, SleevesSettings
+from src.core.config import PLAYBOOK_NAMES, RiskSettings, Settings, SleeveSpec, SleevesSettings
 from src.core.decision_pipeline import DecisionPipeline
 from src.core.models import OHLCV, Action, MarketSnapshot, OrderSide, TradeSignal
 from src.core.risk_engine import RiskEngine
@@ -87,7 +87,7 @@ class TestSleeveConfig:
         assert spec.risk_overrides == {"max_drawdown_pct": 0.15}
 
     def test_playbook_texts_match_config(self) -> None:
-        assert set(PLAYBOOKS) == set(SLEEVE_PLAYBOOKS)
+        assert set(PLAYBOOKS) == set(PLAYBOOK_NAMES)
         assert system_prompt_for(None) == DEFAULT_SYSTEM_PROMPT
         prompt = system_prompt_for("position")
         assert prompt.startswith(DEFAULT_SYSTEM_PROMPT) and "POSITION" in prompt

@@ -60,6 +60,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 - Real money needs `testnet: false` + `crypto_agent.live_trading: true` + env `LIVE_TRADING_ACK=I_ACCEPT_REAL_MONEY_RISK` (same ack for Saxo `environment: live`, XTB `account_type: real`). Never suggest `testnet: false` alone. Venue switches are never on the dashboard's safe-config surface.
 - Secrets live in `.env`/environment only — never YAML, logs, errors or pages. `LLM_API_KEY`, `EXCHANGE_API_KEY/_SECRET/_PASSPHRASE`, `SAXO_ACCESS_TOKEN`, `SAXO_APP_KEY/_SECRET`, `ALERT_WEBHOOK_URL`. Saxo OAuth tokens: `data/saxo_<env>.token.json`, 0600, gitignored.
 - `enabled: false` means nothing runs — runners exit before constructing any component; a single cycle is only ever the explicit `--once`.
+- Settings profiles (`--profile NAME` → `config/profiles/NAME.yaml` deep-merged over `settings.yaml`, §7.87) are for paper/demo only — `run_agent` refuses a profile on a real account. The `test` profile loosens risk, speeds up bars and adds the `test` playbook (trade often, SL/TP ±0.5 %); its rows are tagged `profile_<name>`.
 - One runner per agent × mode (`flock` on `<data_dir>/<mode>_<agent>.runner.lock`; exit 2 if held, exit 3 on `--mode` mismatch, §7.52/§7.78).
 
 **Risk engine**

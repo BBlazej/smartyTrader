@@ -601,7 +601,7 @@ Metrics (CLI summary + `--report` JSON):
 
 - **LLM:** any local OpenAI-compatible server (LM Studio, Unsloth desktop, llama-server); endpoint/model/timeouts in the `llm:` block, env `LOCAL_LLM_ENDPOINT` / `LLM_API_KEY` / `LOCAL_LLM_USE_JSON_SCHEMA`. Client behaviour (retries, size guard, reasoning-tolerant parser, audit log, shared lock with the summarizer) is described under *Decision pipeline* and *Market context* above.
 - **Venue APIs:** OKX Europe, Saxo OpenAPI (incl. OAuth), the dead XTB xAPI path and the market-context sources — payload shapes and quirks in [docs/API_NOTES.md](docs/API_NOTES.md).
-- **Configuration:** `config/settings.yaml` is the single source (commented block by block); `src/core/config.py` validates it as Pydantic models — unknown keys fail at load, a YAML `null` means the field's default, secrets come only from `.env`/the environment (see README *Environment variables*).
+- **Configuration:** `config/settings.yaml` is the single source (commented block by block); a runner's `--profile NAME` overlays `config/profiles/NAME.yaml` (deep merge; refused on a real account; rows tagged `profile_NAME` — the shipped `test` profile exercises the order path, §7.87); `src/core/config.py` validates it as Pydantic models — unknown keys fail at load, a YAML `null` means the field's default, secrets come only from `.env`/the environment (see README *Environment variables*).
 - **Dependencies:** `pyproject.toml` (`[stocks]` adds yfinance, `[dev]` the test/lint tools). HTMX and uPlot are CDN assets — no Node build step.
 
 ## Testing Strategy

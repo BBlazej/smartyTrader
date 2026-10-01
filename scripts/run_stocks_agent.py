@@ -207,9 +207,11 @@ def _make_components(settings: Settings) -> tuple[object, object]:
     return provider, executor
 
 
-async def run(run_once: bool = False, expected_mode: str | None = None) -> None:
+async def run(
+    run_once: bool = False, expected_mode: str | None = None, profile: str | None = None
+) -> None:
     load_dotenv()
-    settings = Settings()
+    settings = Settings(profile=profile)
     setup_logging(settings.monitoring.log_level)
 
     await run_agent(

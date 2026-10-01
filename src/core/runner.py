@@ -44,6 +44,7 @@ from .control_config import parse_and_apply, risk_baseline
 from .db_layout import (
     CONTROL_PORT_OFFSET,
     MODES,
+    REAL,
     UnknownVenueError,
     db_path,
     lock_path,
@@ -235,6 +236,12 @@ async def run_agent(
                 f"{component} runner asked for {expected_mode} but its executor trades "
                 f"{mode} (venue {venue!r}) — check the keys / testnet / live settings"
             )
+        profile = getattr(settings, "profile", None)
+        if profile is not None and mode == REAL:
+            raise ModeMismatch(
+                f"settings profile {profile!r} is for paper/demo testing only — refusing to "
+                f"run it on a real-money account (venue {venue!r})"
+            )
     except (UnknownVenueError, ModeMismatch):
         await _close_components(provider, executor)
         raise
@@ -351,6 +358,13 @@ async def run_agent(
         decision_history_limit=decision_history_limit,
         decide_on_new_bar_only=decide_on_new_bar_only,
         context_reader=context_reader,
+        # The agent's own playbook for its single implicit style (sleeves set theirs).
+        system_prompt=system_prompt_for(
+            getattr(getattr(settings, f"{component}_agent", None), "playbook", None)
+        ),
+        # A settings profile tags its rows (``profile_test``), so test decisions/orders
+        # stay distinguishable and its prompt history reads only its own decisions.
+        strategy=(f"profile_{settings.profile}" if getattr(settings, "profile", None) else None),
     )
     agent = build_agent(pipeline, storage, risk_engine, llm_client)
 
@@ -689,6 +703,12 @@ def runner_main(component: str, run: Callable[..., Awaitable[None]]) -> None:
         help="Run exactly one decision cycle and exit instead of the scheduled loop.",
     )
     parser.add_argument(
+        "--profile",
+        default=None,
+        help="Overlay config/profiles/<NAME>.yaml on settings.yaml (e.g. 'test': permissive "
+        "risk + a trading playbook). Paper/demo only — refused on a real account.",
+    )
+    parser.add_argument(
         "--mode",
         choices=list(MODES),
         default=None,
@@ -697,7 +717,7 @@ def runner_main(component: str, run: Callable[..., Awaitable[None]]) -> None:
     )
     args = parser.parse_args()
     try:
-        asyncio.run(run(run_once=args.once, expected_mode=args.mode))
+        asyncio.run(run(run_once=args.once, expected_mode=args.mode, profile=args.profile))
     except KeyboardInterrupt:
         pass
     except RunnerAlreadyRunning:
