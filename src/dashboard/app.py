@@ -30,7 +30,6 @@ Safety invariants (inherited from §7.15):
 
 from __future__ import annotations
 
-import json as _json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -196,9 +195,8 @@ def create_dashboard_app(
     templates.env.filters["pct"] = _pct
     templates.env.filters["rel"] = _rel
     templates.env.filters["short"] = _short
-    # Starlette's Jinja2Templates ships no `tojson` (that's Flask); register one so the
-    # chart payload can be embedded as JSON. Values are safe, non-user data.
-    templates.env.filters["tojson"] = lambda v: _json.dumps(v)
+    # ``tojson`` is Jinja's built-in: HTML-safe JSON (Markup, not re-escaped), so the
+    # chart payload embedded in <script type="application/json"> stays valid JSON.
 
     refresh_seconds = int(getattr(settings.dashboard, "refresh_seconds", 5))
 

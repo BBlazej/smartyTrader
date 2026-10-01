@@ -118,3 +118,23 @@ def test_rel_renders_future_times() -> None:
     assert _rel(now + timedelta(hours=3, minutes=1)) == "in 3h"
     assert _rel(now - timedelta(days=2, minutes=1)) == "2d ago"
     assert _rel(now + timedelta(seconds=5)) == "just now"
+
+
+async def test_overview_chart_is_loadable_and_valid_json(page_env) -> None:
+    import json
+    import re
+
+    body = (await page_env.get("/?book=paper_crypto")).text
+    # The chart library itself must be loaded, not only its stylesheet.
+    assert re.search(r'<script src="[^"]*uplot@1\.[^"]*/uPlot\.iife\.min\.js"', body)
+    raw = re.search(
+        r'<script id="chart-data" type="application/json">(.*?)</script>', body, re.DOTALL
+    ).group(1)
+    data = json.loads(raw)  # was HTML-escaped (&#34;) → JSON.parse failed in the browser
+    assert set(data) >= {"x", "total_value", "cash"}
+
+
+async def test_log_page_follows_the_newest_lines(page_env, tmp_path) -> None:
+    (tmp_path / "agent_paper_crypto.out.log").write_text("line 1\nline 2\n")
+    body = (await page_env.get("/logs/paper_crypto")).text
+    assert "htmx:afterSettle" in body and "scrollHeight" in body

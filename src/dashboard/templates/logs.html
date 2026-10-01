@@ -1,12 +1,42 @@
 {% extends "base.html" %}
 {% block title %}{{ agent }} logs · Trading Agents{% endblock %}
+
 {% block content %}
   <h1>{{ agent }} — agent log</h1>
   <p class="muted">
     Tail of <code>{{ log_path }}</code> (written by agents launched from this
     dashboard, §7.24). Auto-refreshes every {{ refresh_seconds }}s; only the last
     few hundred lines are shown{% if truncated %}, byte-truncated to the final 64 KiB{% endif %}.
+    The newest lines stay in view; scroll up to pause following, scroll back to the bottom
+    to resume.
   </p>
   {% include "_log_tail.html" %}
   <p style="margin-top:1rem;"><a class="btn" href="/">← back</a></p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Keep the tail anchored to the newest line. Every refresh replaces the <pre>
+  // (hx-swap outerHTML), which would start it scrolled to the top again: follow the
+  // bottom unless the reader scrolled up, in which case keep their position.
+  (function () {
+    var follow = true, saved = 0;
+    function pre() { return document.querySelector('#log-tail pre.log'); }
+    function atBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+    function apply() {
+      var el = pre();
+      if (!el) return;
+      el.scrollTop = follow ? el.scrollHeight : saved;
+    }
+    document.addEventListener('htmx:beforeSwap', function (e) {
+      var el = pre();
+      if (el && e.detail.target && e.detail.target.id === 'log-tail') {
+        follow = atBottom(el);
+        saved = el.scrollTop;
+      }
+    });
+    document.addEventListener('htmx:afterSettle', apply);
+    apply();
+  })();
+</script>
 {% endblock %}
