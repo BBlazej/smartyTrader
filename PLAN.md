@@ -30,7 +30,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 ### §7.28 — Multi-day OKX demo run ⏳ [high; R1-H4, re-scoped by §7.41/§7.64]
 
 - **Done so far:** keys, reads, the overnight run, forced and agent-driven round trips on the OKX Europe demo — they found and fixed §7.75, §7.76, §7.77 and §7.79 (run log: HISTORY *§7.28 — keyed demo runs*). Fees are confirmed (taker 0.20 %, the paper profile matches).
-- **Before it:** the current `data/demo_crypto.db` carries a €459 phantom from the §7.88 duplicate sell — start the multi-day run on a fresh book (move the old file to `data/backups/`).
+- **Reset done (2026-10-01):** the books contaminated by §7.88 (and the test-profile run) were moved to `data/backups/reset-20261001-contaminated/`; the 3 working demo BUYs were cancelled at OKX. The demo account still holds the earlier runs' coins (untracked by the fresh book — the agent never sells them, §7.88) and €2,004 free cash, which becomes the new book's capital.
 - **Next:** run the crypto agent on the demo for several days in a clean `data/demo_crypto.db` (`python -m scripts.run_crypto_agent --mode demo`, output redirected to a log). Check: LLM-driven entries and exits fill and reconcile, restarts rehydrate cleanly, heartbeat stays fresh, no errors/fallbacks, fees on the order rows. Expect `Event guard:` rejections around macro events — intended (§7.18).
 
 ### §7.85 — LLM latency benchmark on real prompts ⏳ [medium; §7.69 follow-up, CHANGE Q5]
