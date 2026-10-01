@@ -34,8 +34,8 @@ The **single list of open work**: every todo, gap, open question and accepted li
 
 ### §7.85 — LLM latency benchmark on real prompts ⏳ [medium; §7.69 follow-up, CHANGE Q5]
 
-- §7.69 built the tooling (`scripts/benchmark_llm.py`, per-decision latency/tokens, dashboard p50/p95) but the live pass never ran.
-- **Do:** with LM Studio up, run the benchmark on genuine prompts for the shipped model; record p50/p95 per call and the calls/hour budget. **Then decide** the watchlist size (`max_dynamic_symbols`) and whether the 5-minute cycle / hourly bars fit (CHANGE §4.7) — from these numbers, never from guesses.
+- §7.69 built the tooling (`scripts/benchmark_llm.py`, per-decision latency/tokens, dashboard p50/p95). **First real numbers (2026-10-01, 8.5 h demo run, 20 calls):** median 21 s, max 33 s per decision — the crypto universe was raised from 2 to 12 pairs on that basis (≈ 4 min of LLM per bar, one 5-minute cycle).
+- **Do:** confirm with the dashboard's p50/p95 over a multi-day run with 12 pairs (prompts grow as history fills), or `scripts/benchmark_llm.py`. If p95 × pairs exceeds the 5-minute cycle, cycles overrun and exit checks wait — then trim pairs or lengthen the cycle. Size any watchlist extension (`max_dynamic_symbols`) and the summarizer budget from the same numbers.
 
 ### §7.86 — Two-sleeve paper trial ⏳ [medium; CHANGE P1 "done when"]
 

@@ -32,9 +32,23 @@ crypto_agent:
   # accounts can't trade USDT (MiCA) — EUR (or USDC) pairs only.
   quote_currency: EUR
   interval_minutes: 5
+  # Sized from measured LLM latency (2026-10-01 demo run: median 21 s, max 33 s per
+  # decision): at a new bar every pair is asked in turn, so ~12 pairs ≈ 4 min of LLM
+  # time — fits one 5-minute cycle, so SL/TP checks are never held up for long. All
+  # are tradable on the OKX EEA *demo* (27 EUR pairs there vs 271 live) and liquid.
   pairs:
     - BTC/EUR
     - ETH/EUR
+    - XRP/EUR
+    - SOL/EUR
+    - LINK/EUR
+    - DOGE/EUR
+    - BNB/EUR
+    - SUI/EUR
+    - NEAR/EUR
+    - AAVE/EUR
+    - XLM/EUR
+    - ONDO/EUR
   decision_history_limit: 10   # prior decisions fed back into the prompt (0 = off)
   timeframe: "1h"              # candle timeframe the LLM decides on (§7.56)
   # §7.56: ask the LLM once per newly CLOSED bar; the 5-min cycles in between only
@@ -119,6 +133,11 @@ crypto_agent:
         ETH/EUR: [ethereum, ether]
         SOL/EUR: [solana]
         NEAR/EUR: [near protocol]
+        XRP/EUR: [ripple]
+        LINK/EUR: [chainlink]
+        DOGE/EUR: [dogecoin]
+        BNB/EUR: [binance coin]
+        XLM/EUR: [stellar]
     # LLM digest of each symbol's news → context cards (TTL'd, validated). Off until
     # the second-model question is settled (CHANGE.md Q7): with it on, the summarizer
     # shares the local server with trading decisions (one lock — never concurrent).
