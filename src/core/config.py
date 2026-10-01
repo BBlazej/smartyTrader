@@ -13,7 +13,7 @@ import types
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Union, get_args, get_origin
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -893,6 +893,21 @@ class DashboardSettings(_Config):
     allow_launch: bool = False
     # Extra Host names besides loopback + ``host`` (§7.43 DNS rebinding).
     allowed_hosts: list[str] = Field(default_factory=list)
+    # IANA zone the pages show times in (the DB stores UTC); None = the host's local
+    # zone — which is UTC inside a container, hence an explicit zone in settings.yaml.
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError):
+                raise ValueError(
+                    f"dashboard.timezone '{value}' is not an IANA zone (e.g. Europe/Bratislava)"
+                ) from None
+        return value
 
     @model_validator(mode="after")
     def _check(self) -> DashboardSettings:

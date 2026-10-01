@@ -154,3 +154,44 @@ async def test_log_page_follows_the_newest_lines(page_env, tmp_path) -> None:
     (tmp_path / "agent_paper_crypto.out.log").write_text("line 1\nline 2\n")
     body = (await page_env.get("/logs/paper_crypto")).text
     assert "htmx:afterSettle" in body and "scrollHeight" in body
+
+
+def test_times_render_in_the_display_zone() -> None:
+    # The DB stores naive UTC; shown raw, every time read 2 h behind a CEST clock while
+    # the browser-localized chart looked current.
+    from zoneinfo import ZoneInfo
+
+    from src.dashboard.app import _short
+
+    # Naive UTC, as SQLite returns it.
+    stored = datetime(2026, 10, 1, 13, 7, 18, tzinfo=UTC).replace(tzinfo=None)
+    assert _short(stored, ZoneInfo("Europe/Bratislava")) == "2026-10-01 15:07:18"
+    assert _short(stored, ZoneInfo("UTC"), "%H:%M") == "13:07"
+    assert _short(None, ZoneInfo("UTC")) == "—"
+
+
+async def test_pages_use_the_configured_zone(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    settings.dashboard.timezone = "Europe/Bratislava"
+    storage = Storage(str(tmp_path / "tz.db"))
+    await storage.initialize()
+    bound = _bound(storage, "crypto")
+    try:
+        bound.bind_venue("paper")
+        await bound.save_portfolio_snapshot(cash=1.0, positions_json="[]", total_value=1.0)
+    finally:
+        await bound.close()
+    client = _client(create_dashboard_app(settings, _books(storage)))
+    try:
+        body = (await client.get("/?book=paper_crypto")).text
+    finally:
+        await client.aclose()
+        await storage.close()
+    assert "times in CEST" in body or "times in CET" in body
+
+
+def test_unknown_display_zone_is_rejected() -> None:
+    from src.core.config import DashboardSettings
+
+    with pytest.raises(ValueError, match="IANA zone"):
+        DashboardSettings(timezone="Mars/Olympus")

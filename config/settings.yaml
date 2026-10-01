@@ -367,6 +367,9 @@ dashboard:
   # stops processes this dashboard launched. Keep FALSE under docker-compose —
   # services there are managed by compose, not by the dashboard container.
   allow_launch: false
+  # Zone the pages show times in (the DB stores UTC). null = the host's local zone,
+  # which is UTC inside a container.
+  timezone: "Europe/Bratislava"
 
 # XTB demo execution via xAPI (§7.16). DEAD PATH (2026-09-26, §7.66): XTB closed
 # its API access on 2025-03-14; wss://ws.xapi.pro is an unofficial third-party

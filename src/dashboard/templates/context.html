@@ -36,7 +36,7 @@
     <tbody>
       {% for e in events %}
         <tr>
-          <td class="muted" style="white-space:nowrap;">{{ e.at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="muted" style="white-space:nowrap;">{{ e.at | short('%Y-%m-%d %H:%M') }}</td>
           <td class="muted">{{ e.at | rel }}</td>
           <td>{{ e.kind.value }}</td>
           <td>{{ e.currency or e.asset or '' }} {{ e.title }}</td>
@@ -53,7 +53,7 @@
     <tbody>
       {% for n in notices | reverse %}
         <tr>
-          <td class="muted">{{ n.at.strftime('%Y-%m-%d') }}</td>
+          <td class="muted">{{ n.at | short('%Y-%m-%d') }}</td>
           <td>{{ n.asset }}</td>
           <td>{% if n.url %}<a href="{{ n.url }}" rel="noopener noreferrer" target="_blank">{{ n.title }}</a>{% else %}{{ n.title }}{% endif %}</td>
         </tr>

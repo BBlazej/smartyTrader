@@ -2,9 +2,9 @@
 
 The **single list of open work**: every todo, gap, open question and accepted limitation lives here — nowhere else. Delivered work is in [HISTORY.md](HISTORY.md), how the system is built in [ARCHITECTURE.md](ARCHITECTURE.md), the multi-strategy design rationale in [CHANGE.md](CHANGE.md).
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.89) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
+**Numbering rule:** §7.N identifiers (§7.1–§7.90) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
 
-**Current state (2026-10-01):** 1308 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
+**Current state (2026-10-01):** 1311 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
 
 ---
 
@@ -21,6 +21,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 | 7 | §7.84 `market_snapshots`: drop or give it a reader | low | a decision |
 | 8 | §7.34 Venue-side stop orders (OCO) | low | after §7.28 |
 | 9 | §7.81 Macro calendar upkeep | low | before 2027-12 / if the feed fails |
+| 10 | §7.90 Repeated venue rejections | low | — |
 | — | Live-readiness gate (below) | gate | §7.28, §7.86, §7.74 |
 
 ---
@@ -76,6 +77,11 @@ The **single list of open work**: every todo, gap, open question and accepted li
 ### §7.81 — Macro calendar upkeep ⏳ [low; §7.18 follow-up]
 
 - `macro_calendar.events` holds FOMC + ECB decisions through 2027-12 (a warning fires when none is left); CPI/NFP/PCE come only from the unofficial ForexFactory feed (bls.gov blocks scripted fetches). Extend the list before it runs out; add the BLS dates by hand if the feed proves unreliable.
+
+### §7.90 — Repeated venue rejections ⏳ [low; found 2026-10-01, test-profile demo run]
+
+- **Account-level refusal:** OKX refused every XRP/EUR order with `54092` ("complete the disclaimer confirmation" — an account setting, not an order problem). The agent retried at every new bar, and each try was an `error` alert plus an LLM call. **Do:** after a venue refusal that cannot succeed until the operator acts (54092-type codes), park the symbol for the run (skip before the LLM, one alert naming the fix) instead of retrying blind.
+- **Insufficient balance:** two BUYs (XLM, ONDO) failed with `51008` (insufficient balance), although sizing clamps to free cash. Several limit BUYs working at once probably lock cash after the book was read. **Check:** whether sizing should subtract cash committed to working BUYs (`pending_buy_value`, §7.79).
 
 ---
 

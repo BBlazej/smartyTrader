@@ -30,10 +30,11 @@ Safety invariants (inherited from §7.15):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
@@ -125,12 +126,17 @@ def _rel(dt_value: Any) -> str:
     return fmt.format(f"{secs // 86_400}d")
 
 
-def _short(dt_value: Any) -> str:
-    """Short wall-clock rendering (``HH:MM:SS``) of a timestamp, or ``—``."""
+def _short(dt_value: Any, tz: tzinfo | None = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Wall-clock rendering of a stored timestamp in the display zone, or ``—``.
+
+    The DB stores naive UTC; shown raw, every time read 1–2 h behind a Central
+    European clock (and the chart, which the browser localizes). ``tz=None`` → the
+    host's local zone.
+    """
     if dt_value is None:
         return "—"
     try:
-        return dt_value.strftime("%Y-%m-%d %H:%M:%S")
+        return to_utc(dt_value).astimezone(tz).strftime(fmt)
     except (AttributeError, ValueError):
         return str(dt_value)
 
@@ -198,7 +204,12 @@ def create_dashboard_app(
     templates.env.filters["pct"] = _pct
     templates.env.filters["signed_money"] = signed_money
     templates.env.filters["rel"] = _rel
-    templates.env.filters["short"] = _short
+    display_tz = ZoneInfo(settings.dashboard.timezone) if settings.dashboard.timezone else None
+    templates.env.filters["short"] = lambda value, fmt="%Y-%m-%d %H:%M:%S": _short(
+        value, display_tz, fmt
+    )
+    # Shown in the header so a time is never ambiguous ("CEST").
+    templates.env.globals["tz_label"] = lambda: datetime.now(display_tz).strftime("%Z")
     # ``tojson`` is Jinja's built-in: HTML-safe JSON (Markup, not re-escaped), so the
     # chart payload embedded in <script type="application/json"> stays valid JSON.
 

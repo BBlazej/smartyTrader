@@ -79,6 +79,7 @@
       <a href="/context" class="{{ 'active' if active == 'context' }}">Context</a>
       {% if books %}<a href="/config/{{ books[0].key }}" class="{{ 'active' if active == 'config' }}">Config</a>{% endif %}
     </nav>
+    <span class="muted" style="margin-left:auto;">times in {{ tz_label() }}</span>
   </header>
   <main>
     {% block content %}{% endblock %}
