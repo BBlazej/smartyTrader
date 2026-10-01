@@ -195,3 +195,49 @@ def test_unknown_display_zone_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="IANA zone"):
         DashboardSettings(timezone="Mars/Olympus")
+
+
+async def test_llm_status_card(tmp_path) -> None:
+    import httpx
+
+    from src.dashboard.llm_status import LLMProbeCache
+
+    settings = _settings(tmp_path)
+    storage = Storage(str(tmp_path / "llm.db"))
+    await storage.initialize()
+    bound = _bound(storage, "crypto")
+    try:
+        bound.bind_venue("paper")
+        await bound.save_llm_decision(
+            symbol="BTC/USDT",
+            action="hold",
+            confidence=0.7,
+            reasoning="x",
+            stop_loss=None,
+            take_profit=None,
+            risk_verdict="approved",
+            risk_reason=None,
+            llm_latency_ms=20_000.0,
+            llm_prompt_tokens=2_000,
+            llm_completion_tokens=800,
+        )
+    finally:
+        await bound.close()
+    models = {"data": [{"id": settings.llm.model, "loaded": True, "context_length": 70000}]}
+    probe = LLMProbeCache(
+        settings.llm, transport=httpx.MockTransport(lambda r: httpx.Response(200, json=models))
+    )
+    client = _client(create_dashboard_app(settings, _books(storage), llm_probe=probe))
+    try:
+        page = (await client.get("/?book=paper_crypto")).text
+        card = (await client.get("/partials/llm?book=paper_crypto")).text
+    finally:
+        await client.aclose()
+        await storage.close()
+    assert 'hx-get="/partials/llm?book=paper_crypto"' in page  # loaded after the page
+    assert "online" in card and "70,000" in card
+    assert "configured model:\n      loaded" in card or "configured model: loaded" in " ".join(
+        card.split()
+    )
+    assert "40.0 tok/s" in card and "20.0 s" in card
+    _assert_no_secrets(card)

@@ -65,6 +65,7 @@ from ..core.web_security import (
 )
 from .books import Book, find_book
 from .launch import AgentLauncher
+from .llm_status import LLMProbeCache, llm_status_view
 from .views import (
     agent_status,
     book_currency,
@@ -179,6 +180,7 @@ def create_dashboard_app(
     settings: Settings,
     books: list[Book],
     launcher: AgentLauncher | None = None,
+    llm_probe: LLMProbeCache | None = None,
 ) -> FastAPI:
     """Build the dashboard app over loaded ``settings`` and one book per SQLite file.
 
@@ -186,8 +188,10 @@ def create_dashboard_app(
     (``(mode, agent)``, from :func:`~src.dashboard.books.open_books`). ``launcher``
     overrides process supervision (§7.24, tests); when omitted and
     ``dashboard.allow_launch`` is true, a default :class:`AgentLauncher` is built with
-    its pid/log files in ``storage.data_dir`` (keyed per book).
+    its pid/log files in ``storage.data_dir`` (keyed per book). ``llm_probe`` replaces
+    the LLM server probe behind the overview's LLM status card (tests).
     """
+    llm_probe = llm_probe or LLMProbeCache(settings.llm)
     app = FastAPI(title="trading-agent dashboard", docs_url=None, redoc_url=None)
     # §7.43: Host allowlist (DNS rebinding) + cross-origin write rejection (CSRF).
     install_request_guards(
@@ -652,6 +656,20 @@ def create_dashboard_app(
         # Return the refreshed health fragment so HTMX swaps the cards in place.
         return templates.TemplateResponse(
             request, "_health.html", _ctx(request, health_rows=await _health_rows())
+        )
+
+    @app.get("/partials/llm", response_class=HTMLResponse)
+    async def llm_partial(request: Request, book: str | None = None) -> HTMLResponse:
+        """The overview's LLM status card: a live server probe (cached) plus the
+        selected book's stored per-decision LLM numbers (§7.69)."""
+        selected = _require_book(book)
+        try:
+            stats = await selected.storage.get_llm_latency_stats(limit=50, agent=selected.agent)
+        except Exception:  # noqa: BLE001 - a status card must never fail the page
+            stats = None
+        view = llm_status_view(await llm_probe.get(), stats, settings.llm.max_tokens)
+        return templates.TemplateResponse(
+            request, "_llm_status.html", _ctx(request, llm=view, selected_key=selected.key)
         )
 
     @app.get("/partials/health", response_class=HTMLResponse)

@@ -1,0 +1,48 @@
+{# The overview's LLM status card (llm_status.py): live probe + the book's stored LLM numbers. #}
+<div id="llm-status" class="cards" hx-get="/partials/llm?book={{ selected_key }}"
+     hx-trigger="every 15s" hx-swap="outerHTML">
+  {% set p = llm.probe %}
+  <div class="card">
+    <div class="muted">LLM server</div>
+    <div class="stat">
+      <span class="badge {{ 'b-running' if llm.status == 'online' else ('b-offline' if llm.status == 'offline' else 'b-warn') }}"
+            style="font-size:1rem;">{{ llm.status }}</span>
+    </div>
+    {# Never the model name or endpoint: llm.* stays off every page (control_config.py). #}
+    <div class="muted">configured model:
+      {% if p.model_loaded %}loaded{% elif p.model_loaded is sameas false %}not loaded{% elif p.model_listed %}served{% elif p.model_listed is sameas false %}not on the server{% else %}—{% endif %}</div>
+    <div class="muted">
+      {% if p.reachable %}answers /models in {{ p.probe_ms | round(0) | int }} ms{% else %}{{ p.error }}{% endif %}
+    </div>
+  </div>
+  <div class="card" title="whole call per decision incl. prompt processing and retries, last {{ llm.count }} answered decisions">
+    <div class="muted">Response time</div>
+    <div class="stat">{% if llm.avg_s is not none %}{{ llm.avg_s }} s{% else %}—{% endif %}</div>
+    <div class="muted">
+      {% if llm.p50_s is not none %}median {{ llm.p50_s }} s · p95 {{ llm.p95_s }} s · max {{ llm.max_s }} s{% else %}no answers yet{% endif %}
+    </div>
+  </div>
+  <div class="card" title="completion tokens (incl. hidden reasoning) per second of whole call">
+    <div class="muted">Speed</div>
+    <div class="stat">{% if llm.tokens_per_s is not none %}{{ llm.tokens_per_s }} tok/s{% else %}—{% endif %}</div>
+    <div class="muted">
+      {% if llm.avg_completion_tokens is not none %}~{{ llm.avg_completion_tokens | round(0) | int }} tokens per answer (max {{ llm.max_completion_tokens }} of {{ llm.max_tokens }}){% endif %}
+    </div>
+  </div>
+  <div class="card" title="largest prompt seen + the answer cap (llm.max_tokens) must fit the context loaded in the server">
+    <div class="muted">Context</div>
+    <div class="stat {{ 'neg' if llm.context_overflow }}">
+      {% if p.context_length %}{{ '{:,}'.format(p.context_length) }}{% else %}—{% endif %}
+    </div>
+    <div class="muted">
+      {% if llm.max_prompt_tokens is not none %}prompt ≤ {{ '{:,}'.format(llm.max_prompt_tokens) }} + answer cap {{ '{:,}'.format(llm.max_tokens) }}{% if llm.context_overflow %} — does not fit!{% endif %}{% elif not p.context_length %}not reported by the server{% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="muted">Last answer</div>
+    <div class="stat">{{ llm.last_at | rel }}</div>
+    <div class="muted {{ 'neg' if llm.fallbacks }}">
+      {% if llm.fallbacks %}{{ llm.fallbacks }} fallback HOLD{{ 's' if llm.fallbacks != 1 }} (LLM unavailable) in the last {{ llm.count + llm.fallbacks }}{% else %}no fallbacks in the last {{ llm.count }}{% endif %}
+    </div>
+  </div>
+</div>

@@ -5,6 +5,13 @@
 
   {% include "_health.html" %}
 
+  <h2>LLM status</h2>
+  {# Loaded right after the page (and every 15 s): the server probe stays off the page render. #}
+  <div id="llm-status" class="cards" hx-get="/partials/llm?book={{ selected_key }}"
+       hx-trigger="load" hx-swap="outerHTML">
+    <div class="card muted">Checking the LLM server…</div>
+  </div>
+
   <h2>Portfolio — {{ selected_key }}</h2>
   {% include "_agent_tabs.html" %}
   <div class="cards">

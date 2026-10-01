@@ -830,6 +830,39 @@ class TestLLMLatencyStats:
         assert stats["p95_ms"] == pytest.approx(10_000.0)
 
     @pytest.mark.asyncio
+    async def test_stats_speed_and_fallbacks(self, storage: Storage) -> None:
+        # Two answered decisions (2,000 tokens in 50 s → 40 tok/s) and one fallback
+        # HOLD whose "latency" is retries — counted, but never in a timing figure.
+        for latency, tokens, prompt, fallback in (
+            (20_000.0, 800, 2_000, False),
+            (30_000.0, 1_200, 2_800, False),
+            (300_000.0, None, None, True),
+        ):
+            await storage.save_llm_decision(
+                symbol="BTC/EUR",
+                action="hold",
+                confidence=0.7,
+                reasoning="x",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+                is_fallback=fallback,
+                llm_latency_ms=latency,
+                llm_prompt_tokens=prompt,
+                llm_completion_tokens=tokens,
+            )
+        stats = await storage.get_llm_latency_stats()
+        assert stats["count"] == 2
+        assert stats["fallbacks"] == 1
+        assert stats["avg_ms"] == pytest.approx(25_000.0)
+        assert stats["max_ms"] == pytest.approx(30_000.0)
+        assert stats["tokens_per_s"] == pytest.approx(40.0)
+        assert stats["max_prompt_tokens"] == 2_800
+        assert stats["max_completion_tokens"] == 1_200
+        assert stats["last_at"] is not None
+
+    @pytest.mark.asyncio
     async def test_stats_are_agent_scoped(self, storage: Storage) -> None:
         # The fixture's Storage is unbound (reads across agents); rows are written
         # with explicit agent= so the §7.39 scoping of the stats query is visible.

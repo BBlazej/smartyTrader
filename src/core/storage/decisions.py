@@ -8,6 +8,7 @@ decision-replay backtester.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import structlog
 from sqlalchemy import select
@@ -226,14 +227,20 @@ class DecisionMixin:
 
     async def get_llm_latency_stats(
         self, limit: int = 100, agent: str | None = None
-    ) -> dict[str, float | int | None]:
+    ) -> dict[str, Any]:
         """Latency/token percentiles over the last ``limit`` LLM-timed decisions (§7.69).
 
         Feeds the dashboard's p50/p95 badges and CHANGE.md's watchlist sizing: how
         many symbols fit a decision interval is a function of p95 latency, so the
         numbers must come from real per-decision calls, not one-off benchmarks.
         Rows without timing (pre-§7.69 history) are ignored; ``count`` says how
-        many samples back the percentiles.
+        many samples back the percentiles. Fallback HOLDs (the LLM never answered)
+        are counted in ``fallbacks`` but kept out of every timing/speed figure — their
+        "latency" is retries and timeouts, not generation.
+
+        ``tokens_per_s`` is completion tokens over whole-call seconds (prompt
+        processing included), so it reads a little below the server's own decode
+        speed. ``last_at`` is the newest answered decision (naive UTC).
         """
         async with await self._session() as session:
             stmt = (
@@ -241,6 +248,8 @@ class DecisionMixin:
                     LLMDecisionRow.llm_latency_ms,
                     LLMDecisionRow.llm_prompt_tokens,
                     LLMDecisionRow.llm_completion_tokens,
+                    LLMDecisionRow.is_fallback,
+                    LLMDecisionRow.timestamp,
                 )
                 .where(LLMDecisionRow.llm_latency_ms.isnot(None))
                 .order_by(LLMDecisionRow.timestamp.desc(), LLMDecisionRow.id.desc())
@@ -248,11 +257,14 @@ class DecisionMixin:
             )
             stmt = self._where_agent(stmt, LLMDecisionRow.agent, agent)
             result = await session.execute(stmt)
-            rows = list(result.all())
+            all_rows = list(result.all())
 
+        rows = [r for r in all_rows if not r[3]]
         latencies = sorted(float(r[0]) for r in rows if r[0] is not None)
         prompt = [int(r[1]) for r in rows if r[1] is not None]
         completion = [int(r[2]) for r in rows if r[2] is not None]
+        timed = [(float(r[0]), int(r[2])) for r in rows if r[0] and r[2] is not None]
+        timed_seconds = sum(ms for ms, _ in timed) / 1000.0
 
         def pct(values: list[float], q: float) -> float | None:
             if not values:
@@ -265,6 +277,14 @@ class DecisionMixin:
             "p50_ms": pct(latencies, 0.50),
             "p95_ms": pct(latencies, 0.95),
             "max_ms": latencies[-1] if latencies else None,
+            "avg_ms": (sum(latencies) / len(latencies)) if latencies else None,
             "avg_prompt_tokens": (sum(prompt) / len(prompt)) if prompt else None,
+            "max_prompt_tokens": max(prompt) if prompt else None,
             "avg_completion_tokens": (sum(completion) / len(completion)) if completion else None,
+            "max_completion_tokens": max(completion) if completion else None,
+            "tokens_per_s": (
+                sum(tokens for _, tokens in timed) / timed_seconds if timed_seconds else None
+            ),
+            "fallbacks": len(all_rows) - len(rows),
+            "last_at": rows[0][4] if rows else None,
         }
