@@ -59,15 +59,38 @@
       catch (e) { return { x: [], total_value: [], cash: [] }; }
     }
     var data = parse();
+    // Dark-surface chart chrome: axis text in secondary ink (uPlot defaults to black),
+    // recessive grid/ticks. Series: categorical slots 1-2 of the validated dark palette
+    // (blue / orange — ΔE 31.8, CVD ΔE 26.8, ≥ 3:1 on the #1b1e24 card).
+    var INK = '#c3c2b7', GRID = '#2a2e37', FONT = '12px ui-sans-serif, system-ui, sans-serif';
+    function axis(extra) {
+      var base = {
+        stroke: INK,
+        font: FONT,
+        grid: { stroke: GRID, width: 1 },
+        ticks: { stroke: GRID, width: 1 },
+      };
+      for (var k in extra) base[k] = extra[k];
+      return base;
+    }
+    var money = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
     var opts = {
       width: el.clientWidth || 800,
       height: 300,
       pxAlign: true,
-      axes: [{}],
+      axes: [
+        axis({}),
+        axis({
+          label: 'EUR',
+          labelFont: FONT,
+          size: 70,
+          values: function (u, vals) { return vals.map(function (v) { return money.format(v); }); },
+        }),
+      ],
       series: [
         { label: 'Time' },
-        { label: 'Total value', stroke: '#7aa2f7' },
-        { label: 'Cash', stroke: '#565f89' },
+        { label: 'Total value', stroke: '#3987e5', width: 2 },
+        { label: 'Cash', stroke: '#d95926', width: 2 },
       ],
     };
     var u = new uPlot(opts, [data.x, data.total_value, data.cash], el);

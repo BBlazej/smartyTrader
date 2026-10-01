@@ -132,6 +132,10 @@ async def test_overview_chart_is_loadable_and_valid_json(page_env) -> None:
     ).group(1)
     data = json.loads(raw)  # was HTML-escaped (&#34;) → JSON.parse failed in the browser
     assert set(data) >= {"x", "total_value", "cash"}
+    # Readable on the dark card: axis text in light ink (uPlot defaults to black), and
+    # the two series in distinct validated palette slots (blue / orange).
+    assert "INK = '#c3c2b7'" in body and "stroke: INK" in body
+    assert "stroke: '#3987e5'" in body and "stroke: '#d95926'" in body
 
 
 async def test_log_page_follows_the_newest_lines(page_env, tmp_path) -> None:
