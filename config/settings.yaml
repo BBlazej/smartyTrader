@@ -3,21 +3,24 @@ llm:
   # Served by Unsloth desktop (LOCAL_LLM_ENDPOINT in .env); its loaded model's id.
   model: "unsloth/Qwen3.8-27B-GGUF"
   # Whole-response budget: requests aren't streamed, so the full completion (incl.
-  # any <think> reasoning) must arrive within this. A local 27B model needs minutes
-  # for thousands of tokens. The scheduler never overlaps cycles (max_instances=1).
-  timeout_seconds: 300
+  # any <think> reasoning) must arrive within this. The local 27B model writes ~40
+  # tokens/s (2026-10-01 demo run), so a full max_tokens answer needs ~410 s.
+  # Cycles never overlap (§7.88).
+  timeout_seconds: 600
   max_retries: 3
   use_json_schema: false   # enable once the local model accepts response_format
   temperature: 0.2         # sampling temperature sent with every request (§7.19)
-  # Completion cap per request (§7.19) — NOT the context window (set that in LM
-  # Studio when loading the model; prompt + max_tokens must fit inside it). Room
-  # for Qwen3 reasoning + the JSON; truncation logs llm_response_truncated (§7.57).
-  max_tokens: 8192
+  # Completion cap per request (§7.19) — NOT the context window (set that in the
+  # server when loading the model; prompt + max_tokens must fit inside it: ~3k
+  # prompt + 16k here, of the 70k loaded in Unsloth Studio). It counts the hidden
+  # reasoning too: at 8192, 2 of 85 answers spent ~7.7k tokens thinking and were cut
+  # off inside the JSON (2026-10-01). Truncation logs llm_response_truncated (§7.57).
+  max_tokens: 16384
   retry_backoff_base_seconds: 1.0   # exponential backoff between retries; 0 = off
   seed: null               # set an integer for deterministic evaluation (§7.33); null omits it
   # Raw completion size cap before parsing (§7.33); 0 = guard off. Keep it ≈4×
   # max_tokens (~4 chars/token) or long answers are discarded before the parser.
-  max_response_chars: 36000
+  max_response_chars: 72000
   # Cancel an in-flight generation on shutdown (§7.89): each request carries a
   # cancel_id, and stopping the agent POSTs it here (Unsloth Studio's endpoint, on
   # the same host as LOCAL_LLM_ENDPOINT). null = rely on the dropped connection
