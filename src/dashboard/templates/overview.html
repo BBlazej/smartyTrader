@@ -9,7 +9,12 @@
   {% include "_agent_tabs.html" %}
   <div class="cards">
     <div class="card"><div class="muted">Total value</div>
-      <div class="stat">{{ (latest.total_value if latest else None) | money }}</div></div>
+      <div class="stat">{{ (latest.total_value if latest else None) | money }}</div>
+      {% if capital_return is not none %}
+        <div class="{{ 'pos' if capital_return > 0 else ('neg' if capital_return < 0) }}">
+          {{ '%+.2f' | format(capital_return * 100) }}%
+          <span class="muted">vs {{ capital | money }} in</span></div>
+      {% endif %}</div>
     <div class="card"><div class="muted">Cash</div>
       <div class="stat">{{ (latest.cash if latest else None) | money }}</div></div>
     <div class="card"><div class="muted">Unrealized PnL</div>

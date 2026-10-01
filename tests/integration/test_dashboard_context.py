@@ -143,6 +143,8 @@ async def test_overview_chart_is_loadable_and_valid_json(page_env) -> None:
     assert "INK = '#c3c2b7'" in body and "stroke: INK" in body
     assert "stroke: '#3987e5'" in body and "stroke: '#d95926'" in body
     assert "label: 'Capital in'" in body and "dash: [6, 4]" in body
+    # The Total value card shows the overall return on the capital put in.
+    assert re.search(r'class="pos">\s*\+4\.00%\s*<span class="muted">vs 1,000\.00 in', body)
 
 
 async def test_log_page_follows_the_newest_lines(page_env, tmp_path) -> None:

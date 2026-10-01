@@ -139,6 +139,14 @@ def portfolio_chart(
     }
 
 
+def capital_return(total_value: float | None, capital: float | None) -> float | None:
+    """Overall gain/loss of the book as a fraction of the capital it started with
+    (``0.092`` = +9.2 %); ``None`` when either side is unknown or capital is not positive."""
+    if total_value is None or capital is None or capital <= 0:
+        return None
+    return (float(total_value) - capital) / capital
+
+
 def decision_stats(rows: list[Any]) -> dict[str, Any]:
     """Compute win-rate / confidence / action metrics over a set of decision rows.
 

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from src.core.models import Position
 from src.dashboard.views import (
     agent_status,
+    capital_return,
     decision_stats,
     parse_positions,
     portfolio_chart,
@@ -217,6 +218,14 @@ class TestPortfolioChart:
             for d in (2, 1)
         ]
         assert portfolio_chart(history, capital=4600.0)["capital"] == [4600.0, 4600.0]
+
+
+def test_capital_return() -> None:
+    assert capital_return(5025.0, 4600.0) == (5025.0 - 4600.0) / 4600.0
+    assert capital_return(4500.0, 5000.0) == -0.1
+    assert capital_return(None, 4600.0) is None
+    assert capital_return(100.0, None) is None
+    assert capital_return(100.0, 0.0) is None
 
 
 class TestDecisionStats:

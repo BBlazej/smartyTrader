@@ -66,6 +66,7 @@ from .books import Book, find_book
 from .launch import AgentLauncher
 from .views import (
     agent_status,
+    capital_return,
     decision_stats,
     parse_positions,
     portfolio_chart,
@@ -307,7 +308,8 @@ def create_dashboard_app(
         selected = _require_book(book)
         latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
         history = await selected.storage.get_portfolio_history(limit=200, agent=selected.agent)
-        chart = portfolio_chart(history, capital=await _starting_capital(selected, latest))
+        capital = await _starting_capital(selected, latest)
+        chart = portfolio_chart(history, capital=capital)
         recent = await selected.storage.get_recent_decisions(
             limit=8, include_fallback=True, agent=selected.agent
         )
@@ -319,6 +321,8 @@ def create_dashboard_app(
                 active="overview",
                 selected_key=selected.key,
                 latest=latest,
+                capital=capital,
+                capital_return=capital_return(latest.total_value if latest else None, capital),
                 chart=chart,
                 positions=parse_positions(latest),
                 recent_decisions=recent,
