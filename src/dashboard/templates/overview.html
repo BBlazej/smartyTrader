@@ -56,12 +56,13 @@
     if (!el || typeof uPlot === 'undefined') return;
     function parse() {
       try { return JSON.parse(document.getElementById('chart-data').textContent); }
-      catch (e) { return { x: [], total_value: [], cash: [] }; }
+      catch (e) { return { x: [], total_value: [], cash: [], capital: [] }; }
     }
     var data = parse();
     // Dark-surface chart chrome: axis text in secondary ink (uPlot defaults to black),
     // recessive grid/ticks. Series: categorical slots 1-2 of the validated dark palette
-    // (blue / orange — ΔE 31.8, CVD ΔE 26.8, ≥ 3:1 on the #1b1e24 card).
+    // (blue / orange — ΔE 31.8, CVD ΔE 26.8, ≥ 3:1 on the #1b1e24 card). "Capital in" is a
+    // reference line, not a series: dashed, in muted neutral ink.
     var INK = '#c3c2b7', GRID = '#2a2e37', FONT = '12px ui-sans-serif, system-ui, sans-serif';
     function axis(extra) {
       var base = {
@@ -91,14 +92,16 @@
         { label: 'Time' },
         { label: 'Total value', stroke: '#3987e5', width: 2 },
         { label: 'Cash', stroke: '#d95926', width: 2 },
+        { label: 'Capital in', stroke: '#898781', width: 1.5, dash: [6, 4] },
       ],
     };
-    var u = new uPlot(opts, [data.x, data.total_value, data.cash], el);
+    function columns(d) { return [d.x, d.total_value, d.cash, d.capital]; }
+    var u = new uPlot(opts, columns(data), el);
 
     function refresh() {
       fetch('/api/portfolio.json?book={{ selected_key }}')
         .then(function (r) { return r.json(); })
-        .then(function (d) { if (d && d.x) u.setData([d.x, d.total_value, d.cash]); })
+        .then(function (d) { if (d && d.x) u.setData(columns(d)); })
         .catch(function () {});
     }
     setInterval(refresh, {{ refresh_seconds }} * 1000);

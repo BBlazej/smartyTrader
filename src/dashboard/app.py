@@ -289,6 +289,17 @@ def create_dashboard_app(
             )
         return rows
 
+    async def _starting_capital(book: Any, latest: Any) -> float | None:
+        """Capital the book's current account started with: its oldest snapshot on the
+        latest snapshot's venue. The DB records no deposits, so later top-ups are not
+        included."""
+        if latest is None:
+            return None
+        first = await book.storage.get_first_portfolio_snapshot(
+            agent=book.agent, venue=latest.venue
+        )
+        return float(first.total_value) if first is not None else None
+
     # ── Pages ─────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
@@ -296,7 +307,7 @@ def create_dashboard_app(
         selected = _require_book(book)
         latest = await selected.storage.get_latest_portfolio_snapshot(agent=selected.agent)
         history = await selected.storage.get_portfolio_history(limit=200, agent=selected.agent)
-        chart = portfolio_chart(history)
+        chart = portfolio_chart(history, capital=await _starting_capital(selected, latest))
         recent = await selected.storage.get_recent_decisions(
             limit=8, include_fallback=True, agent=selected.agent
         )
@@ -688,7 +699,8 @@ def create_dashboard_app(
         limit = max(1, min(limit, 1000))
         selected = _require_book(book)
         history = await selected.storage.get_portfolio_history(limit=limit, agent=selected.agent)
-        return portfolio_chart(history)
+        latest = history[0] if history else None
+        return portfolio_chart(history, capital=await _starting_capital(selected, latest))
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:  # pragma: no cover - trivial

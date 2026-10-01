@@ -74,6 +74,9 @@ async def page_env(tmp_path):
             now + timedelta(hours=6),
             model="small",
         )
+        bound.bind_venue("paper")
+        for value in (1000.0, 1040.0):
+            await bound.save_portfolio_snapshot(cash=value, positions_json="[]", total_value=value)
     finally:
         await bound.close()
     app = create_dashboard_app(settings, _books(storage))
@@ -131,11 +134,15 @@ async def test_overview_chart_is_loadable_and_valid_json(page_env) -> None:
         r'<script id="chart-data" type="application/json">(.*?)</script>', body, re.DOTALL
     ).group(1)
     data = json.loads(raw)  # was HTML-escaped (&#34;) → JSON.parse failed in the browser
-    assert set(data) >= {"x", "total_value", "cash"}
+    assert set(data) >= {"x", "total_value", "cash", "capital"}
+    assert data["capital"] == [1000.0, 1000.0]  # the money the account started with
+    json_data = (await page_env.get("/api/portfolio.json?book=paper_crypto")).json()
+    assert json_data["capital"] == [1000.0, 1000.0]
     # Readable on the dark card: axis text in light ink (uPlot defaults to black), and
     # the two series in distinct validated palette slots (blue / orange).
     assert "INK = '#c3c2b7'" in body and "stroke: INK" in body
     assert "stroke: '#3987e5'" in body and "stroke: '#d95926'" in body
+    assert "label: 'Capital in'" in body and "dash: [6, 4]" in body
 
 
 async def test_log_page_follows_the_newest_lines(page_env, tmp_path) -> None:

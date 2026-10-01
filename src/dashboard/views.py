@@ -98,12 +98,16 @@ def parse_positions(snapshot: Any) -> list[Position]:
     return positions
 
 
-def portfolio_chart(history: list[Any], limit: int | None = None) -> dict[str, list[Any]]:
+def portfolio_chart(
+    history: list[Any], limit: int | None = None, capital: float | None = None
+) -> dict[str, list[Any]]:
     """Shape portfolio snapshots into columnar arrays for uPlot (oldest → newest).
 
     ``history`` arrives newest-first (as ``get_portfolio_history`` returns it); we
     reverse it so the chart reads left-to-right in time. Timestamps are rendered as
     ISO strings (SQLite stores naive UTC) plus epoch-seconds for the x-axis.
+    ``capital`` — the money the account started with — becomes a flat reference
+    series (``None`` → no line): total value above it is profit.
     """
     rows = list(reversed(history))
     if limit is not None and limit > 0:
@@ -131,6 +135,7 @@ def portfolio_chart(history: list[Any], limit: int | None = None) -> dict[str, l
         "total_value": total_value,
         "cash": cash,
         "unrealized_pnl": unrealized,
+        "capital": [capital] * len(rows),
     }
 
 

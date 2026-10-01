@@ -409,6 +409,20 @@ class TestPortfolioSnapshots:
         assert history[-1].total_value == pytest.approx(10000.0)
 
     @pytest.mark.asyncio
+    async def test_first_snapshot_is_the_starting_capital(self, storage: Storage) -> None:
+        assert await storage.get_first_portfolio_snapshot() is None
+        storage.bind_venue("paper")
+        await storage.save_portfolio_snapshot(cash=1.0, positions_json="[]", total_value=1000.0)
+        storage.bind_venue("myokx-sandbox")
+        for value in [4600.0, 4700.0]:
+            await storage.save_portfolio_snapshot(
+                cash=value, positions_json="[]", total_value=value
+            )
+        assert (await storage.get_first_portfolio_snapshot()).total_value == 1000.0
+        first = await storage.get_first_portfolio_snapshot(venue="myokx-sandbox")
+        assert first.total_value == 4600.0
+
+    @pytest.mark.asyncio
     async def test_get_max_portfolio_value(self, storage: Storage) -> None:
         """MAX(total_value) over all snapshots — the drawdown high-water seed [§7.5]."""
         for value in [10_000.0, 12_500.0, 9_800.0]:

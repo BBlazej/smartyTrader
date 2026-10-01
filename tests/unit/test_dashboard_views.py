@@ -209,6 +209,14 @@ class TestPortfolioChart:
         chart = portfolio_chart(history, limit=2)
         # Reversed to oldest-first then trimmed to the two most recent → Jan4, Jan5.
         assert chart["total_value"] == [104.0, 105.0]
+        assert chart["capital"] == [None, None]  # no capital known → no line
+
+    def test_capital_is_a_flat_reference_series(self) -> None:
+        history = [
+            _row(timestamp=_dt(2026, 1, d), total_value=1.0, cash=1.0, unrealized_pnl=0.0)
+            for d in (2, 1)
+        ]
+        assert portfolio_chart(history, capital=4600.0)["capital"] == [4600.0, 4600.0]
 
 
 class TestDecisionStats:

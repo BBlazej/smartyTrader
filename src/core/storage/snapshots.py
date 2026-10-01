@@ -203,6 +203,20 @@ class PortfolioSnapshotMixin:
             result = await session.execute(stmt)
             return result.scalars().first()
 
+    async def get_first_portfolio_snapshot(
+        self, agent: str | None = None, venue: str | None = None
+    ) -> PortfolioSnapshotRow | None:
+        """Oldest snapshot of the agent — its ``total_value`` is the capital the account
+        started with (the dashboard's "Capital in" line). ``venue`` restricts it to that
+        venue's rows, so a book that changed venue measures the current account."""
+        async with await self._session() as session:
+            stmt = self._scoped_snapshots(select(PortfolioSnapshotRow), agent)
+            if venue is not None:
+                stmt = stmt.where(self._venue_match(PortfolioSnapshotRow.venue, venue))
+            stmt = stmt.order_by(PortfolioSnapshotRow.id.asc()).limit(1)
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
     async def get_portfolio_history(
         self, limit: int = 100, agent: str | None = None
     ) -> list[PortfolioSnapshotRow]:
