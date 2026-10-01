@@ -52,6 +52,9 @@ class FillRecord:
     take_profit: float | None = None
     fee_base: float = 0.0
     fee_quote: float = 0.0
+    # The stored order id — lets a venue executor tell a fill it already booked from
+    # one its protective order made while the agent was down (§7.34).
+    order_id: str | None = None
 
 
 ExitLevels = tuple[float | None, float | None]

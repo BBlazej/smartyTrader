@@ -4,7 +4,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 
 **Numbering rule:** §7.N identifiers (§7.1–§7.91) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
 
-**Current state (2026-10-01):** 1333 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
+**Current state (2026-10-01):** 1347 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
 
 ---
 
@@ -19,9 +19,8 @@ The **single list of open work**: every todo, gap, open question and accepted li
 | 5 | §7.66 Saxo SIM run, then retire XTB | medium | a Saxo developer account |
 | 6 | §7.74 Deterministic allocator | medium | §7.86 data |
 | 7 | §7.84 `market_snapshots`: drop or give it a reader | low | a decision |
-| 8 | §7.34 Venue-side stop orders (OCO) | low | after §7.28 |
-| 9 | §7.81 Macro calendar upkeep | low | before 2027-12 / if the feed fails |
-| 10 | §7.90 Repeated venue rejections | low | — |
+| 8 | §7.81 Macro calendar upkeep | low | before 2027-12 / if the feed fails |
+| 9 | §7.90 Repeated venue rejections | low | — |
 | — | Live-readiness gate (below) | gate | §7.28, §7.86, §7.74 |
 
 ---
@@ -58,7 +57,8 @@ The **single list of open work**: every todo, gap, open question and accepted li
   1. First SIM run: `--once` with a 24 h developer token (or `saxo_login` with an app); confirm account/instrument resolution, a buy + sell round trip, audit-log fill prices, net-position capping and the OAuth refresh/keep-alive against the real `/token` endpoint (the LIVE auth host `live.logonvalidation.net` is still unverified).
   2. Compare Saxo SIM prices with yfinance and decide the stocks data source (CHANGE Q8).
   3. Only after a successful SIM run: switch the shipped stocks config to Saxo and delete the XTB executor/client + tests/config (and the short-position support only XTB uses).
-  4. Before running stocks unattended: set `context.http_user_agent` to a name + contact (SEC's request); fill `market_holidays` for any EU exchange added under `exchanges`.
+  4. Venue-side stops for Saxo, as §7.34 did for OKX (the executor hook: `restore_protection` + per-cycle sync).
+  5. Before running stocks unattended: set `context.http_user_agent` to a name + contact (SEC's request); fill `market_holidays` for any EU exchange added under `exchanges`.
 - Scope stays **paper/SIM only** until the budget grows (the $1 minimum is ~1 %/side at €100 positions).
 
 ### §7.74 — Deterministic allocator ⏳ [medium; CHANGE P3, §4.3]
@@ -71,10 +71,6 @@ The **single list of open work**: every todo, gap, open question and accepted li
 ### §7.84 — `market_snapshots` is write-only ⏳ [low; found 2026-09-30]
 
 - Every decision stores the candle series + indicators, retention prunes them after `snapshot_retention_days`, and nothing reads them (the backtester fetches fresh candles; the full prompt is in the `llm_exchange` log). **Decide:** drop the table, the write and the setting — or give it a reader (e.g. replay the exact candles a decision saw).
-
-### §7.34 — Venue-side stop orders (OCO) ⏳ [low; §7.9 follow-up]
-
-- SL/TP are local checks: while the agent is down, nothing protects a venue position. Add venue-side OCO stop orders (OKX algo orders, later Saxo) — kept in sync with the local levels and cancelled on every other close path.
 
 ### §7.81 — Macro calendar upkeep ⏳ [low; §7.18 follow-up]
 
@@ -132,5 +128,6 @@ Picked up only when they earn a §7 number and a place in the order.
 | News prompt injection / stale news | Raw text never in the trading prompt; strict bounded cards with TTL; guards read calendar data only (§7.18) |
 | Strategies interfere on one symbol | Symbol lock (§7.71) |
 | Exchange rate limits / downtime | ccxt rate limiting, backoff, fail-soft cycles, reconciliation of working orders |
+| Agent down while holding a position | Venue-side OCO per position (§7.34, OKX); fills found and booked at the next start |
 | Saxo SIM behaves differently from the mocks | §7.66 SIM run before any stocks use |
 | Complexity outgrows the safety story | Every feature behind a flag; with flags off behaviour is unchanged |

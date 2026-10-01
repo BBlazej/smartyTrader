@@ -85,6 +85,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 
 **Venues**
 - `CcxtExecutor` is spot-only: positions come from its FIFO ledger capped by `fetch_balance`; `fetch_positions` is never used. A SELL never exceeds the ledger — nothing tracked → refused locally (the account may hold coins the agent never bought, §7.88). Cash = `fetch_free_balance()` of the quote currency — **no currency argument** (real ccxt signature). Every pair must be quoted in `quote_currency` (startup and overrides).
+- Venue-side protective orders (§7.34, `venue_orders.protective_orders`): one OKX OCO per open position (whole ledger qty, entry SL/TP), kept in line with the ledger, **cancelled before any other SELL** (OKX freezes the coins); a fired one is booked as a reconciled closing fill; startup books what fired while down and re-places. Algo order lists need `ordType` (ccxt defaults to `trigger`); orders need `tdMode="cash"`.
 - The pipeline prices, the venue executor executes (§7.75): BUY = limit at `close × (1 + entry_offset_pct)` (reserved in sizing via `buy_price_factor` — never name it `slippage_pct`), SELL = market; working orders age out, are never stacked, and dust is written off.
 - Saxo (§7.66): long-only whole shares, one account currency, instruments via `symbol_map` or an unambiguous lookup (never guessed), fills from the audit log. XTB (§7.40): close via `type=CLOSE`, never flip into a short.
 

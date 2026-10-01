@@ -979,6 +979,7 @@ class VenueOrderSettings(_Config):
     working after ``order_ttl_seconds`` is cancelled (0 = never); one ``fetch_order``
     ``fill_confirm_delay_seconds`` after placing resolves the fill in the same cycle.
     Paper execution is unaffected. Venue plumbing, not a risk knob.
+    ``protective_orders`` (§7.34) mirrors each position's SL/TP as a venue OCO.
     """
 
     EXIT_ORDER_TYPES: ClassVar[tuple[str, ...]] = ("market", "limit")
@@ -988,6 +989,9 @@ class VenueOrderSettings(_Config):
     exit_offset_pct: float = 0.005
     order_ttl_seconds: float = 600.0
     fill_confirm_delay_seconds: float = 1.0
+    # §7.34: keep an OCO (stop-loss + take-profit) at the venue for every open
+    # position, so it is protected while the agent is down. Local checks stay.
+    protective_orders: bool = False
 
     @model_validator(mode="after")
     def _check(self) -> VenueOrderSettings:

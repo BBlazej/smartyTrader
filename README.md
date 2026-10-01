@@ -54,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1333 tests, no network needed (live smokes are opt-in:
+pytest                      # 1347 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -130,7 +130,7 @@ thresholds. Key sections:
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56), `context` (§7.18 — yfinance earnings + EDGAR feeds), `exchanges` + `symbol_exchanges` (§7.66: per-exchange windows for a US + EU universe) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes), event guard (§7.18): `event_guard_enabled`, `event_blackout_before/after_minutes`, `event_guard_min_importance`, `earnings_blackout_days_before`/`_hours_after`, `delisting_blackout_days` |
 | `execution` | paper-executor fee %, slippage %, and `initial_cash` (seeds a fresh portfolio; persisted state wins after the first cycle) |
-| `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`. Paper ignores it |
+| `venue_orders` | Keyed crypto venue orders (§7.75): `entry_offset_pct` (BUY limit above the close, default 0.2 %), `exit_order_type` (`market` \| `limit`), `exit_offset_pct`, `order_ttl_seconds` (cancel still-working orders; 0 = never), `fill_confirm_delay_seconds`, `protective_orders` (§7.34: an OCO at the venue per open position, so SL/TP still fire while the agent is down; shipped on). Paper ignores it |
 | `storage` | One SQLite file per agent × trading mode (§7.78): `data_dir/<mode>_<agent>.db`, the mode derived from the executor's venue and guarded by a `(agent, mode)` identity table; WAL mode — concurrent reads while the agent writes. Retention windows: `snapshot_retention_days` (default 30), `history_retention_days` (0 = keep forever; `real_*` books never prune), `prune_interval_minutes`, `context_retention_days` (market-context rows, §7.18) |
 | `macro_calendar` | Scheduled macro events shared by both agents (§7.18): `events` (curated, UTC — FOMC + ECB decisions through 2027) and `feed_url` (ForexFactory weekly JSON; `""` disables) |
 | `monitoring` | log level, alert dedup window, `alert_webhook_format` (`json` for Slack/Discord/generic, `ntfy`) + `alert_min_severity` — the webhook URL itself comes only from the `ALERT_WEBHOOK_URL` env var (§7.51) |
@@ -186,7 +186,7 @@ restart-safe books (one SQLite file per agent × mode), strategy sleeves and a s
 watchlist (both opt-in), decision-replay backtests with dumb baselines, and a web
 dashboard. Keyed execution is verified on the OKX **demo**; Saxo SIM (stocks) is built
 and awaits a developer account. Real money stays double-gated (below).
-**1333 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
+**1347 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
 open work (the single list): [PLAN.md](PLAN.md).
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with

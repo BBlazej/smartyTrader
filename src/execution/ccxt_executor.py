@@ -50,6 +50,7 @@ from ..core.costs import base_currency
 from ..core.models import OrderResult, OrderSide, Position
 from ..core.timeutil import to_utc
 from .position_tracker import FillRecord, PositionTracker, book_fill, replay_fills
+from .protective_orders import ProtectiveOrders, Triggered
 
 logger = structlog.get_logger()
 
@@ -193,7 +194,9 @@ class ExchangeClient(Protocol):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
-    async def cancel_order(self, id: str, symbol: str) -> dict[str, Any]: ...
+    async def cancel_order(
+        self, id: str, symbol: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
 
     async def fetch_free_balance(self, params: dict[str, Any] | None = None) -> Any:
         """Real ccxt: ``fetch_free_balance(params={})`` → ``{currency: free amount}``.
@@ -242,6 +245,15 @@ class CcxtExecutor:
         self._exit_levels: dict[str, tuple[float | None, float | None]] = {}
         # The venue's market metadata (lot size, minimum amount), loaded lazily.
         self._markets: dict[str, Any] | None = None
+        # §7.34: venue-side OCO per open position (off → local SL/TP checks only).
+        self._protection = (
+            ProtectiveOrders(client, lambda s, p: self._to_precision("price_to_precision", s, p))
+            if self.orders.protective_orders
+            else None
+        )
+        # Order ids already booked (stored fills + pending rows): a protective order's
+        # fill found at startup is booked only if it is not among them.
+        self._known_order_ids: set[str] = set()
 
     @property
     def client(self) -> ExchangeClient:
@@ -385,6 +397,12 @@ class CcxtExecutor:
     ) -> OrderResult:
         await self._ensure_markets()
         amount = self._to_precision("amount_to_precision", symbol, quantity)
+        if side == OrderSide.SELL and self._protection is not None:
+            # §7.34: the protective OCO holds the coins frozen — withdraw it first. If it
+            # had already fired, book that fill now: what is left to sell shrinks.
+            triggered = await self._protection.cancel(symbol)
+            if triggered is not None:
+                self._book_triggered(triggered)
         if side == OrderSide.SELL:
             # Spot SELL = close what *this agent* bought (§7.47). Never sell beyond the
             # ledger: the account may hold coins the agent never bought (a pre-funded
@@ -475,6 +493,7 @@ class CcxtExecutor:
                 self._exit_levels[symbol] = (stop_loss, take_profit)
             if self._tracker.quantity(symbol) <= 0:
                 self._exit_levels.pop(symbol, None)
+            await self._sync_protection(symbol)
         elif status == "pending" and order_id:
             # Left open at the venue: reconcile_open_orders re-polls it each cycle.
             self._open_orders[order_id] = _PendingOrder(
@@ -501,6 +520,7 @@ class CcxtExecutor:
         replayed, levels = replay_fills(tracker, fills)
         self._tracker = tracker
         self._exit_levels = levels
+        self._known_order_ids.update(f.order_id for f in fills if f.order_id)
         return {"replayed_fills": replayed, "open_symbols": len(tracker.symbols())}
 
     def load_pending_orders(self, orders: list[PendingOrderRecord]) -> int:
@@ -516,6 +536,7 @@ class CcxtExecutor:
                 continue
             placed_at = to_utc(o.placed_at)  # SQLite stores naive UTC
             self._order_symbols[o.order_id] = o.symbol
+            self._known_order_ids.add(o.order_id)
             self._open_orders.setdefault(
                 o.order_id,
                 _PendingOrder(
@@ -621,6 +642,7 @@ class CcxtExecutor:
         the agent persisted it — a storage error then delays the record instead of
         losing it. The ledger is fed exactly once, when the status first resolves.
         """
+        await self._watch_protection()
         if not self._open_orders:
             return []
         redelivered = [p.resolved for p in self._open_orders.values() if p.resolved is not None]
@@ -684,12 +706,110 @@ class CcxtExecutor:
                         raw,
                     )
                     if pending.side == OrderSide.BUY:
-                        # The entry plan was captured when the order was placed;
-                        # enforcement stays local (§7.9).
+                        # The entry plan was captured when the order was placed.
                         self._exit_levels[pending.symbol] = (pending.stop_loss, pending.take_profit)
             pending.resolved = result
             results.append(result)
+            await self._sync_protection(pending.symbol)
         return results
+
+    # ── Venue-side protective orders (§7.34) ────────────
+
+    async def restore_protection(self) -> dict[str, int]:
+        """Startup, after :meth:`load_fills`/:meth:`load_pending_orders` (§7.58).
+
+        Books the fills of protective orders that fired while the agent was down (as
+        reconciled closing fills, delivered by the first :meth:`reconcile_open_orders`),
+        cancels the ones still live, and places fresh ones for the rebuilt ledger.
+        """
+        if self._protection is None:
+            return {}
+        await self._ensure_markets()
+        fired = await self._protection.adopt(self._tracker.symbols(), self._known_order_ids)
+        for triggered in fired:
+            self._book_triggered(triggered)
+        for symbol in self._tracker.symbols():
+            await self._sync_protection(symbol)
+        return {"fired_while_down": len(fired), "placed": len(self._protection.symbols())}
+
+    async def _watch_protection(self) -> None:
+        """Per cycle: book protective orders that fired; keep the rest in line with
+        the ledger (re-place one that failed or died, resize after a partial fill)."""
+        if self._protection is None:
+            return
+        for triggered in await self._protection.poll():
+            self._book_triggered(triggered)
+        for symbol in self._tracker.symbols():
+            await self._sync_protection(symbol)
+
+    async def _sync_protection(self, symbol: str) -> None:
+        """Make ``symbol``'s venue OCO match the ledger: whole position, entry SL/TP."""
+        if self._protection is None:
+            return
+        if OrderSide.SELL in self.working_order_sides(symbol):
+            return  # a resting exit holds the coins; re-synced once it resolves
+        qty = self._to_precision("amount_to_precision", symbol, self._tracker.quantity(symbol))
+        stop_loss, take_profit = self._exit_levels.get(symbol, (None, None))
+        wanted = (
+            qty > 0
+            and not self._is_dust(symbol, qty)
+            and (stop_loss is not None or take_profit is not None)
+        )
+        current = self._protection.get(symbol)
+        if current is not None and wanted and current.matches(qty, stop_loss, take_profit):
+            return
+        if current is not None:
+            triggered = await self._protection.cancel(symbol)
+            if triggered is not None:
+                self._book_triggered(triggered)
+                await self._sync_protection(symbol)  # the ledger changed: decide again
+                return
+        if wanted:
+            await self._protection.place(symbol, qty, stop_loss, take_profit)
+
+    def _book_triggered(self, triggered: Triggered) -> None:
+        """A protective order sold at the venue: book it like any closing fill.
+
+        The result is queued as an already-resolved reconciled order, so the agent
+        persists it (order row, realized PnL onto the entry decisions, loss streak)
+        through the same two-phase path as a late fill (§7.44).
+        """
+        raw = triggered.child
+        symbol = triggered.symbol
+        if triggered.child_id in self._known_order_ids:
+            return
+        self._known_order_ids.add(triggered.child_id)
+        filled = float(raw.get("filled") or 0.0)
+        fill_price = raw.get("average") or raw.get("price")
+        result = OrderResult(
+            order_id=triggered.child_id,
+            symbol=symbol,
+            side=OrderSide.SELL,
+            quantity=filled,
+            price=float(fill_price) if fill_price is not None else None,
+            status="filled",
+            filled_at=_fill_time(raw),
+            reason=triggered.reason,
+        )
+        if fill_price is not None:
+            result.fee_base, result.fee_quote = _reported_fees(raw, symbol)
+            result.realized_pnl, result.closed_entries = self._record_fill(
+                symbol, OrderSide.SELL, filled, float(fill_price), None, raw
+            )
+        if self._tracker.quantity(symbol) <= 0:
+            self._exit_levels.pop(symbol, None)
+        self._order_symbols[triggered.child_id] = symbol
+        self._open_orders[triggered.child_id] = _PendingOrder(
+            symbol=symbol, side=OrderSide.SELL, quantity=filled, resolved=result
+        )
+        logger.warning(
+            "protective order fired at the venue",
+            symbol=symbol,
+            reason=triggered.reason,
+            quantity=filled,
+            price=result.price,
+            realized_pnl=result.realized_pnl,
+        )
 
     def confirm_reconciled(self, order_id: str) -> None:
         """The agent persisted this order's terminal status — stop re-delivering it (§7.44)."""

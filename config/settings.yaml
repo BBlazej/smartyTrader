@@ -321,6 +321,10 @@ venue_orders:
   exit_offset_pct: 0.005          # exit_order_type: limit → SELL limit = close × (1 − this)
   order_ttl_seconds: 600          # cancel a venue order still working after this (0 = never)
   fill_confirm_delay_seconds: 1.0 # one fetch_order this long after placing (same-cycle fills)
+  # §7.34: mirror every open position's SL/TP as an OCO at the venue (OKX algo order),
+  # so a stop still fires while the agent is down. The local checks keep running;
+  # whichever fires first closes the position. Keyed executors only.
+  protective_orders: true
 
 storage:
   # §7.78: one SQLite file per agent × trading mode — <data_dir>/<mode>_<agent>.db

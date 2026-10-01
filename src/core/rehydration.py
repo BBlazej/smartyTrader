@@ -111,6 +111,8 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
       ``paper-…`` ids — paper fills never happened at a venue), with the latest buy per symbol carrying its entry decision's SL/TP.
     * ``load_pending_orders(orders)`` ← this agent's ``pending`` rows; the first cycle's
       reconciliation then resolves them.
+    * ``restore_protection()`` (§7.34) ← books fills of protective orders that fired
+      while the agent was down and re-places them for the rebuilt ledger.
 
     Each hook is optional and fail-soft: a failure logs and leaves that piece empty.
     """
@@ -148,6 +150,7 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
                         # §7.77: book the replayed lot net of its fees, like the live fill.
                         fee_base=float(o.fee_base or 0.0),
                         fee_quote=float(o.fee_quote or 0.0),
+                        order_id=o.order_id,
                     )
                 )
             counts = load_fills(fills)
@@ -191,6 +194,16 @@ async def rehydrate_venue_executor(executor: Any, storage: Storage) -> None:
                 logger.info("pending venue orders re-tracked from storage", count=len(pending))
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to reload pending venue orders", error=str(exc))
+
+    # §7.34: last, once the ledger is rebuilt — book what our venue-side protective
+    # orders sold while we were down, then re-place them to match the ledger.
+    restore = getattr(executor, "restore_protection", None)
+    if callable(restore):
+        try:
+            counts = await restore()
+            logger.info("protective orders restored", **(counts or {}))
+        except Exception as exc:  # noqa: BLE001 - the local SL/TP checks still protect
+            logger.warning("failed to restore protective orders", error=str(exc))
 
 
 async def rehydrate_risk_engine(risk_engine: RiskEngine, storage: Storage) -> None:

@@ -266,6 +266,37 @@ class TestClosingFillOutcomes:
         await rehydrate_risk_engine(restarted, storage)
         assert restarted._loss_tracker.consecutive_losses == 1  # was 2 pre-§7.46
 
+    async def test_a_venue_stop_fill_is_stored_and_alerted(self, storage: Storage) -> None:
+        # §7.34: a protective order sold at the venue — possibly while the agent was
+        # down. No row exists yet; reconciliation creates it and the operator hears.
+        fired = OrderResult(
+            order_id="C-1",
+            symbol="BTC/USDT",
+            side=OrderSide.SELL,
+            quantity=1.0,
+            price=94.0,
+            status="filled",
+            realized_pnl=-6.2,
+            reason="venue stop-loss",
+        )
+        executor = MagicMock()
+        executor.reconcile_open_orders = AsyncMock(return_value=[fired])
+        executor.confirm_reconciled = MagicMock()
+        executor.pending_decision_id = MagicMock(return_value=None)
+        agent = _agent(storage, executor, [])
+        agent._alerts = MagicMock(send=AsyncMock())
+        agent._pipeline.get_portfolio_state = AsyncMock(
+            return_value=MagicMock(cash=0.0, positions=[], total_value=0.0, unrealized_pnl=0.0)
+        )
+
+        await agent._reconcile_orders()
+
+        (row,) = await storage.get_recent_closing_fills()
+        assert row.order_id == "C-1" and row.realized_pnl == pytest.approx(-6.2)
+        event, text = agent._alerts.send.await_args.args
+        assert event == "exit_level" and "venue stop-loss fired" in text
+        executor.confirm_reconciled.assert_called_once_with("C-1")
+
     async def test_reconciled_closing_fill_feeds_the_streak(self, storage: Storage) -> None:
         await storage.save_order("V-9", "BTC/USDT", "sell", 1.0, 100.0, "pending")
         losing = OrderResult(

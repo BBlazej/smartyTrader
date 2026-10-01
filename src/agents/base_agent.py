@@ -454,6 +454,18 @@ class BaseTradingAgent:
                 status=order.status,
                 symbol=order.symbol,
             )
+            if (order.reason or "").startswith("venue "):
+                # §7.34: a protective order sold at the venue — maybe while we were down.
+                try:
+                    await self._alerts.send(
+                        "exit_level",
+                        f"{order.reason} fired at the venue — sold {order.quantity} "
+                        f"{order.symbol} @ {order.price} (PnL {order.realized_pnl})",
+                        severity="warning",
+                        symbol=order.symbol,
+                    )
+                except Exception as exc:  # noqa: BLE001 - an alert never blocks the record
+                    self._logger.warning("alert dispatch failed", error=str(exc))
             changed = True
         if changed:
             # Cash/positions moved at the venue — keep the stored book current.
