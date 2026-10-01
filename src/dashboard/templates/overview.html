@@ -12,7 +12,7 @@
       <div class="stat">{{ (latest.total_value if latest else None) | money }}</div>
       {% if capital_return is not none %}
         <div class="{{ 'pos' if capital_return > 0 else ('neg' if capital_return < 0) }}">
-          {{ '%+.2f' | format(capital_return * 100) }}%
+          {{ '%+.2f' | format(capital_return * 100) }}% ({{ capital_gain | signed_money(currency) }})
           <span class="muted">vs {{ capital | money }} in</span></div>
       {% endif %}</div>
     <div class="card"><div class="muted">Cash</div>
@@ -87,7 +87,7 @@
       axes: [
         axis({}),
         axis({
-          label: 'EUR',
+          label: {{ currency | tojson }},
           labelFont: FONT,
           size: 70,
           values: function (u, vals) { return vals.map(function (v) { return money.format(v); }); },

@@ -13,10 +13,12 @@ from types import SimpleNamespace
 from src.core.models import Position
 from src.dashboard.views import (
     agent_status,
+    book_currency,
     capital_return,
     decision_stats,
     parse_positions,
     portfolio_chart,
+    signed_money,
     tail_lines,
 )
 
@@ -218,6 +220,19 @@ class TestPortfolioChart:
             for d in (2, 1)
         ]
         assert portfolio_chart(history, capital=4600.0)["capital"] == [4600.0, 4600.0]
+
+
+def test_signed_money_and_book_currency() -> None:
+    assert signed_money(500.0, "EUR") == "+500.00 €"
+    assert signed_money(-1234.5, "USD") == "-1,234.50 $"
+    assert signed_money(3.0, "CHF") == "+3.00 CHF"
+    assert signed_money(None, "EUR") == "—"
+    settings = SimpleNamespace(
+        crypto_agent=SimpleNamespace(quote_currency="EUR"),
+        saxo_execution=SimpleNamespace(account_currency="USD"),
+    )
+    assert book_currency(settings, "crypto") == "EUR"
+    assert book_currency(settings, "stocks") == "USD"
 
 
 def test_capital_return() -> None:

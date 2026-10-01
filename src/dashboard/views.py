@@ -139,6 +139,27 @@ def portfolio_chart(
     }
 
 
+_CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
+
+
+def book_currency(settings: Any, agent: str) -> str:
+    """The currency a book's cash and values are in: crypto trades in its
+    ``quote_currency`` (EUR), stocks in the Saxo account currency (USD)."""
+    if agent == "crypto":
+        return str(getattr(settings.crypto_agent, "quote_currency", None) or "EUR")
+    saxo = getattr(settings, "saxo_execution", None)
+    return str(getattr(saxo, "account_currency", None) or "USD")
+
+
+def signed_money(value: float | None, currency: str = "") -> str:
+    """``+500.00 €`` / ``-12.34 $`` — an amount with its sign always shown."""
+    if value is None:
+        return "—"
+    unit = _CURRENCY_SYMBOLS.get(currency.upper(), currency)
+    text = f"{'+' if value >= 0 else '-'}{abs(float(value)):,.2f}"
+    return f"{text} {unit}" if unit else text
+
+
 def capital_return(total_value: float | None, capital: float | None) -> float | None:
     """Overall gain/loss of the book as a fraction of the capital it started with
     (``0.092`` = +9.2 %); ``None`` when either side is unknown or capital is not positive."""

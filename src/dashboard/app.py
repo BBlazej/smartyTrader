@@ -66,10 +66,12 @@ from .books import Book, find_book
 from .launch import AgentLauncher
 from .views import (
     agent_status,
+    book_currency,
     capital_return,
     decision_stats,
     parse_positions,
     portfolio_chart,
+    signed_money,
     sleeve_rows,
     tail_lines,
 )
@@ -194,6 +196,7 @@ def create_dashboard_app(
     templates = Jinja2Templates(directory=_TEMPLATE_DIR)
     templates.env.filters["money"] = _money
     templates.env.filters["pct"] = _pct
+    templates.env.filters["signed_money"] = signed_money
     templates.env.filters["rel"] = _rel
     templates.env.filters["short"] = _short
     # ``tojson`` is Jinja's built-in: HTML-safe JSON (Markup, not re-escaped), so the
@@ -323,6 +326,8 @@ def create_dashboard_app(
                 latest=latest,
                 capital=capital,
                 capital_return=capital_return(latest.total_value if latest else None, capital),
+                capital_gain=(latest.total_value - capital) if latest and capital else None,
+                currency=book_currency(settings, selected.agent),
                 chart=chart,
                 positions=parse_positions(latest),
                 recent_decisions=recent,
