@@ -385,6 +385,35 @@ class CcxtExecutor:
     ) -> OrderResult:
         await self._ensure_markets()
         amount = self._to_precision("amount_to_precision", symbol, quantity)
+        if side == OrderSide.SELL:
+            # Spot SELL = close what *this agent* bought (§7.47). Never sell beyond the
+            # ledger: the account may hold coins the agent never bought (a pre-funded
+            # demo, the user's own holdings), and a stale or duplicate SELL once sold
+            # those for a fake +10 % gain (§7.88).
+            tracked = self._to_precision(
+                "amount_to_precision", symbol, self._tracker.quantity(symbol)
+            )
+            if tracked <= 0:
+                logger.warning(
+                    "sell refused: nothing tracked in the ledger", symbol=symbol, quantity=quantity
+                )
+                return OrderResult(
+                    order_id=f"rejected-{uuid4().hex[:12]}",  # never sent; unique row key
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    status="rejected",
+                    reason=f"no {symbol} position tracked for this agent; sell not sent",
+                )
+            if amount > tracked:
+                logger.warning(
+                    "sell capped at the tracked position",
+                    symbol=symbol,
+                    requested=amount,
+                    tracked=tracked,
+                )
+                amount = tracked
         if amount <= 0 or self._is_dust(symbol, amount):
             logger.warning(
                 "order below the venue's lot size / minimum; not sent",

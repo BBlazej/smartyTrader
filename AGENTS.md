@@ -61,6 +61,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 - Secrets live in `.env`/environment only — never YAML, logs, errors or pages. `LLM_API_KEY`, `EXCHANGE_API_KEY/_SECRET/_PASSPHRASE`, `SAXO_ACCESS_TOKEN`, `SAXO_APP_KEY/_SECRET`, `ALERT_WEBHOOK_URL`. Saxo OAuth tokens: `data/saxo_<env>.token.json`, 0600, gitignored.
 - `enabled: false` means nothing runs — runners exit before constructing any component; a single cycle is only ever the explicit `--once`.
 - Settings profiles (`--profile NAME` → `config/profiles/NAME.yaml` deep-merged over `settings.yaml`, §7.87) are for paper/demo only — `run_agent` refuses a profile on a real account. The `test` profile loosens risk, speeds up bars and adds the `test` playbook (trade often, SL/TP ±0.5 %); its rows are tagged `profile_<name>`.
+- One cycle at a time: `run_cycle` skips a tick while a cycle is running (the first cycle runs outside the scheduler, §7.88).
 - One runner per agent × mode (`flock` on `<data_dir>/<mode>_<agent>.runner.lock`; exit 2 if held, exit 3 on `--mode` mismatch, §7.52/§7.78).
 
 **Risk engine**
@@ -82,7 +83,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 - Raw news text never reaches the trading prompt — only validated, bounded `ContextCard`s (§7.18); every external string in a prompt goes through `analysis/sanitize.py::safe_label`. The summarizer shares one lock with the trading client.
 
 **Venues**
-- `CcxtExecutor` is spot-only: positions come from its FIFO ledger capped by `fetch_balance`; `fetch_positions` is never used. Cash = `fetch_free_balance()` of the quote currency — **no currency argument** (real ccxt signature). Every pair must be quoted in `quote_currency` (startup and overrides).
+- `CcxtExecutor` is spot-only: positions come from its FIFO ledger capped by `fetch_balance`; `fetch_positions` is never used. A SELL never exceeds the ledger — nothing tracked → refused locally (the account may hold coins the agent never bought, §7.88). Cash = `fetch_free_balance()` of the quote currency — **no currency argument** (real ccxt signature). Every pair must be quoted in `quote_currency` (startup and overrides).
 - The pipeline prices, the venue executor executes (§7.75): BUY = limit at `close × (1 + entry_offset_pct)` (reserved in sizing via `buy_price_factor` — never name it `slippage_pct`), SELL = market; working orders age out, are never stacked, and dust is written off.
 - Saxo (§7.66): long-only whole shares, one account currency, instruments via `symbol_map` or an unambiguous lookup (never guessed), fills from the audit log. XTB (§7.40): close via `type=CLOSE`, never flip into a short.
 

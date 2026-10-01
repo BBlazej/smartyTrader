@@ -8,6 +8,7 @@ persistence, order↔decision links and the realized-PnL backfill all run for re
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -176,6 +177,41 @@ class TestCycle:
         assert decisions[0].risk_verdict == "approved"
         # The result carries the row id of the decision the pipeline persisted.
         assert results[0].decision_id == decisions[0].id
+
+    async def test_cycles_never_overlap(
+        self,
+        storage: Storage,
+        risk_engine: RiskEngine,
+        paper_executor: PaperExecutor,
+    ) -> None:
+        # §7.88: the runner's first cycle runs outside the scheduler; when it outlasted
+        # the interval, the next tick ran a second cycle beside it and the same symbol
+        # was decided (and sold) twice. A tick during a running cycle is skipped.
+        release = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def slow_signal(*_: object, **__: object) -> TradeSignal:
+            entered.set()
+            await release.wait()
+            return buy_signal()
+
+        llm = AsyncMock()
+        llm.ask_trade_signal = AsyncMock(side_effect=slow_signal)
+        pipeline = DecisionPipeline(
+            provider=make_provider([100.0, 100.0]),
+            llm_client=llm,
+            risk_engine=risk_engine,
+            executor=paper_executor,
+            storage=storage,
+        )
+        agent = make_agent(pipeline, storage, risk_engine, paper_executor)
+        first = asyncio.create_task(agent.run_cycle())
+        await entered.wait()
+        assert await agent.run_cycle() == []  # the overlapping tick is skipped
+        release.set()
+        assert len(await first) == 1
+        assert llm.ask_trade_signal.await_count == 1
+        assert len(await storage.get_recent_decisions()) == 1
 
     async def test_cycle_persists_order(
         self,

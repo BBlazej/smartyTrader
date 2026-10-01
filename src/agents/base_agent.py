@@ -81,6 +81,10 @@ class BaseTradingAgent:
         # Empty = the single implicit style (``pipeline`` on ``timeframe``).
         self._sleeve_runs: list[SleeveRun] = []
         self._sleeve_book: SleeveBook | None = None
+        # §7.88: one cycle at a time. The runner's first cycle runs outside the
+        # scheduler, so APScheduler's max_instances cannot see it; a cycle longer than
+        # the interval once overlapped the next tick and decided one symbol twice.
+        self._cycle_lock = asyncio.Lock()
 
     @property
     def symbols(self) -> list[str]:
@@ -162,7 +166,15 @@ class BaseTradingAgent:
         A cycle is a bounded, finite operation (one pipeline run per symbol) and
         always completes, even when called directly (e.g. a single manual cycle).
         A truthy :meth:`_skip_cycle_reason` skips everything (no decisions recorded).
+        Cycles never overlap: a call while one is running is skipped (§7.88).
         """
+        if self._cycle_lock.locked():
+            self._logger.warning("previous cycle still running; skipping this tick")
+            return []
+        async with self._cycle_lock:
+            return await self._run_cycle()
+
+    async def _run_cycle(self) -> list[PipelineResult]:
         # Control plane first (§7.15): pause/close-all/config overrides are read from
         # the DB every cycle (cheap), *before* any market-hours skip so a close-all
         # still executes while the market window is closed.

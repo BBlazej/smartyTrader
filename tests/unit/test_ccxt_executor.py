@@ -285,22 +285,39 @@ class TestRealizedPnlAttribution:
         assert result.closed_entries[0].pnl == pytest.approx(20.0)
 
     @pytest.mark.asyncio
-    async def test_untracked_holdings_report_no_outcome(
+    async def test_untracked_holdings_are_never_sold(
         self, executor: CcxtExecutor, mock_client: AsyncMock
     ) -> None:
-        # A sell of lots we never filled locally (e.g. opened before a restart)
-        # must not fabricate a break-even outcome.
-        mock_client.create_order.return_value = {
-            "id": "D-SELL",
-            "status": "closed",
-            "filled": 1.0,
-            "average": 120.0,
-        }
+        # §7.88: coins the agent never bought (a pre-funded demo, the user's own
+        # holdings) are not its to sell — the order is refused locally, never sent.
         result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=1.0, price=120.0)
 
-        assert result.status == "filled"
+        assert result.status == "rejected"
+        assert "no BTC/USDT position tracked" in (result.reason or "")
         assert result.realized_pnl is None
-        assert result.closed_entries == []
+        mock_client.create_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sell_is_capped_at_the_tracked_position(
+        self, executor: CcxtExecutor, mock_client: AsyncMock
+    ) -> None:
+        mock_client.create_order.return_value = {
+            "id": "B",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 100.0,
+        }
+        await executor.place_order("BTC/USDT", OrderSide.BUY, quantity=1.0, price=100.0)
+        mock_client.create_order.return_value = {
+            "id": "S",
+            "status": "closed",
+            "filled": 1.0,
+            "average": 110.0,
+        }
+        # A stale SELL sized from more than the ledger holds sells only what it holds.
+        result = await executor.place_order("BTC/USDT", OrderSide.SELL, quantity=3.0, price=110.0)
+        assert mock_client.create_order.call_args.args[3] == pytest.approx(1.0)
+        assert result.realized_pnl == pytest.approx(10.0)
 
     @pytest.mark.asyncio
     async def test_pending_orders_are_not_tracked(

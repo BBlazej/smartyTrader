@@ -2,9 +2,9 @@
 
 The **single list of open work**: every todo, gap, open question and accepted limitation lives here — nowhere else. Delivered work is in [HISTORY.md](HISTORY.md), how the system is built in [ARCHITECTURE.md](ARCHITECTURE.md), the multi-strategy design rationale in [CHANGE.md](CHANGE.md).
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.87) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
+**Numbering rule:** §7.N identifiers (§7.1–§7.88) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
 
-**Current state (2026-09-30):** 1285 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
+**Current state (2026-10-01):** 1300 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
 
 ---
 
@@ -30,6 +30,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 ### §7.28 — Multi-day OKX demo run ⏳ [high; R1-H4, re-scoped by §7.41/§7.64]
 
 - **Done so far:** keys, reads, the overnight run, forced and agent-driven round trips on the OKX Europe demo — they found and fixed §7.75, §7.76, §7.77 and §7.79 (run log: HISTORY *§7.28 — keyed demo runs*). Fees are confirmed (taker 0.20 %, the paper profile matches).
+- **Before it:** the current `data/demo_crypto.db` carries a €459 phantom from the §7.88 duplicate sell — start the multi-day run on a fresh book (move the old file to `data/backups/`).
 - **Next:** run the crypto agent on the demo for several days in a clean `data/demo_crypto.db` (`python -m scripts.run_crypto_agent --mode demo`, output redirected to a log). Check: LLM-driven entries and exits fill and reconcile, restarts rehydrate cleanly, heartbeat stays fresh, no errors/fallbacks, fees on the order rows. Expect `Event guard:` rejections around macro events — intended (§7.18).
 
 ### §7.85 — LLM latency benchmark on real prompts ⏳ [medium; §7.69 follow-up, CHANGE Q5]
