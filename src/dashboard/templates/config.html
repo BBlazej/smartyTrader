@@ -5,11 +5,12 @@
 
   <p class="muted">
     Only whitelisted fields are editable here (intervals, pairs/symbols, market hours,
-    decision-history depth, <code>risk.*</code>, paper <code>execution.*</code>).
+    decision-history depth, <code>risk.*</code>, paper <code>execution.*</code> and four
+    LLM tuning knobs).
     Risk limits can only be <strong>tightened</strong> relative to <code>settings.yaml</code>;
     loosening a limit or disabling stop-loss/take-profit enforcement is a YAML edit.
-    LLM endpoints, credentials and secrets are structurally absent and cannot be read or
-    written. Changes apply on the agent's next cycle; an <code>interval_minutes</code>
+    The LLM server, model, credentials and secrets are structurally absent and cannot be
+    read or written. Changes apply on the agent's next cycle; an <code>interval_minutes</code>
     change re-arms the schedule immediately (no restart). Only fields that differ from
     <code>settings.yaml</code> are stored as overrides — saving unchanged values stores
     nothing, and clearing a field back to its YAML value removes its override.
@@ -103,6 +104,37 @@
         <div>
           <label for="execution.paper_slippage_pct">Paper slippage % (per side)</label>
           <input type="number" step="0.0001" id="execution.paper_slippage_pct" name="execution.paper_slippage_pct" value="{{ config.execution.paper_slippage_pct }}">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>LLM</legend>
+      {% set lb = llm_budget %}
+      <div class="cols2">
+        <div>
+          <label for="llm.max_tokens">Answer length cap — max_tokens (1024–65536)</label>
+          <input type="number" step="1024" min="1024" max="65536" id="llm.max_tokens" name="llm.max_tokens" value="{{ config.llm.max_tokens }}">
+          <div class="muted">Counts the hidden reasoning too.{% if lb.context_length %} Largest prompt {{ '{:,}'.format(lb.max_prompt_tokens or 0) }} + this must fit the {{ '{:,}'.format(lb.context_length) }} context.{% endif %}</div>
+        </div>
+        <div>
+          <label for="llm.timeout_seconds">Timeout per answer — seconds (30–3600)</label>
+          <input type="number" step="10" min="30" max="3600" id="llm.timeout_seconds" name="llm.timeout_seconds" value="{{ config.llm.timeout_seconds }}">
+          <div class="muted">{% if lb.min_timeout_s %}At the measured {{ lb.tokens_per_s }} tok/s a full answer needs ≥ {{ lb.min_timeout_s }} s.{% else %}No measured speed yet.{% endif %}</div>
+        </div>
+        <div>
+          <label for="llm.reasoning">Reasoning</label>
+          <select id="llm.reasoning" name="llm.reasoning">
+            {% for mode, label in [("default", "default — the server decides"), ("off", "off — fastest, may change decisions"), ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh")] %}
+              <option value="{{ mode }}" {{ 'selected' if config.llm.reasoning == mode }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <div class="muted">How long the model thinks before answering (Unsloth Studio; other servers ignore it).</div>
+        </div>
+        <div>
+          <label for="llm.temperature">Temperature (0–1)</label>
+          <input type="number" step="0.05" min="0" max="1" id="llm.temperature" name="llm.temperature" value="{{ config.llm.temperature }}">
+          <div class="muted">Lower = more repeatable answers.</div>
         </div>
       </div>
     </fieldset>

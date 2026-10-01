@@ -254,6 +254,7 @@ class LLMClient:
                 "type": "json_schema",
                 "json_schema": schema,
             }
+        payload.update(reasoning_fields(self.settings.reasoning))
 
         # §7.89: shutting down → no new generation. CancelledError (not an Exception)
         # unwinds the whole cycle: no fallback HOLD row, no alert, no order.
@@ -268,9 +269,13 @@ class LLMClient:
                 async with self._lock:
                     if self._closing:  # shutdown began while queued behind the summarizer
                         raise asyncio.CancelledError("LLM client is shutting down")
-                    resp = await self._client.post(self._chat_url, json=payload)
+                    resp = await self._client.post(
+                        self._chat_url, json=payload, timeout=self.settings.timeout_seconds
+                    )
             else:
-                resp = await self._client.post(self._chat_url, json=payload)
+                resp = await self._client.post(
+                    self._chat_url, json=payload, timeout=self.settings.timeout_seconds
+                )
         except asyncio.CancelledError:
             # The task was cancelled (Ctrl+C, SIGTERM, shutdown) mid-generation: tell
             # the server to stop it — dropping the connection alone may not reach it.
@@ -309,7 +314,7 @@ class LLMClient:
         # Size guard (§7.33): a runaway generation must fail the attempt
         # (retry → eventual HOLD fallback), never reach the parser.
         limit = self.settings.max_response_chars
-        if limit > 0 and len(raw_content) > limit:
+        if len(raw_content) > limit:
             raise ValueError(f"LLM response too large: {len(raw_content)} chars > limit {limit}")
 
         # Audit trail (§3.3 / §7.8): the *full* prompt + response behind
@@ -343,6 +348,20 @@ class LLMClient:
         if attempt < self.settings.max_retries and self.settings.retry_backoff_base_seconds:
             delay = self.settings.retry_backoff_base_seconds * (2 ** (attempt - 1))
             await asyncio.sleep(delay)
+
+
+def reasoning_fields(mode: str) -> dict[str, Any]:
+    """Request fields for ``llm.reasoning`` (§7.91), in Unsloth Studio's vocabulary.
+
+    Measured on the trading prompts (Qwen3.8-27B, 2026-10-01): a hard decision took
+    203 s / 6.2k tokens by default, 37–40 s / 1.3k at ``low``/``medium`` (same
+    decision) and 7 s / 155 tokens with thinking ``off`` (a different decision).
+    """
+    if mode == "default":
+        return {}
+    if mode == "off":
+        return {"enable_thinking": False}
+    return {"reasoning_effort": mode}
 
 
 def _optional_int(value: Any) -> int | None:

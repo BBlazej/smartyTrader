@@ -155,7 +155,7 @@ class TestSeedAndSizeGuard:
     async def test_oversized_response_fails_attempt_then_falls_back(
         self, llm_settings: LLMSettings
     ) -> None:
-        llm_settings.max_response_chars = 50
+        llm_settings.max_tokens = 12  # the guard is 4 × max_tokens = 48 chars
         client = LLMClient(llm_settings)
         huge = (
             '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "'
@@ -171,8 +171,9 @@ class TestSeedAndSizeGuard:
         assert signal.action.value == "hold"
         assert "too large" in (signal.reasoning or "")
 
-    async def test_guard_disabled_with_zero(self, llm_settings: LLMSettings) -> None:
-        llm_settings.max_response_chars = 0
+    async def test_guard_scales_with_max_tokens(self, llm_settings: LLMSettings) -> None:
+        llm_settings.max_tokens = 2048  # guard 8,192 chars: a long but legal answer passes
+        assert llm_settings.max_response_chars == 8192
         client = LLMClient(llm_settings)
         content = (
             '{"symbol": "BTC/USDT", "action": "buy", "confidence": 0.9, "reasoning": "'
@@ -531,3 +532,29 @@ class TestShutdownCancel:
         client._inflight.add("abc")
         assert await client.cancel_inflight() == 1
         await client.close()
+
+
+class TestReasoningAndTimeout:
+    """§7.91: reasoning control + the per-request timeout follow the live settings."""
+
+    def test_reasoning_fields(self) -> None:
+        from src.core.llm_client import reasoning_fields
+
+        assert reasoning_fields("default") == {}
+        assert reasoning_fields("off") == {"enable_thinking": False}
+        assert reasoning_fields("medium") == {"reasoning_effort": "medium"}
+
+    async def test_request_carries_reasoning_and_live_timeout(
+        self, llm_settings: LLMSettings
+    ) -> None:
+        client = LLMClient(llm_settings)
+        content = '{"symbol": "BTC/USDT", "action": "hold", "confidence": 0.7, "reasoning": "x"}'
+        post = AsyncMock(return_value=_resp(content))
+        with patch.object(client._client, "post", new=post):
+            await client.ask_trade_signal("s", "u")
+            assert "reasoning_effort" not in post.call_args.kwargs["json"]
+            llm_settings.reasoning = "low"  # a dashboard override lands on this object
+            llm_settings.timeout_seconds = 123
+            await client.ask_trade_signal("s", "u")
+        assert post.call_args.kwargs["json"]["reasoning_effort"] == "low"
+        assert post.call_args.kwargs["timeout"] == 123

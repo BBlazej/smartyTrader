@@ -54,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1323 tests, no network needed (live smokes are opt-in:
+pytest                      # 1333 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -125,7 +125,7 @@ thresholds. Key sections:
 
 | Section | What it controls |
 |---|---|
-| `llm` | LLM server endpoint, model, `timeout_seconds` (whole non-streamed completion; 600), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap incl. hidden reasoning, 16384 — *not* the context window, which is set in the server), `max_response_chars` (size guard, keep ≈ 4 × `max_tokens`) |
+| `llm` | LLM server endpoint, model, `timeout_seconds` (whole non-streamed completion; 600), retries + `retry_backoff_base_seconds` (exponential backoff), JSON-schema opt-in, `temperature`, `max_tokens` (completion cap incl. hidden reasoning, 16384 — *not* the context window, which is set in the server; the raw-answer size guard is 4 × this), `reasoning` (default/off/low/medium/high/xhigh), `cancel_path`. `max_tokens`, `timeout_seconds`, `temperature` and `reasoning` are also on the dashboard's Config page |
 | `crypto_agent` | enabled, exchange, testnet flag, `live_trading` (§7.41 live-money opt-in, default false), interval, pairs, `decision_history_limit`, `timeframe` (default `1h`), `decide_on_new_bar_only` (one LLM decision per closed bar; cycles in between only mark + enforce exits — §7.56), `watchlist` (§7.70: opt-in deterministic screener adding up to `max_dynamic_symbols` extra pairs with a TTL — liquidity floor → volatility band → momentum rank; core pairs + held symbols never dropped; optional `news_mentions` priority for candidates named in recent news, §7.83), `sleeves` (§7.71: opt-in strategy sleeves — per-sleeve `timeframe`, `playbook` (`swing`/`position`) and `holding` time stop over the same pairs; a symbol is held by one sleeve at a time; each sleeve trades `weight` × allocated capital with its own `risk:` limits, plus an agent-wide `backstop_max_drawdown_pct`), `context` (§7.18: market context — `sentiment`, `macro`, `announcements`, `earnings`, `news` feeds + aliases, `summarizer` with optional `llm` overrides; shipped on for crypto, summarizer off) |
 | `stocks_agent` | enabled, broker, demo, interval, `market_hours` (wrap-around windows supported), `market_timezone` (zone the window is in), `market_holidays` (ISO closure dates; weekends always closed), symbols, `decision_history_limit`, `timeframe` (default `1d`), `decide_on_new_bar_only` (§7.56), `context` (§7.18 — yfinance earnings + EDGAR feeds), `exchanges` + `symbol_exchanges` (§7.66: per-exchange windows for a US + EU universe) |
 | `risk` | max position %, daily loss limit, max drawdown, cooldown (`consecutive_losses_cooldown_minutes` + `consecutive_losses_threshold` streak), max positions, min confidence, `max_stop_distance_pct` + optional `risk_per_trade_pct` sizing (entry-level geometry, §7.54), `enforce_exit_levels` (deterministic SL/TP closes), event guard (§7.18): `event_guard_enabled`, `event_blackout_before/after_minutes`, `event_guard_min_importance`, `earnings_blackout_days_before`/`_hours_after`, `delisting_blackout_days` |
@@ -186,7 +186,7 @@ restart-safe books (one SQLite file per agent × mode), strategy sleeves and a s
 watchlist (both opt-in), decision-replay backtests with dumb baselines, and a web
 dashboard. Keyed execution is verified on the OKX **demo**; Saxo SIM (stocks) is built
 and awaits a developer account. Real money stays double-gated (below).
-**1323 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
+**1333 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
 open work (the single list): [PLAN.md](PLAN.md).
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with

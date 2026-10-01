@@ -12,7 +12,7 @@ import re
 import types
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, ClassVar, Union, get_args, get_origin
+from typing import Any, ClassVar, Literal, Union, get_args, get_origin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -50,9 +50,13 @@ _SUMMARIZER_LLM_FIELDS: frozenset[str] = frozenset(
         "max_tokens",
         "retry_backoff_base_seconds",
         "seed",
-        "max_response_chars",
+        "reasoning",
     }
 )
+
+#: ``llm.reasoning`` (§7.91): ``default`` sends nothing (the server's own behaviour),
+#: ``off`` disables thinking, a level caps its effort.
+ReasoningMode = Literal["default", "off", "low", "medium", "high", "xhigh"]
 
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 #: Sleeve names become the ``strategy`` column (String(20)) on decisions/orders.
@@ -126,9 +130,9 @@ class LLMSettings(_Config):
     # Deterministic-evaluation seed (§7.33): sent with every request when set;
     # None omits the field entirely — provider default behavior.
     seed: int | None = None
-    # Upper bound on a raw completion's character count before parsing (§7.33): a
-    # runaway generation is a failed attempt, never fed into the signal parser.
-    max_response_chars: int = 20_000
+    # §7.91: how much the model thinks before answering — sent per request as Unsloth
+    # Studio's ``enable_thinking`` / ``reasoning_effort`` (other servers ignore them).
+    reasoning: ReasoningMode = "default"
     # §7.89: where to cancel an in-flight generation at shutdown — a path on the LLM
     # server (or a full URL). With it set, every request carries a fresh ``cancel_id``
     # and shutdown POSTs ``{"cancel_id": …}`` there (Unsloth Studio:
@@ -138,6 +142,14 @@ class LLMSettings(_Config):
     # Bearer key for servers that require one (Unsloth desktop, llama-server
     # --api-key, vLLM). A secret: env ``LLM_API_KEY`` only — never YAML, never logged.
     api_key: str | None = Field(default=None, repr=False)
+
+    @property
+    def max_response_chars(self) -> int:
+        """Raw completion size cap before parsing (§7.33): ~4 chars per token of
+        ``max_tokens``, so a full-length answer always fits and a runaway one fails
+        the attempt instead of reaching the parser. Derived (§7.91) — it can no longer
+        drift out of step with ``max_tokens``."""
+        return 4 * self.max_tokens
 
     @model_validator(mode="before")
     @classmethod
@@ -1105,6 +1117,9 @@ class Settings:
                 raw = deep_merge(raw, yaml.safe_load(f) or {})
 
         self.llm = LLMSettings(**raw["llm"])
+        # YAML copy of the LLM block: dashboard LLM overrides (§7.91) resolve as
+        # baseline + override, like risk/execution below.
+        self.llm_baseline = LLMSettings(**raw["llm"])
         self.crypto_agent = AgentConfig(**raw["crypto_agent"])
         self.stocks_agent = AgentConfig(**raw["stocks_agent"])
         self.risk = RiskSettings(**raw["risk"])

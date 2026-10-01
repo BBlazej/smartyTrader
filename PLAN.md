@@ -2,9 +2,9 @@
 
 The **single list of open work**: every todo, gap, open question and accepted limitation lives here — nowhere else. Delivered work is in [HISTORY.md](HISTORY.md), how the system is built in [ARCHITECTURE.md](ARCHITECTURE.md), the multi-strategy design rationale in [CHANGE.md](CHANGE.md).
 
-**Numbering rule:** §7.N identifiers (§7.1–§7.90) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
+**Numbering rule:** §7.N identifiers (§7.1–§7.91) are referenced across code comments, `AGENTS.md`, `README.md` and `HISTORY.md` — **never renumber or reuse them**. A finished item moves to HISTORY under its number; new work gets the next free number, a severity and a place in the order below.
 
-**Current state (2026-10-01):** 1323 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
+**Current state (2026-10-01):** 1333 tests passing at ~95 % coverage, zero pytest warnings; ruff and the Python 3.11 CI checks green. Paper trading runs end to end on both markets; keyed execution is verified on the OKX demo; Saxo SIM is built but unverified.
 
 ---
 
@@ -38,7 +38,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 ### §7.85 — LLM latency benchmark on real prompts ⏳ [medium; §7.69 follow-up, CHANGE Q5]
 
 - §7.69 built the tooling (`scripts/benchmark_llm.py`, per-decision latency/tokens, dashboard p50/p95). **First real numbers (2026-10-01, 8.5 h demo run, 20 calls):** median 21 s, max 33 s per decision — the crypto universe was raised from 2 to 12 pairs on that basis (≈ 4 min of LLM per bar, one 5-minute cycle).
-- **Test-profile demo run (2026-10-01, 13:55–15:36 CEST, 12 pairs, 15 m bars, 85 calls):** latency is **bimodal**. p50 is 18 s, but p90 is 140 s, p95 166 s and the max 313 s. 15 of the 85 calls took over 100 s, with 4–7k completion tokens of reasoning, and 2 answers were truncated at `max_tokens` 8192 and retried (the cap was then raised to 16384, timeout 600 s — a capped answer now costs up to ~7 min). A full cycle therefore took ~13 min against a 5-minute interval (11 ticks skipped), so each symbol's SL/TP was checked only every ~13 min. NEAR's stop at 4.49 was hit on a ~4.5 % drop and filled at 4.28. **Options:** fewer pairs; cap the reasoning (a no-think template/model or a reasoning budget — lowering `max_tokens` only truncates); or check exits for all symbols before the LLM pass rather than symbol by symbol (worth its own §7 number if chosen).
+- **Test-profile demo run (2026-10-01, 13:55–15:36 CEST, 12 pairs, 15 m bars, 85 calls):** latency is **bimodal**. p50 is 18 s, but p90 is 140 s, p95 166 s and the max 313 s. 15 of the 85 calls took over 100 s, with 4–7k completion tokens of reasoning, and 2 answers were truncated at `max_tokens` 8192 and retried (the cap was then raised to 16384, timeout 600 s — a capped answer now costs up to ~7 min). A full cycle therefore took ~13 min against a 5-minute interval (11 ticks skipped), so each symbol's SL/TP was checked only every ~13 min. NEAR's stop at 4.49 was hit on a ~4.5 % drop and filled at 4.28. **Options:** fewer pairs; cap the reasoning with `llm.reasoning` (§7.91 — `low`/`medium` cut the hard prompt from 203 s to 37–40 s with the same decision; choose after a run on it); or check exits for all symbols before the LLM pass rather than symbol by symbol (worth its own §7 number if chosen).
 - **Do:** confirm with the dashboard's p50/p95 over a multi-day run with 12 pairs (prompts grow as history fills), or `scripts/benchmark_llm.py`. If p95 × pairs exceeds the 5-minute cycle, cycles overrun and exit checks wait — then trim pairs or lengthen the cycle. Size any watchlist extension (`max_dynamic_symbols`) and the summarizer budget from the same numbers.
 
 ### §7.86 — Two-sleeve paper trial ⏳ [medium; CHANGE P1 "done when"]

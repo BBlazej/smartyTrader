@@ -79,7 +79,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 - Post-order persistence is fail-soft and lossless (§7.44): never let an exception escape after `place_order` succeeded; reconciled venue statuses are confirmed only after they are stored.
 
 **LLM**
-- Keep `llm.max_response_chars ≥ 4 × max_tokens` (pinned by a test); `max_tokens` is the completion cap, not the context window; `timeout_seconds` must cover a whole non-streamed completion.
+- `max_tokens` is the completion cap incl. hidden reasoning, not the context window; `timeout_seconds` must cover a whole non-streamed completion; the raw-answer size guard `max_response_chars` is derived (4 × `max_tokens`). `llm.reasoning` (default/off/low/medium/high/xhigh, §7.91) is sent as Unsloth Studio's `enable_thinking`/`reasoning_effort`.
 - The parser strips reasoning blocks and takes the last valid JSON object (§7.57). Fallback HOLDs are audit-only (`is_fallback`, never forgeable, never re-fed) and raise an alert (§7.51).
 - Raw news text never reaches the trading prompt — only validated, bounded `ContextCard`s (§7.18); every external string in a prompt goes through `analysis/sanitize.py::safe_label`. The summarizer shares one lock with the trading client.
 
@@ -90,7 +90,7 @@ Key models (`core/models.py`): `TradeSignal`, `DecisionRecord`, `RiskResult`, `P
 
 **Control plane & dashboard**
 - The DB is the control source of truth (`agent_control`, row key = runner component `crypto`/`stocks`). Close-all runs even while paused; a broken control read never halts trading.
-- Safe-config overrides (`SafeConfigOverrides`, `extra="forbid"`): risk values may only tighten; applied as YAML baseline + override every time (removal reverts, §7.50).
+- Safe-config overrides (`SafeConfigOverrides`, `extra="forbid"`): risk values may only tighten; applied as YAML baseline + override every time (removal reverts, §7.50). Of `llm.*` only `max_tokens`/`timeout_seconds`/`temperature`/`reasoning` (§7.91) — never endpoint, model, key, cancel path; the dashboard refuses a timeout shorter than a full answer at the measured speed, or a cap that overflows the loaded context.
 - Dashboard: routes by book key `<mode>_<agent>` (`?book=`), never places orders; every write needs the CSRF token (`_require_csrf`); Host allowlist + origin checks (§7.43). The launcher only stops processes it started or adopted (§7.24).
 
 **Opt-in features (all off in code defaults)** — with the flag off, behaviour is exactly as without the feature:

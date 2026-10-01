@@ -6,8 +6,10 @@ allows — intervals, pairs/symbols, market hours, decision-history depth, and t
 the YAML limits (§7.43) — a web form must never be able to loosen or switch off a
 guard — and ``enforce_exit_levels`` is not on this surface at all. Everything else is rejected by
 ``extra="forbid"``: unknown keys **and every credential-shaped key** fail the same
-way, so secrets can neither be read nor written through this surface. ``llm.*`` and
-anything from ``.env`` are deliberately absent — never read, written, or returned.
+way, so secrets can neither be read nor written through this surface. Of ``llm.*``
+only four tuning knobs are here (§7.91: ``max_tokens``, ``timeout_seconds``,
+``temperature``, ``reasoning``) — endpoint, model, API key, cancel path and retries,
+and anything from ``.env``, are never read, written, or returned.
 
 The same model serves both sides:
 
@@ -16,7 +18,7 @@ The same model serves both sides:
   shared settings/risk/executor objects the running components already reference.
 
 Deliberate exclusions: ``execution.initial_cash`` (re-seeding a bankroll mid-run is
-misleading — restart to re-seed) and anything under ``llm``/``storage.database_path``.
+misleading — restart to re-seed) and every other ``llm`` field.
 
 **§7.50 semantics:** every field resolves as *YAML baseline + override*, re-derived on
 every apply — removing an override reverts the live object to its YAML value instead of
@@ -34,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .config import pairs_not_quoted_in
+from .config import ReasoningMode, pairs_not_quoted_in
 
 if TYPE_CHECKING:  # avoid an import cycle; only needed for type hints
     from ..agents.base_agent import BaseTradingAgent
@@ -105,6 +107,18 @@ class ExecutionOverride(_OverrideBase):
     paper_slippage_pct: float | None = Field(default=None, ge=0, lt=1)
 
 
+class LLMOverride(_OverrideBase):
+    """``llm.*`` tuning knobs (§7.91) — performance, not safety: no LLM setting can
+    loosen a risk limit, and exits never wait for the LLM. The worst a bad value does
+    is time out into fallback HOLDs (no new entries). Server identity — endpoint,
+    model, key — stays a YAML/env matter."""
+
+    max_tokens: int | None = Field(default=None, ge=1024, le=65536)
+    timeout_seconds: int | None = Field(default=None, ge=30, le=3600)
+    temperature: float | None = Field(default=None, ge=0, le=1)
+    reasoning: ReasoningMode | None = None
+
+
 class SafeConfigOverrides(_OverrideBase):
     """The complete safe config surface (§7.15 #6). Unknown/credential keys are rejected."""
 
@@ -115,19 +129,39 @@ class SafeConfigOverrides(_OverrideBase):
     decision_history_limit: int | None = Field(default=None, ge=0, le=100)
     risk: RiskOverride | None = None
     execution: ExecutionOverride | None = None
+    llm: LLMOverride | None = None
+
+
+def _section_view(base: Any, model: type[BaseModel], override: BaseModel | None) -> dict:
+    """One form section's values: YAML ``base`` with the stored ``override`` on top."""
+    view = {name: getattr(base, name, None) for name in model.model_fields}
+    if override is not None:
+        view.update(override.model_dump(exclude_none=True))
+    return view
 
 
 def safe_config_view(settings: Settings, overrides: SafeConfigOverrides | None) -> dict[str, Any]:
     """The safe config as the dashboard sees it: YAML defaults + stored overrides.
 
     Only whitelisted fields appear — LLM endpoint/model, storage path and every
-    credential are structurally impossible in this payload.
+    credential are structurally impossible in this payload. Each section shows the
+    *effective* value (stored override, else YAML): showing the YAML value under an
+    active override made the next save of the form silently drop that override.
     """
     view: dict[str, Any] = {
-        "risk": {name: getattr(settings.risk, name) for name in RiskOverride.model_fields},
-        "execution": {
-            name: getattr(settings.execution, name) for name in ExecutionOverride.model_fields
-        },
+        "risk": _section_view(
+            risk_baseline(settings), RiskOverride, overrides.risk if overrides else None
+        ),
+        "execution": _section_view(
+            getattr(settings, "execution_baseline", None) or settings.execution,
+            ExecutionOverride,
+            overrides.execution if overrides else None,
+        ),
+        "llm": _section_view(
+            getattr(settings, "llm_baseline", None) or settings.llm,
+            LLMOverride,
+            overrides.llm if overrides else None,
+        ),
     }
     if overrides is not None:
         view["overrides"] = overrides.model_dump(exclude_none=True)
@@ -146,7 +180,7 @@ def agent_config_view(agent_settings: Any, overrides: SafeConfigOverrides | None
         "decision_history_limit": agent_settings.decision_history_limit,
     }
     if overrides is not None:
-        base.update(overrides.model_dump(exclude_none=True, exclude={"risk", "execution"}))
+        base.update(overrides.model_dump(exclude_none=True, exclude={"risk", "execution", "llm"}))
     return base
 
 
@@ -250,6 +284,16 @@ def parse_and_apply(
             pipeline.decision_history_limit = history_limit
             changed.append("decision_history_limit")
 
+    # §7.91: LLM knobs on the very LLMSettings object the trading client reads per
+    # request (the summarizer has its own copy and keeps its YAML values).
+    base_llm = getattr(settings, "llm_baseline", None)
+    if base_llm is not None and getattr(settings, "llm", None) is not None:
+        for name in LLMOverride.model_fields:
+            value = getattr(overrides.llm, name, None) if overrides.llm is not None else None
+            if value is None:
+                value = getattr(base_llm, name, None)
+            _set(settings.llm, name, value)
+
     # The agent captured its symbol list at construction; follow the *effective* list
     # so removing a pairs/symbols override reverts it to YAML (§7.50).
     if agent is not None and agent_settings is not None:
@@ -309,14 +353,17 @@ def strip_noop_overrides(
         }
         data["risk"] = kept or None
 
-    base_exec = getattr(settings, "execution_baseline", None)
-    if base_exec is not None and data.get("execution") is not None:
-        kept = {
-            name: value
-            for name, value in data["execution"].items()
-            if value is not None and not _same(value, getattr(base_exec, name, _SENTINEL))
-        }
-        data["execution"] = kept or None
+    for section, base in (
+        ("execution", getattr(settings, "execution_baseline", None)),
+        ("llm", getattr(settings, "llm_baseline", None)),
+    ):
+        if base is not None and data.get(section) is not None:
+            kept = {
+                name: value
+                for name, value in data[section].items()
+                if value is not None and not _same(value, getattr(base, name, _SENTINEL))
+            }
+            data[section] = kept or None
 
     return SafeConfigOverrides(**data)
 

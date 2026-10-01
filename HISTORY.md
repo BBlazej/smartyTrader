@@ -209,6 +209,25 @@ PLAN lists only what is left of these items; the record of what already happened
     - **Done 2026-09-29 (no account needed):** (4) ✅ OAuth app — `execution/saxo_auth.py::SaxoOAuth` (authorization-code grant per the developer portal: `sim.logonvalidation.net/{authorize,token}`, Basic `AppKey:AppSecret`, 1200 s access / 2400 s rotating refresh token; LIVE host `live.logonvalidation.net` is configurable because the docs only show SIM), token pair in a 0600 file (`data/saxo_<env>.token.json`, gitignored, atomic replace), refresh before expiry + keep-alive rotation every `keepalive_minutes` (the agent makes no calls outside market hours), `SaxoClient(token_source=…)` with one refresh+retry on 401, `scripts/saxo_login.py` (local redirect listener or `--paste`, state checked), config `saxo_execution.oauth`, env `SAXO_APP_KEY`/`SAXO_APP_SECRET`; mocked tests only (`tests/unit/test_saxo_auth.py`). (6) ✅ stocks market context live-checked (yfinance earnings: AAPL 2026-10-29 / MSFT 2026-10-28 20:00 UTC; EDGAR 8-K Atom feeds) and shipped enabled — set `context.http_user_agent` to a name + contact before unattended use (SEC's request). **Per-exchange windows** ✅ — `stocks_agent.exchanges` + `symbol_exchanges` (US + EU universe; a cycle skips only when every window in use is closed, closed symbols skip one by one via `BaseTradingAgent._skip_symbol_reason`).
     - **Next (needs the user's Saxo developer account — none configured yet):** (3) first SIM run — `--once` with a 24 h developer token (or `saxo_login` with an app), confirm account/instrument resolution, a buy + sell round trip, audit-log fill prices and net-position capping, and the OAuth refresh/keep-alive against the real `/token` endpoint; compare Saxo SIM prices with yfinance (CHANGE.md Q8). (5) Only after a successful SIM run: switch the shipped stocks config to Saxo and delete the XTB executor/client (+ their tests/config) — kept until then as the known-dead reference.
 
+### §7.91 — LLM knobs on the dashboard + reasoning control — ✅ complete [user request 2026-10-01]
+
+   - **Reasoning control, measured (Unsloth Studio, Qwen3.8-27B, two real trading prompts, `max_tokens` 16384):** Studio reports `reasoning_style: enable_thinking_effort`, levels low/medium/high/xhigh.
+
+     | Setting | Hard prompt | Typical prompt |
+     |---|---|---|
+     | default | 203 s / 6,166 tokens → SELL | 14 s → BUY |
+     | `off` | 7 s / 155 → **HOLD** | 7 s → BUY |
+     | `low` | 40 s / 1,351 → SELL | 19 s → BUY |
+     | `medium` | 37 s / 1,341 → SELL | 20 s → BUY |
+
+     A third prompt through the agent's own client with `off` (5.6 s) also answered HOLD where reasoning bought. Without thinking, the model seems to follow the base "prefer HOLD" instruction over the playbook's.
+   - **Done ✅:**
+     - New setting `llm.reasoning` (default/off/low/medium/high/xhigh → `enable_thinking: false` / `reasoning_effort`; shipped `default`, i.e. unchanged behaviour). `max_response_chars` is now derived (4 × `max_tokens`) instead of a setting that could drift. The LLM timeout is passed per request, so a change applies to the next call.
+     - `LLMOverride` on the safe surface: `max_tokens`, `timeout_seconds`, `temperature`, `reasoning`. The server identity (endpoint, model, key, cancel path) stays YAML/env.
+     - Config page "LLM" section with hints from the measured speed and the probed context. Saves are refused when the timeout can't carry a full answer (×1.2 margin) or the largest prompt + cap exceeds the context.
+     - **Fix found on the way:** the form showed YAML risk/execution values under an active override, so saving any field re-submitted the YAML value and silently dropped that override. Every section now shows effective values.
+   - **Tests:** `TestLLMOverrides` (control plane), `TestReasoningAndTimeout` (client), `test_budget_and_problems`, dashboard `test_llm_knobs_save_and_show` / `test_timeout_too_short_for_measured_speed_is_refused` / `test_resaving_the_form_keeps_a_risk_override`.
+
 ### §7.89 — Shutdown cancels the LLM generation — ✅ complete [medium; user request 2026-10-01]
 
    - **Problem:** stopping an agent left the local server generating. The dashboard's Stop, `kill` and `docker stop` all send SIGTERM, and Python's default action killed the process without any cleanup. Ctrl+C did clean up but never told the server. Unsloth Studio proxies to llama-server and may not notice a dropped client, so a 27B answer (up to minutes) kept the GPU busy.

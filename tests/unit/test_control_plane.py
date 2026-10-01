@@ -581,3 +581,69 @@ class TestPairsOverrideQuoteCurrency:
         assert ok is not None and err is None
         # Without a quote currency (e.g. stocks symbols) nothing extra is checked.
         assert validate_overrides_payload({"pairs": ["BTC/USDT"]})[0] is not None
+
+
+class TestLLMOverrides:
+    """§7.91: four LLM tuning knobs on the safe surface — never the server identity."""
+
+    def test_only_the_tuning_knobs_validate(self) -> None:
+        SafeConfigOverrides.model_validate(
+            {"llm": {"max_tokens": 16384, "timeout_seconds": 600, "reasoning": "medium"}}
+        )
+        for bad in (
+            {"llm": {"endpoint": "http://evil"}},
+            {"llm": {"model": "other"}},
+            {"llm": {"api_key": "x"}},
+            {"llm": {"cancel_path": "/x"}},
+            {"llm": {"max_tokens": 100}},  # below 1024
+            {"llm": {"timeout_seconds": 5}},
+            {"llm": {"temperature": 1.5}},
+            {"llm": {"reasoning": "maximum"}},
+        ):
+            with pytest.raises(ValidationError):
+                SafeConfigOverrides.model_validate(bad)
+
+    def test_apply_then_revert_on_the_live_llm_settings(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        live = settings.llm  # the object the trading LLMClient holds
+        yaml_tokens, yaml_timeout = live.max_tokens, live.timeout_seconds
+        changed = parse_and_apply(
+            settings,
+            "crypto",
+            '{"llm": {"max_tokens": 4096, "timeout_seconds": 120, "reasoning": "low"}}',
+        )
+        assert settings.llm is live
+        assert (live.max_tokens, live.timeout_seconds, live.reasoning) == (4096, 120, "low")
+        assert live.max_response_chars == 4 * 4096  # the guard follows the cap
+        assert {"max_tokens", "timeout_seconds", "reasoning"} <= set(changed)
+
+        parse_and_apply(settings, "crypto", None)  # override removed → YAML again
+        assert (live.max_tokens, live.timeout_seconds, live.reasoning) == (
+            yaml_tokens,
+            yaml_timeout,
+            "default",
+        )
+
+    def test_noop_llm_values_are_not_stored(self, tmp_path) -> None:
+        settings = _settings(tmp_path)
+        echo = SafeConfigOverrides.model_validate(
+            {"llm": {"max_tokens": settings.llm.max_tokens, "reasoning": "medium"}}
+        )
+        stripped = strip_noop_overrides(echo, settings, "crypto")
+        assert stripped.llm is not None
+        assert stripped.llm.model_dump(exclude_none=True) == {"reasoning": "medium"}
+
+    def test_form_view_shows_stored_override_values(self, tmp_path) -> None:
+        # The form used to show YAML risk/execution values under an active override,
+        # so the next save of any field silently dropped that override.
+        from src.core.control_config import safe_config_view
+
+        settings = _settings(tmp_path)
+        overrides = SafeConfigOverrides.model_validate(
+            {"risk": {"min_confidence": 0.8}, "llm": {"reasoning": "low"}}
+        )
+        view = safe_config_view(settings, overrides)
+        assert view["risk"]["min_confidence"] == 0.8
+        assert view["risk"]["max_position_pct"] == settings.risk.max_position_pct
+        assert view["llm"]["reasoning"] == "low"
+        assert set(view["llm"]) == {"max_tokens", "timeout_seconds", "temperature", "reasoning"}

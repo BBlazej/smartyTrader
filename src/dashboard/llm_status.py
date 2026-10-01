@@ -92,6 +92,10 @@ class LLMProbeCache:
         self._last: LLMProbe | None = None
         self._last_at = 0.0
 
+    def peek(self) -> LLMProbe | None:
+        """The last probe result without probing (``None`` before the first one)."""
+        return self._last
+
     async def get(self) -> LLMProbe:
         if self._last is not None and time.monotonic() - self._last_at < self._ttl:
             return self._last
@@ -170,3 +174,49 @@ def llm_status_view(
             budget is not None and probe.context_length and budget > probe.context_length
         ),
     }
+
+
+#: A full answer must fit the timeout with this much room (prompt processing, load).
+TIMEOUT_MARGIN = 1.2
+
+
+def llm_budget(stats: dict[str, Any] | None, probe: LLMProbe | None, max_tokens: int) -> dict:
+    """What the measured numbers say about an ``llm.max_tokens`` choice (§7.91).
+
+    ``min_timeout_s``: a full ``max_tokens`` answer at the measured speed, with margin.
+    ``context_needed``: the largest prompt seen + the answer cap, against the context
+    the server reports (Unsloth Studio). ``None`` wherever the data is missing.
+    """
+    stats = stats or {}
+    speed = stats.get("tokens_per_s")
+    max_prompt = stats.get("max_prompt_tokens")
+    context = probe.context_length if probe is not None else None
+    return {
+        "tokens_per_s": round(speed, 1) if speed else None,
+        "min_timeout_s": int(max_tokens / speed * TIMEOUT_MARGIN) + 1 if speed else None,
+        "max_prompt_tokens": max_prompt,
+        "context_length": context,
+        "context_needed": (int(max_prompt) + max_tokens) if max_prompt is not None else None,
+    }
+
+
+def llm_budget_problem(max_tokens: int, timeout_seconds: int, budget: dict[str, Any]) -> str | None:
+    """Why an LLM override would break decisions, or ``None``.
+
+    Too short a timeout turns every long answer into a fallback HOLD; a prompt + cap
+    beyond the loaded context makes the server refuse or truncate.
+    """
+    if budget.get("min_timeout_s") and timeout_seconds < budget["min_timeout_s"]:
+        return (
+            f"llm.timeout_seconds={timeout_seconds} is shorter than a full {max_tokens}-token "
+            f"answer at the measured {budget['tokens_per_s']} tok/s — raise it to at least "
+            f"{budget['min_timeout_s']} s or lower max_tokens"
+        )
+    needed, context = budget.get("context_needed"), budget.get("context_length")
+    if needed and context and needed > context:
+        return (
+            f"llm.max_tokens={max_tokens} plus the largest prompt seen "
+            f"({budget['max_prompt_tokens']} tokens) needs {needed} tokens of context; the "
+            f"server has {context} loaded"
+        )
+    return None

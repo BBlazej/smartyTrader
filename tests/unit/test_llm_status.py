@@ -103,3 +103,20 @@ def test_view_flags_a_prompt_plus_cap_beyond_the_context() -> None:
     assert view["avg_s"] == 20.5 and view["p50_s"] == 18.0
     assert llm_status_view(probe, stats, max_tokens=4096)["context_overflow"] is False
     assert llm_status_view(probe, None, max_tokens=4096)["count"] == 0
+
+
+def test_budget_and_problems() -> None:
+    from src.dashboard.llm_status import llm_budget, llm_budget_problem
+
+    probe = LLMProbe(reachable=True, model=MODEL, model_listed=True, context_length=20000)
+    stats = {"tokens_per_s": 40.0, "max_prompt_tokens": 3000}
+    budget = llm_budget(stats, probe, 16384)
+    assert budget["min_timeout_s"] == int(16384 / 40 * 1.2) + 1  # 492 s
+    assert budget["context_needed"] == 19384
+    assert llm_budget_problem(16384, 600, budget) is None
+    too_short = llm_budget_problem(16384, 300, budget)
+    assert too_short is not None and "at least 492 s" in too_short
+    overflow = llm_budget_problem(32768, 3600, llm_budget(stats, probe, 32768))
+    assert overflow is not None and "20000 loaded" in overflow
+    # No measurements yet → nothing to check against.
+    assert llm_budget_problem(65536, 30, llm_budget(None, None, 65536)) is None

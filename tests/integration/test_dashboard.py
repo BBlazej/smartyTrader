@@ -354,10 +354,68 @@ class TestConfigForm:
         row = await env.storage.get_agent_control("crypto")
         assert row is None or not row.config_override_json  # nothing saved
 
-    async def test_llm_section_is_rejected(self, env) -> None:
+    async def test_llm_server_identity_is_rejected(self, env) -> None:
         resp = await env.client.post("/config/paper_crypto", data={"llm.endpoint": "http://evil"})
         assert resp.status_code == 400
         _assert_no_secrets(resp.text)
+
+    async def test_llm_knobs_save_and_show(self, env) -> None:
+        # §7.91: answer length, timeout, temperature and reasoning are editable.
+        body = (await env.client.get("/config/paper_crypto")).text
+        assert 'name="llm.max_tokens"' in body and 'name="llm.reasoning"' in body
+        _assert_no_secrets(body)
+        resp = await env.client.post(
+            "/config/paper_crypto",
+            data={"llm.max_tokens": "4096", "llm.reasoning": "low", "llm.timeout_seconds": "200"},
+        )
+        assert resp.status_code == 303
+        row = await env.storage.get_agent_control("crypto")
+        assert '"reasoning":"low"' in (row.config_override_json or "")
+        shown = (await env.client.get("/config/paper_crypto")).text
+        assert '<option value="low" selected' in shown
+        assert 'name="llm.max_tokens" value="4096"' in shown
+
+    async def test_timeout_too_short_for_measured_speed_is_refused(self, env) -> None:
+        # One answered decision: 400 tokens in 20 s → 20 tok/s. A 16,384-token cap then
+        # needs ≥ 984 s; a 300 s timeout would turn long answers into fallback HOLDs.
+        bound = _bound(env.storage, "crypto")
+        try:
+            bound.bind_venue("paper")
+            await bound.save_llm_decision(
+                symbol="BTC/USDT",
+                action="hold",
+                confidence=0.7,
+                reasoning="x",
+                stop_loss=None,
+                take_profit=None,
+                risk_verdict="approved",
+                risk_reason=None,
+                llm_latency_ms=20_000.0,
+                llm_prompt_tokens=1_000,
+                llm_completion_tokens=400,
+            )
+        finally:
+            await bound.close()
+        resp = await env.client.post(
+            "/config/paper_crypto",
+            data={"llm.max_tokens": "16384", "llm.timeout_seconds": "300"},
+        )
+        assert resp.status_code == 400
+        assert "at least 984 s" in resp.text
+        row = await env.storage.get_agent_control("crypto")
+        assert row is None or not row.config_override_json
+
+    async def test_resaving_the_form_keeps_a_risk_override(self, env) -> None:
+        # The form showed YAML risk values under an active override, so saving any
+        # other field re-submitted the YAML value and dropped the override.
+        await env.client.post("/config/paper_crypto", data={"risk.min_confidence": "0.8"})
+        page = (await env.client.get("/config/paper_crypto")).text
+        assert 'name="risk.min_confidence" value="0.8"' in page
+        await env.client.post(
+            "/config/paper_crypto", data={"risk.min_confidence": "0.8", "interval_minutes": "7"}
+        )
+        row = await env.storage.get_agent_control("crypto")
+        assert '"min_confidence":0.8' in (row.config_override_json or "")
 
 
 class TestPerAgentBooks:

@@ -18,9 +18,13 @@ llm:
   max_tokens: 16384
   retry_backoff_base_seconds: 1.0   # exponential backoff between retries; 0 = off
   seed: null               # set an integer for deterministic evaluation (§7.33); null omits it
-  # Raw completion size cap before parsing (§7.33); 0 = guard off. Keep it ≈4×
-  # max_tokens (~4 chars/token) or long answers are discarded before the parser.
-  max_response_chars: 72000
+  # How much the model thinks before answering (§7.91): default | off | low | medium
+  # | high | xhigh — Unsloth Studio's enable_thinking / reasoning_effort; other
+  # servers ignore it. Measured 2026-10-01 on a hard trading prompt: default 203 s
+  # (6.2k tokens), low/medium 37–40 s (1.3k, same decision), off 7 s (155 tokens, a
+  # different decision). Also on the dashboard's Config page, with max_tokens,
+  # timeout_seconds and temperature. (The raw-answer size guard is 4 × max_tokens.)
+  reasoning: default
   # Cancel an in-flight generation on shutdown (§7.89): each request carries a
   # cancel_id, and stopping the agent POSTs it here (Unsloth Studio's endpoint, on
   # the same host as LOCAL_LLM_ENDPOINT). null = rely on the dropped connection

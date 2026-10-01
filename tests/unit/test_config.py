@@ -24,11 +24,12 @@ class TestSettingsLoad:
         assert s.risk.min_confidence == 0.6
         # §7.33 knobs ship in settings.yaml and load cleanly.
         assert s.llm.seed is None
-        assert s.llm.max_response_chars == 72_000
         assert s.llm.max_tokens == 16_384
-        # The size guard must leave room for a full max_tokens completion (~4 chars
-        # per token), or long answers are discarded before the parser.
-        assert s.llm.max_response_chars >= 4 * s.llm.max_tokens
+        # The size guard is derived (§7.91): room for a full max_tokens completion
+        # (~4 chars per token), so long answers are never discarded before the parser.
+        assert s.llm.max_response_chars == 4 * s.llm.max_tokens
+        assert s.llm.reasoning == "default"
+        assert s.llm_baseline.max_tokens == s.llm.max_tokens
 
     def test_crypto_agent_config(self, config_path: str) -> None:
         s = Settings(config_path=config_path)

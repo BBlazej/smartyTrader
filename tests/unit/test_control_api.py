@@ -23,6 +23,7 @@ def _settings(tmp_path) -> Settings:
     return make_settings(
         tmp_path,
         {
+            "llm": {"model": "qwen-control-api-test"},
             "crypto_agent": {"pairs": ["BTC/USDT"], "quote_currency": None},
             "stocks_agent": {"market_hours": "08:00-22:00"},
         },
@@ -146,10 +147,18 @@ class TestConfigEndpoints:
         body = json.dumps((await env.client.get("/api/config")).json())
 
         # Credentials / LLM plumbing are structurally absent from the payload.
-        for forbidden in ("llm", "endpoint", "api_key", "secret", "database_path"):
+        for forbidden in ("endpoint", "api_key", "secret", "database_path", "cancel_path"):
             assert forbidden not in body.lower()
 
         payload = (await env.client.get("/api/config")).json()
+        # §7.91: of llm.* only the four tuning knobs — never the model or the server.
+        assert set(payload["config"]["llm"]) == {
+            "max_tokens",
+            "timeout_seconds",
+            "temperature",
+            "reasoning",
+        }
+        assert env.settings.llm.model not in body
         assert payload["config"]["risk"]["min_confidence"] == pytest.approx(0.6)
         assert payload["agent_config"]["interval_minutes"] == 5
 

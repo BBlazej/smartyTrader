@@ -65,7 +65,7 @@ from ..core.web_security import (
 )
 from .books import Book, find_book
 from .launch import AgentLauncher
-from .llm_status import LLMProbeCache, llm_status_view
+from .llm_status import LLMProbeCache, llm_budget, llm_budget_problem, llm_status_view
 from .views import (
     agent_status,
     book_currency,
@@ -557,16 +557,34 @@ def create_dashboard_app(
             _ctx(request, agent=book.key, exists=exists, tail=tail, truncated=truncated),
         )
 
-    @app.get("/config/{key}", response_class=HTMLResponse)
-    async def config_page(request: Request, key: str) -> HTMLResponse:
-        book = _require_book(key)
+    async def _stored_overrides(book: Book) -> Any:
         control = await book.storage.get_agent_control(book.agent)
         try:
-            overrides = parse_overrides(
+            return parse_overrides(
                 getattr(control, "config_override_json", None) if control else None
             )
         except Exception:  # noqa: BLE001 - never fail the form on a corrupt blob
-            overrides = None
+            return None
+
+    async def _llm_budget(book: Book, max_tokens: int) -> dict[str, Any]:
+        """§7.91 hints/checks: measured speed + the last probe's context (no new probe —
+        the overview's LLM card keeps it fresh; without one the context check skips)."""
+        try:
+            stats = await book.storage.get_llm_latency_stats(limit=50, agent=book.agent)
+        except Exception:  # noqa: BLE001 - hints must never fail the form
+            stats = None
+        return llm_budget(stats, llm_probe.peek(), max_tokens)
+
+    async def _render_config(
+        request: Request,
+        book: Book,
+        *,
+        error: str | None = None,
+        saved: bool = False,
+        status_code: int = 200,
+    ) -> HTMLResponse:
+        overrides = await _stored_overrides(book)
+        config = safe_config_view(settings, overrides)
         agent_settings = getattr(settings, f"{book.agent}_agent", None)
         return templates.TemplateResponse(
             request,
@@ -575,14 +593,21 @@ def create_dashboard_app(
                 request,
                 active="config",
                 agent=book.key,
-                config=safe_config_view(settings, overrides),
+                config=config,
                 agent_config=agent_config_view(agent_settings, overrides)
                 if agent_settings is not None
                 else {},
-                error=None,
-                saved=request.query_params.get("saved") == "1",
+                llm_budget=await _llm_budget(book, int(config["llm"]["max_tokens"])),
+                error=error,
+                saved=saved,
             ),
+            status_code=status_code,
         )
+
+    @app.get("/config/{key}", response_class=HTMLResponse)
+    async def config_page(request: Request, key: str) -> HTMLResponse:
+        book = _require_book(key)
+        return await _render_config(request, book, saved=request.query_params.get("saved") == "1")
 
     @app.post("/config/{key}", response_class=HTMLResponse)
     async def config_save(request: Request, key: str) -> HTMLResponse:
@@ -601,33 +626,19 @@ def create_dashboard_app(
                 getattr(settings, f"{book.agent}_agent", None), "quote_currency", None
             ),
         )
+        if model is not None:
+            # §7.91: an answer cap the timeout or the loaded context can't carry would
+            # turn decisions into fallback HOLDs — refuse it with the numbers.
+            base_llm = settings.llm_baseline
+            max_tokens = (model.llm and model.llm.max_tokens) or base_llm.max_tokens
+            timeout = (model.llm and model.llm.timeout_seconds) or base_llm.timeout_seconds
+            error = llm_budget_problem(max_tokens, timeout, await _llm_budget(book, max_tokens))
+            if error is not None:
+                model = None
         if model is None:
-            # Re-render the form with the attempted values echoed back + the rejection.
-            control = await book.storage.get_agent_control(book.agent)
-            try:
-                overrides = parse_overrides(
-                    getattr(control, "config_override_json", None) if control else None
-                )
-            except Exception:  # noqa: BLE001
-                overrides = None
-            agent_settings = getattr(settings, f"{book.agent}_agent", None)
+            # Re-render the form with the current values + the rejection.
             logger.warning("dashboard config rejected", agent=book.key, error=error)
-            return templates.TemplateResponse(
-                request,
-                "config.html",
-                _ctx(
-                    request,
-                    active="config",
-                    agent=book.key,
-                    config=safe_config_view(settings, overrides),
-                    agent_config=agent_config_view(agent_settings, overrides)
-                    if agent_settings is not None
-                    else {},
-                    error=error,
-                    saved=False,
-                ),
-                status_code=400,
-            )
+            return await _render_config(request, book, error=error, status_code=400)
         # §7.50: the form shows merged (YAML ∘ override) values, so strip fields that
         # merely echo the YAML baseline — a save then persists only genuine overrides
         # and never pins defaults against later, stricter YAML edits.
