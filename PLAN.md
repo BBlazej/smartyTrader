@@ -82,7 +82,7 @@ The **single list of open work**: every todo, gap, open question and accepted li
 
 ### §7.90 — Repeated venue rejections ⏳ [low; found 2026-10-01, test-profile demo run]
 
-- **Account-level refusal:** OKX refused every XRP/EUR order with `54092` ("complete the disclaimer confirmation" — an account setting, not an order problem). The agent retried at every new bar, and each try was an `error` alert plus an LLM call. **Do:** after a venue refusal that cannot succeed until the operator acts (54092-type codes), park the symbol for the run (skip before the LLM, one alert naming the fix) instead of retrying blind.
+- **Account-level refusal:** (cause found 2026-10-01: the OKX *demo* labels XRP/EUR — and AVAX, BCH — `instCategory 3`, the TradFi / tokenized-stock category, whose disclaimer the demo account hasn't accepted; on live, XRP/EUR is category 1 and needs nothing.) OKX refused every XRP/EUR order with `54092` ("complete the disclaimer confirmation" — an account setting, not an order problem). The agent retried at every new bar, and each try was an `error` alert plus an LLM call. **Do:** after a venue refusal that cannot succeed until the operator acts (54092-type codes), park the symbol for the run (skip before the LLM, one alert naming the fix) instead of retrying blind.
 - **Insufficient balance:** two BUYs (XLM, ONDO) failed with `51008` (insufficient balance), although sizing clamps to free cash. Several limit BUYs working at once probably lock cash after the book was read. **Check:** whether sizing should subtract cash committed to working BUYs (`pending_buy_value`, §7.79).
 
 ---
