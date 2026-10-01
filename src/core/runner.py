@@ -665,14 +665,18 @@ async def run_agent(
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
-        # Stop the clock and the LLM work first (§7.89): a generation still running
-        # on the local server is cancelled there before anything slower happens.
-        manager.shutdown()
+        # LLM work first (§7.89): a generation still running on the local server is
+        # cancelled there before anything slower happens.
         if summarize_task is not None and not summarize_task.done():
             summarize_task.cancel()
             # Let it unwind: its LLM call sends the server a cancel on the way out.
             await asyncio.wait({summarize_task}, timeout=5.0)
+        # The agent before the scheduler: APScheduler's shutdown cancels a running job
+        # at whatever await it is in — possibly mid-order. agent.shutdown() blocks new
+        # cycles, cancels the generation and lets the running cycle unwind at its LLM
+        # call; only then are the remaining jobs (prune, context refresh) cancelled.
         await agent.shutdown()
+        manager.shutdown()
         if control_server is not None:
             control_server.should_exit = True
         if control_task is not None:

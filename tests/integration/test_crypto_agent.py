@@ -267,6 +267,21 @@ class TestCycle:
         assert await storage.get_recent_decisions(include_fallback=True) == []
         assert await storage.get_recent_orders() == []
 
+    async def test_no_cycle_starts_once_stopping(
+        self,
+        pipeline: DecisionPipeline,
+        storage: Storage,
+        risk_engine: RiskEngine,
+        paper_executor: PaperExecutor,
+    ) -> None:
+        # §7.89: the runner stops the agent before the scheduler, so a tick firing in
+        # between must not start a fresh cycle (data fetch, exits, LLM).
+        agent = make_agent(pipeline, storage, risk_engine, paper_executor)
+        await agent.stop()
+        assert await agent.run_cycle() == []
+        pipeline.provider.fetch_snapshot.assert_not_called()
+        assert await storage.get_recent_decisions(include_fallback=True) == []
+
     async def test_cycle_persists_order(
         self,
         pipeline: DecisionPipeline,

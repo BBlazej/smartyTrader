@@ -266,6 +266,8 @@ class LLMClient:
         try:
             if self._lock is not None:
                 async with self._lock:
+                    if self._closing:  # shutdown began while queued behind the summarizer
+                        raise asyncio.CancelledError("LLM client is shutting down")
                     resp = await self._client.post(self._chat_url, json=payload)
             else:
                 resp = await self._client.post(self._chat_url, json=payload)

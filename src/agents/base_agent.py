@@ -85,6 +85,8 @@ class BaseTradingAgent:
         # scheduler, so APScheduler's max_instances cannot see it; a cycle longer than
         # the interval once overlapped the next tick and decided one symbol twice.
         self._cycle_lock = asyncio.Lock()
+        # Set by stop(): no new cycle starts once shutdown has begun (§7.89).
+        self._stopping = False
 
     @property
     def symbols(self) -> list[str]:
@@ -148,6 +150,7 @@ class BaseTradingAgent:
         )
 
     async def stop(self) -> None:
+        self._stopping = True
         self._logger.info("agent stopped")
 
     async def shutdown(self, cycle_grace_seconds: float = 5.0) -> None:
@@ -184,6 +187,8 @@ class BaseTradingAgent:
         A truthy :meth:`_skip_cycle_reason` skips everything (no decisions recorded).
         Cycles never overlap: a call while one is running is skipped (§7.88).
         """
+        if self._stopping:
+            return []
         if self._cycle_lock.locked():
             self._logger.warning("previous cycle still running; skipping this tick")
             return []

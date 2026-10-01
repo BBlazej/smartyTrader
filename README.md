@@ -54,7 +54,7 @@ pip install -e ".[stocks]"   # adds yfinance — only needed for stocks data
 
 cp .env.example .env        # add your keys (or run in paper mode)
 
-pytest                      # 1311 tests, no network needed (live smokes are opt-in:
+pytest                      # 1312 tests, no network needed (live smokes are opt-in:
                             # `pytest -m network`, §7.63)
 python -m scripts.run_crypto_agent   # run the crypto agent (paper by default)
 python -m scripts.run_stocks_agent   # run the stocks agent (paper by default)
@@ -186,7 +186,7 @@ restart-safe books (one SQLite file per agent × mode), strategy sleeves and a s
 watchlist (both opt-in), decision-replay backtests with dumb baselines, and a web
 dashboard. Keyed execution is verified on the OKX **demo**; Saxo SIM (stocks) is built
 and awaits a developer account. Real money stays double-gated (below).
-**1311 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
+**1312 tests passing at ~95% coverage.** Delivered work: [HISTORY.md](HISTORY.md);
 open work (the single list): [PLAN.md](PLAN.md).
 
 > **Real money is double-gated (§7.41):** a keyed live exchange executor is only ever built with
